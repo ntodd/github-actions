@@ -192,8 +192,8 @@ EOF
     git add .github/workflows/agent-ready.yml
     git commit --quiet -m "Work agent-ready issues on Crew" -m "Labeling an issue agent-ready starts ntodd/github-actions' agent-ready
 workflow on it, which opens draft PRs and works them until CI is green."
-    git push --quiet -u origin "$branch"
-    gh pr create --title "Work agent-ready issues on Crew" --body "Adds the agent-ready caller. Label an issue you wrote \`agent-ready\` and an agent works it into draft PRs on Crew: TDD, a headless-browser check, a Codex review, screenshots, and stacks when the fix splits into levels. Then it waits for CI and any review bots and answers them until everything's green.
+    git push --quiet --force -u origin "$branch"
+    gh pr create --head "$branch" --title "Work agent-ready issues on Crew" --body "Adds the agent-ready caller. Label an issue you wrote \`agent-ready\` and an agent works it into draft PRs on Crew: TDD, a headless-browser check, a Codex review, screenshots, and stacks when the fix splits into levels. Then it waits for CI and any review bots and answers them until everything's green.
 
 It runs only on issues $trusted wrote and labeled. The App's key and the Claude token are already set as secrets on this repo." --base "$default"
   )
