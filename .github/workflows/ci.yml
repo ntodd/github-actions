@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: {}
+
+jobs:
+  # The unit tests, and the formatter and scripts against a real Mix
+  # project, on the oldest Elixir flake-hunt supports and the newest.
+  test:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - elixir: "1.18"
+            otp: "27"
+          - elixir: "1.20.4"
+            otp: "29.1.1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          elixir-version: ${{ matrix.elixir }}
+          otp-version: ${{ matrix.otp }}
+      # The actions run on the runner's Node 24.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - run: node --test
+
+  lint:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      ACTIONLINT_VERSION: 1.7.12
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+      SHELLCHECK_VERSION: v0.11.0
+      SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install actionlint and ShellCheck
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/actionlint.tar.gz" \
+            "https://github.com/rhysd/actionlint/releases/download/v$ACTIONLINT_VERSION/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          curl -fsSL -o "$RUNNER_TEMP/shellcheck.tar.xz" \
+            "https://github.com/koalaman/shellcheck/releases/download/$SHELLCHECK_VERSION/shellcheck-$SHELLCHECK_VERSION.linux.x86_64.tar.xz"
+          echo "$SHELLCHECK_SHA256  $RUNNER_TEMP/shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+          echo "$RUNNER_TEMP/shellcheck-$SHELLCHECK_VERSION" >> "$GITHUB_PATH"
+      - run: actionlint -color
+      - run: shellcheck flake-hunt/run/*.sh flake-hunt/diagnose/*.sh
+      - name: Every action pinned by commit SHA
+        run: |
+          unpinned=$(grep -nE '^[[:space:]]*(-[[:space:]]+)?uses:' ./.github/workflows/*.yml ./*/*/action.yml 2>/dev/null |
+            grep -vE 'uses:[[:space:]]+(\./[^[:space:]]+|[^[:space:]@]+@[0-9a-f]{40})([[:space:]]|$)' || true)
+          if [ -n "$unpinned" ]; then
+            echo "::error::actions not pinned by a full commit SHA:"
+            echo "$unpinned"
+            exit 1
+          fi
+
+  # The whole workflow against the fixture project, as a dry run. The
+  # fixture has two tests that fail on even runs and one that always fails.
+  e2e:
+    uses: ./.github/workflows/flake-hunt.yml
+    permissions:
+      contents: read
+      issues: write
+    with:
+      working-directory: flake-hunt/test/fixture
+      runs-on: ubuntu-24.04
+      shards: 2
+      runs-per-shard: 3
+      dry-run: always
+
+  e2e-check:
+    needs: e2e
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: Two flaky tests and one broken one
+        env:
+          FLAKY: ${{ needs.e2e.outputs.flaky-count }}
+          BROKEN: ${{ needs.e2e.outputs.broken-count }}
+        run: |
+          echo "flaky=$FLAKY broken=$BROKEN"
+          [ "$FLAKY" = 2 ] && [ "$BROKEN" = 1 ]

@@ -1,0 +1,21 @@
+name: flake-hunt report
+description: Opens, comments on or reopens an issue per flaky test, and writes the job summary.
+inputs:
+  triage:
+    description: The directory holding triage.json.
+    required: true
+  diagnoses:
+    description: The directory holding Claude's answers, if any.
+    default: ""
+  label:
+    description: The label that marks flake-hunt's issues.
+    default: flaky-test
+  dry-run:
+    description: auto (a dry run unless this is the default branch), always or never.
+    default: auto
+  token:
+    description: Writes the issues.
+    default: ${{ github.token }}
+runs:
+  using: node24
+  main: index.mjs
