@@ -38,10 +38,17 @@ never holds it; after each publish the workflow itself runs
 `gh pr edit --attach` for the `./screenshots/` images Claude referenced.
 Without it, the references become plain text.
 
-That adds the repos to the App, sets the `AGENT_APP_ID` variable and the
-`AGENT_APP_PRIVATE_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` and `OPENAI_API_KEY`
-secrets, creates the labels, adds a ruleset requiring PRs into the default
-branch (admins bypass it), and opens a PR with the caller workflow. Without
+That checks the repos are on the App, sets the `AGENT_APP_ID` variable and
+the secrets, creates the labels, adds a ruleset, and opens a PR with the
+caller workflow. Rerunning it with `--no-pr` updates all but the caller.
+
+The caller uses agent-ready's `main`, so changes here apply everywhere
+without a repin. Pass `--ref <sha>` to pin a repo instead.
+
+The ruleset requires an approved PR into the default branch, and admins
+are exempt from it. It's what keeps the agent off the default branch: the
+App can't push there, and it can't approve its own PRs, so it can't merge
+them either. Without
 `OPENAI_API_KEY`, a Claude subagent does the adversarial review instead of
 Codex.
 
