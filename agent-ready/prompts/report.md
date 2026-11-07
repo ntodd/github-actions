@@ -13,6 +13,6 @@ Write issue-fix-stack's phase 6 report to {{state}}/report.md:
 
 Report only what you ran.
 
-If the status is blocked, also write {{state}}/comment.md: a short note for the issue saying what's left and what {{owner}} needs to do.
+If the status is blocked, also write {{state}}/comment.md for the issue. The workflow puts the reason above it as "**Blocked:** <reason>.", so don't repeat that line. Say exactly what's left: each failing check or open thread, the error it shows, what you tried, and what {{owner}} has to do. Keep it short, and run it through the humanizer skill.
 
 Finish with {{state}}/outcome.json: `{"status": "done"}`.

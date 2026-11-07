@@ -51,6 +51,38 @@ test("checks reads the latest check runs and the combined status", async () => {
   assert.match(calls[0].url, /filter=latest/);
 });
 
+test("checks keys each check run by workflow, event and branch, so only true duplicates collapse", async () => {
+  const { gh: c } = gh([
+    [
+      "GET /commits/abc/check-runs",
+      () => Response.json({ check_runs: [100, 200, 300, 400, 500].map((id) => ({ name: "test", check_suite: { id } })) }),
+    ],
+    ["GET /commits/abc/status", () => Response.json({ statuses: [] })],
+    [
+      "GET /actions/runs",
+      () =>
+        Response.json({
+          workflow_runs: [
+            { check_suite_id: 100, workflow_id: 1, event: "pull_request", head_branch: "a" },
+            { check_suite_id: 200, workflow_id: 1, event: "pull_request", head_branch: "a" },
+            { check_suite_id: 300, workflow_id: 1, event: "push", head_branch: "a" },
+            { check_suite_id: 400, workflow_id: 2, event: "pull_request", head_branch: "a" },
+          ],
+        }),
+    ],
+  ]);
+  const res = await c.checks("abc");
+  assert.deepEqual(res.checkRuns.map((r) => r.workflow), ["1 pull_request a", "1 pull_request a", "1 push a", "2 pull_request a", undefined]);
+});
+
+test("checks still works when the workflow runs can't be read", async () => {
+  const { gh: c } = gh([
+    ["GET /commits/abc/check-runs", () => Response.json({ check_runs: [{ name: "test", check_suite: { id: 100 } }] })],
+    ["GET /commits/abc/status", () => Response.json({ statuses: [] })],
+  ]);
+  assert.equal((await c.checks("abc")).checkRuns[0].workflow, undefined);
+});
+
 test("threads comes from GraphQL", async () => {
   const { gh: c, calls } = gh([
     [
@@ -84,6 +116,29 @@ test("writes go to the right endpoints", async () => {
   ]);
   assert.deepEqual(calls[0].body, { labels: ["agent-working"] });
   assert.match(calls[2].body.query, /markPullRequestReadyForReview/);
+});
+
+test("comment returns the new comment's ID, and comments can be read and edited", async () => {
+  const { gh: c, calls } = gh([
+    ["POST /issues/7/comments", () => Response.json({ id: 41 }, { status: 201 })],
+    ["PATCH /issues/comments/41", () => Response.json({ id: 41 })],
+    ["GET /issues/comments/41", () => Response.json({ id: 41, body: "old" })],
+  ]);
+  assert.equal(await c.comment(7, "hi"), 41);
+  await c.editComment(41, "new");
+  assert.equal(await c.getComment(41), "old");
+  assert.deepEqual(calls[1].body, { body: "new" });
+});
+
+test("requestReviewers splits users from org/team slugs, and rerunFailedJobs reruns a run's failed jobs", async () => {
+  const { gh: c, calls } = gh([
+    ["POST /pulls/5/requested_reviewers", () => Response.json({}, { status: 201 })],
+    ["POST /actions/runs/11/rerun-failed-jobs", () => new Response(null, { status: 201 })],
+  ]);
+  await c.requestReviewers(5, ["ntodd", "acme/web"]);
+  await c.rerunFailedJobs(11);
+  assert.deepEqual(calls[0].body, { reviewers: ["ntodd"], team_reviewers: ["web"] });
+  assert.equal(new URL(calls[1].url).pathname, "/repos/ntodd/sandbox/actions/runs/11/rerun-failed-jobs");
 });
 
 test("a failed request throws with the status and path", async () => {

@@ -12,8 +12,9 @@ import { claudeRunner } from "../lib/claude.mjs";
 import { renderer } from "../lib/prompts.mjs";
 import { runAgent } from "../lib/run.mjs";
 import { main, mask, setOutput, summary } from "../lib/action.mjs";
-import { WRITE, takeKey } from "../lib/write.mjs";
+import { WRITE, RERUN, takeKey } from "../lib/write.mjs";
 import { attacher } from "../lib/attach.mjs";
+import { tracker, progressNote } from "../lib/status.mjs";
 import { existsSync } from "node:fs";
 
 main(async () => {
@@ -40,13 +41,17 @@ main(async () => {
     labels: (raw.labels ?? []).map((l) => (typeof l === "string" ? l : l.name)),
     comments: trustedComments(await read.comments(number), trustedUsers),
     subIssues: await read.subIssues(number),
+    author: raw.user?.login,
   };
 
-  const mint = async () => {
-    const { token } = await installationToken({ appId, privateKey, repo, permissions: WRITE, apiUrl });
+  const mintWith = async (permissions) => {
+    const { token } = await installationToken({ appId, privateKey, repo, permissions, apiUrl });
     mask(token);
     return token;
   };
+  const mint = () => mintWith(WRITE);
+  const writer = (token) => client({ token, repo, apiUrl });
+  const runUrl = `${env.GITHUB_SERVER_URL}/${repo}/actions/runs/${env.GITHUB_RUN_ID}`;
   const slug = await appSlug({ appId, privateKey, apiUrl });
   const bot = `${slug}[bot]`;
 
@@ -63,6 +68,16 @@ main(async () => {
   writeFileSync(systemPromptFile, render("system", { repo, issue }));
 
   const log = (line) => console.log(line);
+  // The status comment on the issue. cleanup.mjs finds it by this file if
+  // the job dies before the run ends.
+  const progress = tracker({
+    post: async (body) => writer(await mint()).comment(number, body),
+    edit: async (id, body) => writer(await mint()).editComment(id, body),
+    clock: { now: () => Date.now() },
+    runUrl,
+    log,
+    onPost: (id) => writeFileSync(join(state, "status-comment"), String(id)),
+  });
   const claude = claudeRunner({
     sessionId: randomUUID(),
     stateDir: state,
@@ -75,6 +90,10 @@ main(async () => {
     env,
     timeoutMs: Number(env.AGENT_PHASE_TIMEOUT_MINUTES) * 60_000,
     log,
+    onEvent: (ev) => {
+      const note = progressNote(ev);
+      if (note) progress.note(note);
+    },
   });
 
   const res = await runAgent({
@@ -89,13 +108,20 @@ main(async () => {
       checksGraceMs: 3 * 60_000,
       reviewTimeoutMs: Number(env.AGENT_REVIEW_TIMEOUT_MINUTES) * 60_000,
       pollMs: 30_000,
+      reviewers: parseList(env.AGENT_REVIEWERS),
+      runUrl,
     },
     readToken: env.GITHUB_TOKEN,
     github: read,
     mint,
-    writer: (token) => client({ token, repo, apiUrl }),
+    writer,
     claude,
-    attach: attacher({ token: attachToken, stateDir: state, repo, read, writer: (token) => client({ token, repo, apiUrl }), mint, log }),
+    attach: attacher({ token: attachToken, stateDir: state, repo, read, writer, mint, log }),
+    rerun: async (runs) => {
+      const w = writer(await mintWith(RERUN));
+      for (const run of runs) await w.rerunFailedJobs(run);
+    },
+    progress,
     render,
     clock: { now: () => Date.now(), sleep: (ms) => new Promise((r) => setTimeout(r, ms)) },
     log,

@@ -59,6 +59,10 @@ on:
         description: Mark the drafts ready once CI is green, for review bots that skip drafts.
         type: boolean
         default: false
+      reviewers:
+        description: Who's asked to review when the PRs are done, as logins or org/team, comma-separated. Defaults to the issue's author.
+        type: string
+        default: ""
       working-directory:
         description: Where setup and mix deps.get run. Claude works from the repo root.
         type: string
@@ -318,6 +322,7 @@ jobs:
           AGENT_REVIEW_BOTS: ${{ inputs.review-bots }}
           AGENT_REVIEW_TIMEOUT_MINUTES: ${{ inputs.review-timeout-minutes }}
           AGENT_READY_FOR_BOTS: ${{ inputs.ready-for-bots }}
+          AGENT_REVIEWERS: ${{ inputs.reviewers }}
         run: |
           [ -n "$ANTHROPIC_API_KEY" ] || unset ANTHROPIC_API_KEY
           [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] || unset CLAUDE_CODE_OAUTH_TOKEN

@@ -44,7 +44,9 @@ export const manifest = {
     issues: "write",
     checks: "read",
     statuses: "read",
-    actions: "read",
+    // Write only so the workflow can rerun a flaky job. Claude's tokens
+    // ask for read (lib/write.mjs).
+    actions: "write",
   },
   default_events: [],
 };

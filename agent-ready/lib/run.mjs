@@ -4,10 +4,38 @@
 // with fakes; main.mjs wires up the real ones.
 
 import { summarizeChecks, botsSettled, openThreads } from "./checks.mjs";
+import { silent, clean } from "./status.mjs";
 
 const WORK = new Set(["ready", "blocked", "nothing-to-do"]);
 
-export async function runAgent({ repo, issue, config, readToken, github, mint, writer, claude, attach = async () => {}, render, clock, log }) {
+const prList = (ns) => {
+  const t = ns.map((n) => `#${n}`);
+  return t.length < 2 ? t.join("") : `${t.slice(0, -1).join(", ")} and ${t.at(-1)}`;
+};
+const named = (failed) => failed.map((f) => `#${f.pr} ${f.name}`).join(", ");
+// A reason as a sentence: capitalized, ending in one stop.
+const sentence = (s) => {
+  const t = String(s).trim().replace(/\.$/, "");
+  return `${t.charAt(0).toUpperCase()}${t.slice(1)}${/[?!]$/.test(t) ? "" : "."}`;
+};
+
+// A blocked outcome's own one-line reason, or the phase's fallback.
+const why = (out, fallback) => (typeof out.reason === "string" && out.reason.trim() ? clean(out.reason, 300) : fallback);
+
+// What a round left open, for a reason line: "#5 test (failure); 2 open
+// review threads on #6".
+export function describeOpen({ failed = [], threads = [] }) {
+  const parts = [];
+  if (failed.length) parts.push(failed.map((f) => `#${f.pr} ${f.name} (${f.conclusion})`).join(", "));
+  if (threads.length) {
+    const by = new Map();
+    for (const t of threads) by.set(t.pr, (by.get(t.pr) ?? 0) + 1);
+    parts.push([...by].map(([pr, n]) => `${n} open review thread${n === 1 ? "" : "s"} on #${pr}`).join(", "));
+  }
+  return parts.join("; ");
+}
+
+export async function runAgent({ repo, issue, config, readToken, github, mint, writer, claude, attach = async () => {}, rerun = null, progress = silent, render, clock, log }) {
   const { label, maxRounds } = config;
   const phases = [];
   let prs = [];
@@ -15,31 +43,84 @@ export async function runAgent({ repo, issue, config, readToken, github, mint, w
   let report = "";
   let comment = "";
 
-  const phase = async (name, vars, token = readToken) => {
+  const phase = async (name, vars, step, token = readToken) => {
     log(`${name}: starting`);
+    await progress.step(step);
     const res = await claude({ phase: name, token, prompt: render(name, { repo, issue, ...vars }) });
     phases.push({ phase: name, turns: res.turns, cost: res.cost, status: res.outcome?.status });
     log(`${name}: ${res.outcome?.status}`);
     return res.outcome ?? {};
   };
 
+  // Done: take the drafts out of draft and ask for a review, so it shows
+  // up for whoever has to look at it. Returns the PRs it handed over and
+  // what went wrong, which goes on the issue.
+  const handOver = async (w) => {
+    const who = config.reviewers?.length ? config.reviewers : [issue.author].filter(Boolean);
+    const ready = [];
+    const problems = [];
+    for (const n of prs) {
+      let p;
+      try {
+        p = await github.pr(n);
+        if (p.state !== "open") continue;
+        if (p.draft) await w.markReady(p.nodeId);
+        ready.push(n);
+      } catch (err) {
+        problems.push(`couldn't mark #${n} ready for review: ${err.message}`);
+        continue;
+      }
+      try {
+        if (who.length) await w.requestReviewers(n, who);
+      } catch (err) {
+        problems.push(`couldn't ask ${who.join(", ")} to review #${n}: ${err.message}`);
+      }
+    }
+    for (const p of problems) log(p);
+    return { ready, problems };
+  };
+
+  // Blocked always says why on the issue, first, then Claude's details.
+  const blockedNote = (reason) =>
+    [
+      `**Blocked:** ${sentence(reason)}`,
+      comment,
+      [prs.length ? `Pull requests: ${prs.map((n) => `#${n}`).join(", ")}.` : "", config.runUrl ? `[Run log](${config.runUrl})` : ""].filter(Boolean).join(" "),
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
+  const headline = (status, reason, { ready = [], problems = [] }) => {
+    if (status !== "done") return `**agent-ready is blocked.** ${sentence(reason)}`;
+    if (!prs.length) return "**agent-ready is done.** No pull request was needed, and the next comment says why.";
+    const failed = problems.length ? " Asking for the review failed; the next comment says why." : "";
+    if (!ready.length) return `**agent-ready is done.**${failed}`;
+    return `**agent-ready is done.** ${prList(ready)} ${ready.length === 1 ? "is" : "are"} ready for review.${failed}`;
+  };
+
   const finish = async (status, reason) => {
+    let handed = {};
     try {
       const w = writer(await mint());
-      if (comment) await w.comment(issue.number, comment);
+      if (status === "done") handed = await handOver(w);
+      const problems = handed.problems?.length ? `The pull requests are done, but:\n\n${handed.problems.map((p) => `- ${p}`).join("\n")}` : "";
+      const body = status === "done" ? [comment, problems].filter(Boolean).join("\n\n") : blockedNote(reason);
+      if (body) await w.comment(issue.number, body);
       await w.removeLabel(issue.number, "agent-working");
       await w.addLabels(issue.number, [status === "done" ? "agent-done" : "agent-blocked"]);
     } catch (err) {
       log(`couldn't update the issue: ${err.message}`);
     }
+    await progress.finish(headline(status, reason, handed));
     return { status, reason, prs, rounds, report, phases };
   };
 
   const publish = async (round) => {
-    const out = await phase("publish", { round }, await mint());
-    if (out.status === "blocked") return { blocked: out.comment ?? "Publishing was blocked." };
+    const step = round === 0 ? "Open the draft PRs" : `Push round ${round}'s changes and answer the threads`;
+    const out = await phase("publish", { round }, step, await mint());
+    if (out.status === "blocked") return { blocked: why(out, round === 0 ? "opening the pull requests stopped" : `pushing round ${round}'s changes stopped`), details: out.comment };
     const numbers = Array.isArray(out.prs) ? out.prs.filter(Number.isInteger) : [];
-    if (out.status !== "published" || numbers.length === 0) return { blocked: "Publishing reported no pull requests." };
+    if (out.status !== "published" || numbers.length === 0) return { blocked: "publishing reported no pull requests" };
     prs = [...new Set([...prs, ...numbers])];
     for (const n of prs) {
       try {
@@ -51,38 +132,72 @@ export async function runAgent({ repo, issue, config, readToken, github, mint, w
     return {};
   };
 
+  // Respond found nothing to change. If everything still open is a failed
+  // Actions job, those are flakes or cancels: rerun them and wait again.
+  const rerunFlakes = async (seen) => {
+    const stuck = { reason: `nothing in the pull requests needs to change, but these are still open: ${describeOpen(seen)}` };
+    if (!rerun || seen.threads.length || !seen.failed.length || seen.failed.some((f) => !f.run)) return stuck;
+    await progress.step(`Rerun the flaky jobs: ${named(seen.failed)}`);
+    try {
+      await rerun([...new Set(seen.failed.map((f) => f.run))]);
+    } catch (err) {
+      return { reason: `couldn't rerun ${named(seen.failed)}: ${err.message}` };
+    }
+    log(`reran ${named(seen.failed)}`);
+    await clock.sleep(config.pollMs);
+    return { ok: true };
+  };
+
   try {
     const w = writer(await mint());
     await w.removeLabel(issue.number, label);
     await w.addLabels(issue.number, ["agent-working"]);
 
-    const built = await phase("build", {});
-    if (!WORK.has(built.status)) return await finish("blocked", `build ended with status ${built.status}`);
+    const built = await phase("build", {}, "Build: triage, reproduce, TDD and review");
+    if (!WORK.has(built.status)) return await finish("blocked", `the build ended with status "${built.status}"`);
     if (built.status !== "ready") {
       comment = built.comment ?? "";
-      return await finish(built.status === "nothing-to-do" ? "done" : "blocked", built.status);
+      if (built.status === "nothing-to-do") return await finish("done", "nothing-to-do");
+      return await finish("blocked", why(built, "the build stopped before opening a pull request"));
     }
 
     const pub = await publish(0);
-    if (pub.blocked) return await finish("blocked", pub.blocked);
+    if (pub.blocked) {
+      comment = pub.details ?? "";
+      return await finish("blocked", pub.blocked);
+    }
 
     let status = "done";
     let reason = "";
     for (;;) {
       const since = clock.now();
-      const seen = await waitForRound({ prs, since, config, github, writer, mint, clock, log });
+      await progress.step(`Wait for ${config.bots?.length ? "CI and review bots" : "CI"} on ${prList(prs)}`);
+      const seen = await waitForRound({ prs, since, config, github, writer, mint, clock, log, progress });
+      if (seen.closedUnmerged) {
+        status = "blocked";
+        reason = `#${seen.closedUnmerged} was closed without merging`;
+        break;
+      }
       if (seen.closed) break;
       if (seen.failed.length === 0 && seen.threads.length === 0) break;
       if (rounds >= maxRounds) {
         status = "blocked";
-        reason = `CI or review threads still open after ${maxRounds} rounds`;
+        reason = `CI or review is still open after ${maxRounds} rounds: ${describeOpen(seen)}`;
         break;
       }
       rounds++;
-      const out = await phase("respond", { round: rounds, failed: seen.failed, threads: seen.threads, waitingFor: seen.waitingFor });
+      const out = await phase("respond", { round: rounds, failed: seen.failed, threads: seen.threads, waitingFor: seen.waitingFor }, `Respond to CI and review, round ${rounds}`);
+      if (out.status === "nothing-to-do") {
+        const rr = await rerunFlakes(seen);
+        if (rr.ok) continue;
+        status = "blocked";
+        reason = rr.reason;
+        comment = out.comment ?? "";
+        break;
+      }
       if (out.status !== "ready") {
         status = "blocked";
-        reason = out.status === "blocked" ? "respond was blocked" : "nothing left to change, but checks or threads are still open";
+        reason = out.status === "blocked" ? why(out, `round ${rounds} needs a decision from you: ${describeOpen(seen)}`) : `round ${rounds} ended with status "${out.status}"`;
         comment = out.comment ?? "";
         break;
       }
@@ -90,17 +205,18 @@ export async function runAgent({ repo, issue, config, readToken, github, mint, w
       if (again.blocked) {
         status = "blocked";
         reason = again.blocked;
+        comment = again.details ?? "";
         break;
       }
     }
 
-    const final = await phase("report", { status, reason, rounds, prs });
+    const final = await phase("report", { status, reason, rounds, prs }, "Write the report");
     report = final.report ?? "";
     if (status === "blocked" && final.comment) comment = final.comment;
     return await finish(status, reason);
   } catch (err) {
     log(`error: ${err.stack ?? err}`);
-    return await finish("blocked", err.message);
+    return await finish("blocked", `the run hit an error: ${err.message}`);
   }
 }
 
@@ -108,28 +224,38 @@ export async function runAgent({ repo, issue, config, readToken, github, mint, w
 // the grace period is over), marks drafts ready for the bots if asked, then
 // waits for each review bot to look at the head commit (or the review
 // timeout). Returns what still needs work.
-export async function waitForRound({ prs, since, config, github, writer, mint, clock, log }) {
+export async function waitForRound({ prs, since, config, github, writer, mint, clock, log, progress = silent }) {
   const { checksGraceMs, reviewTimeoutMs, pollMs, bots, trustedUsers, readyForBots, ignoreChecks = [] } = config;
   const marked = new Set();
   let lastNote = "";
-  const note = (s) => s !== lastNote && log((lastNote = s));
+  const note = async (s) => {
+    if (s !== lastNote) log((lastNote = s));
+    await progress.note(`${s.charAt(0).toUpperCase()}${s.slice(1)}`);
+  };
 
   for (;;) {
     const now = clock.now();
     const states = [];
     for (const n of prs) {
       const pr = await github.pr(n);
+      // A merged PR is out of the wait; the rest still have to go green.
+      if (pr.state === "merged") continue;
       if (pr.state !== "open") {
-        log(`#${n} is ${pr.state}; stopping`);
-        return { closed: true, failed: [], threads: [], waitingFor: [] };
+        log(`#${n} was closed; stopping`);
+        return { closedUnmerged: n, failed: [], threads: [], waitingFor: [] };
       }
       states.push({ n, pr, checks: summarizeChecks({ ...(await github.checks(pr.headSha)), ignore: ignoreChecks }) });
+    }
+
+    if (!states.length) {
+      log("every pull request is merged; stopping");
+      return { closed: true, failed: [], threads: [], waitingFor: [] };
     }
 
     const pending = states.filter((s) => s.checks.state === "pending");
     const none = states.filter((s) => s.checks.state === "none");
     if (pending.length || (none.length && now < since + checksGraceMs)) {
-      note(`waiting for checks: ${pending.map((s) => `#${s.n} ${s.checks.pending.join(", ")}`).join("; ") || "none reported yet"}`);
+      await note(`waiting for checks: ${pending.map((s) => `#${s.n} ${s.checks.pending.join(", ")}`).join("; ") || "none reported yet"}`);
       await clock.sleep(pollMs);
       continue;
     }
@@ -152,7 +278,7 @@ export async function waitForRound({ prs, since, config, github, writer, mint, c
         waitingFor.push(...res.waitingFor.map((b) => `${b} on #${s.n}`));
       }
       if (waitingFor.length && now < since + reviewTimeoutMs) {
-        note(`waiting for review bots: ${waitingFor.join(", ")}`);
+        await note(`waiting for review bots: ${waitingFor.join(", ")}`);
         await clock.sleep(pollMs);
         continue;
       }

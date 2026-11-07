@@ -19,7 +19,9 @@ export function client({ token, repo, apiUrl = "https://api.github.com", fetch =
     });
     if (ok.includes(res.status)) return { res, data: null };
     if (!res.ok) throw new Error(`${method} ${new URL(url).pathname}: ${res.status} ${(await res.text()).slice(0, 300)}`);
-    return { res, data: res.status === 204 ? null : await res.json() };
+    // Some writes (a job rerun, say) answer 201 with no body.
+    const text = res.status === 204 ? "" : await res.text();
+    return { res, data: text ? JSON.parse(text) : null };
   }
 
   async function list(path, pick = (d) => d) {
@@ -58,10 +60,20 @@ export function client({ token, repo, apiUrl = "https://api.github.com", fetch =
     },
     prBody: async (n) => ({ body: (await call("GET", `${r}/pulls/${n}`)).data.body ?? "" }),
     setPrBody: async (n, body) => void (await call("PATCH", `${r}/pulls/${n}`, { body })),
-    checks: async (sha) => ({
-      checkRuns: await list(`${r}/commits/${sha}/check-runs?filter=latest`, (d) => d.check_runs),
-      statuses: (await call("GET", `${r}/commits/${sha}/status`)).data.statuses ?? [],
-    }),
+    // Each check run gets the workflow, event and branch it ran for, so
+    // summarizeChecks collapses only true duplicates.
+    checks: async (sha) => {
+      const checkRuns = await list(`${r}/commits/${sha}/check-runs?filter=latest`, (d) => d.check_runs);
+      const statuses = (await call("GET", `${r}/commits/${sha}/status`)).data.statuses ?? [];
+      let runs = [];
+      try {
+        runs = await list(`${r}/actions/runs?head_sha=${sha}`, (d) => d.workflow_runs);
+      } catch {
+        // Without actions: read, same-named jobs are only told apart by suite.
+      }
+      const workflowOf = new Map(runs.map((w) => [w.check_suite_id, `${w.workflow_id} ${w.event} ${w.head_branch}`]));
+      return { checkRuns: checkRuns.map((c) => ({ ...c, workflow: workflowOf.get(c.check_suite?.id) })), statuses };
+    },
     activity: async (n) => ({ reviews: await list(`${r}/pulls/${n}/reviews`), comments: await list(`${r}/issues/${n}/comments`) }),
     threads: async (n) => {
       const data = await graphql(
@@ -80,7 +92,16 @@ export function client({ token, repo, apiUrl = "https://api.github.com", fetch =
     },
     removeLabel: async (n, label) => void (await call("DELETE", `${r}/issues/${n}/labels/${encodeURIComponent(label)}`, undefined, { ok: [404] })),
     addLabels: async (n, labels) => void (await call("POST", `${r}/issues/${n}/labels`, { labels })),
-    comment: async (n, body) => void (await call("POST", `${r}/issues/${n}/comments`, { body })),
+    comment: async (n, body) => (await call("POST", `${r}/issues/${n}/comments`, { body })).data?.id,
+    getComment: async (id) => (await call("GET", `${r}/issues/comments/${id}`)).data.body ?? "",
+    editComment: async (id, body) => void (await call("PATCH", `${r}/issues/comments/${id}`, { body })),
+    // Logins, or org/team for a team.
+    requestReviewers: async (n, who) =>
+      void (await call("POST", `${r}/pulls/${n}/requested_reviewers`, {
+        reviewers: who.filter((w) => !w.includes("/")),
+        team_reviewers: who.filter((w) => w.includes("/")).map((w) => w.split("/")[1]),
+      })),
+    rerunFailedJobs: async (run) => void (await call("POST", `${r}/actions/runs/${run}/rerun-failed-jobs`)),
     markReady: async (nodeId) =>
       void (await graphql(`mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { clientMutationId } }`, { id: nodeId })),
   };
