@@ -75,6 +75,10 @@ on:
       go-version:
         type: string
         default: ""
+      ruby-version:
+        description: Installs Ruby with ruby/setup-ruby, and runs bundle install in working-directory when there's a Gemfile.
+        type: string
+        default: ""
       setup:
         description: Bash run in working-directory before mix deps.get. The SETUP_SECRETS secret's variables are set for it.
         type: string
@@ -207,6 +211,9 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         run: mv .agent-ready-config "$RUNNER_TEMP/agent-ready/config"
 
+      # Elixir comes from the inputs or a mise.toml or .tool-versions, even
+      # without a mix.exs in working-directory (an umbrella's apps/, say).
+      # A mix.exs with no versions to be found is an error.
       - name: Pick the Elixir and OTP versions
         id: versions
         if: steps.gate.outputs.run == 'true'
@@ -215,15 +222,24 @@ jobs:
           FLAKE_HUNT_OTP: ${{ inputs.otp-version }}
           WORKING_DIRECTORY: ${{ inputs.working-directory }}
         run: |
-          if [ -f "$WORKING_DIRECTORY/mix.exs" ] || [ -n "$FLAKE_HUNT_ELIXIR" ]; then
-            bash "$AGENT_TOOLS/flake-hunt/run/versions.sh" "$WORKING_DIRECTORY" .
-            echo "mix=true" >> "$GITHUB_OUTPUT"
+          if out=$(bash "$AGENT_TOOLS/flake-hunt/run/versions.sh" "$WORKING_DIRECTORY" . 2>&1); then
+            echo "beam=true" >> "$GITHUB_OUTPUT"
+          elif [ -f "$WORKING_DIRECTORY/mix.exs" ]; then
+            echo "$out"
+            exit 1
           fi
-      - if: steps.versions.outputs.mix == 'true'
+          if [ -f "$WORKING_DIRECTORY/mix.exs" ]; then echo "mix=true" >> "$GITHUB_OUTPUT"; fi
+      - if: steps.versions.outputs.beam == 'true'
         uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           elixir-version: ${{ steps.versions.outputs.elixir }}
           otp-version: ${{ steps.versions.outputs.otp }}
+      - if: steps.gate.outputs.run == 'true' && inputs.ruby-version != ''
+        uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1.338.0
+        with:
+          ruby-version: ${{ inputs.ruby-version }}
+          bundler-cache: ${{ hashFiles(format('{0}/Gemfile.lock', inputs.working-directory)) != '' }}
+          working-directory: ${{ inputs.working-directory }}
       - if: steps.gate.outputs.run == 'true' && inputs.go-version != ''
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
