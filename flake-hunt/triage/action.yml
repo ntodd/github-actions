@@ -1,0 +1,34 @@
+name: flake-hunt triage
+description: Finds the flaky tests in a hunt's results, matches them to issues and writes the prompts for diagnosis.
+inputs:
+  results:
+    description: The directory the shards' artifacts were downloaded to.
+    required: true
+  out:
+    description: Where to write triage.json and prompts/.
+    required: true
+  working-directory:
+    description: The Mix project's directory, relative to the repo root.
+    default: "."
+  label:
+    description: The label that marks flake-hunt's issues.
+    default: flaky-test
+  max-diagnoses:
+    description: The most flakes to send to Claude in one hunt.
+    default: "3"
+  can-diagnose:
+    description: Whether a Claude token is set.
+    default: "false"
+  token:
+    description: Reads the label's issues.
+    default: ${{ github.token }}
+outputs:
+  flaky-count:
+    description: How many tests failed some runs but not all.
+  broken-count:
+    description: How many tests failed every run.
+  diagnose-count:
+    description: How many prompts were written.
+runs:
+  using: node24
+  main: index.mjs
