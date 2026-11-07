@@ -22,5 +22,5 @@ GH_TOKEN is read-only in this phase. Commit locally, and don't push or post anyt
 Finish with {{state}}/outcome.json:
 
 - `{"status": "ready"}` when there's anything to push or any reply to post.
-- `{"status": "blocked"}` when it needs {{owner}}. Put the reason in {{state}}/comment.md.
+- `{"status": "blocked", "reason": "<one line: exactly why>"}` when it needs {{owner}}. Put the details in {{state}}/comment.md.
 - `{"status": "nothing-to-do"}` when nothing should change, because every failure left is a flake or a cancelled job. The workflow reruns those jobs and waits again. Say why in {{state}}/comment.md.

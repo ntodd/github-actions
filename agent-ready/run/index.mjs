@@ -117,9 +117,9 @@ main(async () => {
     writer,
     claude,
     attach: attacher({ token: attachToken, stateDir: state, repo, read, writer, mint, log }),
-    rerun: async (jobs) => {
+    rerun: async (runs) => {
       const w = writer(await mintWith(RERUN));
-      for (const job of jobs) await w.rerunJob(job);
+      for (const run of runs) await w.rerunFailedJobs(run);
     },
     progress,
     render,

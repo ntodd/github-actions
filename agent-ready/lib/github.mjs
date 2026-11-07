@@ -60,8 +60,8 @@ export function client({ token, repo, apiUrl = "https://api.github.com", fetch =
     },
     prBody: async (n) => ({ body: (await call("GET", `${r}/pulls/${n}`)).data.body ?? "" }),
     setPrBody: async (n, body) => void (await call("PATCH", `${r}/pulls/${n}`, { body })),
-    // Each check run gets the workflow it came from, so summarizeChecks can
-    // tell a rerun of the same workflow from another workflow's job.
+    // Each check run gets the workflow, event and branch it ran for, so
+    // summarizeChecks collapses only true duplicates.
     checks: async (sha) => {
       const checkRuns = await list(`${r}/commits/${sha}/check-runs?filter=latest`, (d) => d.check_runs);
       const statuses = (await call("GET", `${r}/commits/${sha}/status`)).data.statuses ?? [];
@@ -71,7 +71,7 @@ export function client({ token, repo, apiUrl = "https://api.github.com", fetch =
       } catch {
         // Without actions: read, same-named jobs are only told apart by suite.
       }
-      const workflowOf = new Map(runs.map((w) => [w.check_suite_id, w.workflow_id]));
+      const workflowOf = new Map(runs.map((w) => [w.check_suite_id, `${w.workflow_id} ${w.event} ${w.head_branch}`]));
       return { checkRuns: checkRuns.map((c) => ({ ...c, workflow: workflowOf.get(c.check_suite?.id) })), statuses };
     },
     activity: async (n) => ({ reviews: await list(`${r}/pulls/${n}/reviews`), comments: await list(`${r}/issues/${n}/comments`) }),
@@ -101,7 +101,7 @@ export function client({ token, repo, apiUrl = "https://api.github.com", fetch =
         reviewers: who.filter((w) => !w.includes("/")),
         team_reviewers: who.filter((w) => w.includes("/")).map((w) => w.split("/")[1]),
       })),
-    rerunJob: async (id) => void (await call("POST", `${r}/actions/jobs/${id}/rerun`)),
+    rerunFailedJobs: async (run) => void (await call("POST", `${r}/actions/runs/${run}/rerun-failed-jobs`)),
     markReady: async (nodeId) =>
       void (await graphql(`mutation($id: ID!) { markPullRequestReadyForReview(input: { pullRequestId: $id }) { clientMutationId } }`, { id: nodeId })),
   };

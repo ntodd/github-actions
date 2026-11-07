@@ -55,5 +55,5 @@ Run the text through the humanizer skill. Save each as {{state}}/prs/<branch>.md
 Finish with {{state}}/outcome.json:
 
 - `{"status": "ready"}` when every level is committed and passes its gates.
-- `{"status": "blocked"}` when {{owner}} has to decide something or you can't go on. Put the issue comment in {{state}}/comment.md: what you found and the exact question.
+- `{"status": "blocked", "reason": "<one line: exactly why>"}` when {{owner}} has to decide something or you can't go on. Put the issue comment in {{state}}/comment.md: what you found and the exact question.
 - `{"status": "nothing-to-do"}` when there's nothing to fix, because it doesn't reproduce, it's already fixed, or it's data and not code. Put the evidence in {{state}}/comment.md.

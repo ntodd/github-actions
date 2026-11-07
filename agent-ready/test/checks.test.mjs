@@ -92,7 +92,7 @@ test("summarizeChecks keeps only each workflow's latest run of a check, so a sup
   assert.equal(later.state, "failure", "a newer failure beats an older pass");
 });
 
-test("summarizeChecks gives each failed Actions check its job ID, so it can be rerun", () => {
+test("summarizeChecks gives each failed Actions check its workflow run ID, so the run's failed jobs can be rerun", () => {
   const res = summarizeChecks({
     checkRuns: [
       run("test", "completed", "failure", { html_url: "https://github.com/o/r/actions/runs/11/job/22" }),
@@ -100,8 +100,8 @@ test("summarizeChecks gives each failed Actions check its job ID, so it can be r
     ],
     statuses: [],
   });
-  assert.deepEqual(res.failed.map((f) => [f.name, f.job]), [
-    ["test", 22],
+  assert.deepEqual(res.failed.map((f) => [f.name, f.run]), [
+    ["test", 11],
     ["external", undefined],
   ]);
 });

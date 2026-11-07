@@ -5,16 +5,17 @@
 const PENDING = new Set(["queued", "in_progress", "waiting", "requested", "pending"]);
 const OK = new Set(["success", "neutral", "skipped"]);
 
-// An Actions check run's job ID, from its URL, for rerunning it.
-const jobId = (r) => {
-  const m = /\/actions\/runs\/\d+\/job\/(\d+)/.exec(r.html_url ?? r.details_url ?? "");
+// An Actions check run's workflow run ID, from its URL, for rerunning the
+// run's failed jobs.
+const runId = (r) => {
+  const m = /\/actions\/runs\/(\d+)\/job\/\d+/.exec(r.html_url ?? r.details_url ?? "");
   return m ? Number(m[1]) : undefined;
 };
 
 // filter=latest only collapses reruns inside one workflow run. A second run
-// of the same workflow on the same commit (a cancelled duplicate, say) is
-// another check suite, so keep each workflow's newest run of a check. Two
-// workflows with a job of the same name both count.
+// of the same workflow for the same event and branch (a cancelled
+// duplicate, say) is another check suite, so keep the newest. Runs for
+// another event, another branch or another workflow all count.
 function latest(checkRuns) {
   const keep = new Map();
   for (const r of checkRuns) {
@@ -37,7 +38,7 @@ export function summarizeChecks({ checkRuns, statuses, ignore = [] }) {
     if (skip.has(r.name)) continue;
     seen++;
     if (PENDING.has(r.status)) pending.push(r.name);
-    else if (!OK.has(r.conclusion)) failed.push({ name: r.name, conclusion: r.conclusion, url: r.html_url, job: jobId(r) });
+    else if (!OK.has(r.conclusion)) failed.push({ name: r.name, conclusion: r.conclusion, url: r.html_url, run: runId(r) });
   }
   for (const s of statuses) {
     if (skip.has(s.context)) continue;

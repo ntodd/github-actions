@@ -77,3 +77,8 @@ test("the system prompt makes red CI the agent's to fix, main included", () => {
   assert.match(p, /CI on the PRs has to end green/);
   assert.match(p, /marks them ready and asks ntodd for a review/);
 });
+
+test("every phase that can block asks for a one-line reason", () => {
+  for (const phase of ["build", "respond"]) assert.match(render(phase, { repo: "r", issue, round: 1, failed: [], threads: [], waitingFor: [] }), /"status": "blocked", "reason"/);
+  for (const round of [0, 1]) assert.match(render("publish", { repo: "r", issue, round }), /"status": "blocked", "reason"/);
+});
