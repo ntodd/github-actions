@@ -1,0 +1,114 @@
+# agent-ready
+
+Label an issue you wrote `agent-ready`, and an agent works it into draft
+pull requests on Crew, the way you would: the issue-fix-stack skill with
+TDD, a headless-browser check, a Codex review, screenshots, and stacked PRs
+when the fix splits into levels. Then it waits for CI and any review bots
+and answers them, round after round, until everything is green and every
+thread has a reply.
+
+It runs your own Claude Code config (CLAUDE.md, skills, commands, agents
+and hooks) from a repo, `ntodd/dotfiles` by default, so it follows the same
+rules you do.
+
+## Turning it on
+
+Once, create the GitHub App and install it on one repo with *Only select
+repositories*:
+
+```sh
+node agent-ready/app/create-app.mjs        # opens GitHub; click Create
+```
+
+The App can write contents, pull requests and issues, and read checks,
+statuses and actions. It has no workflows permission, so GitHub refuses any
+push from it that touches `.github/workflows/`. Its ID and key land in
+`~/.config/agent-ready/ntodd-agent/`.
+
+Then, for each repo:
+
+```sh
+CLAUDE_CODE_OAUTH_TOKEN=... OPENAI_API_KEY=... agent-ready/enable.sh ntodd/foo ntodd/bar
+```
+
+That adds the repos to the App, sets the `AGENT_APP_ID` variable and the
+`AGENT_APP_PRIVATE_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` and `OPENAI_API_KEY`
+secrets, creates the labels, adds a ruleset requiring PRs into the default
+branch (admins bypass it), and opens a PR with the caller workflow. Without
+`OPENAI_API_KEY`, a Claude subagent does the adversarial review instead of
+Codex.
+
+## Using it
+
+- **Start:** label an issue `agent-ready`. Only issues a trusted user wrote
+  and labeled start a run (`trusted-users`, you by default). Removing and
+  re-adding the label starts it again.
+- **Effort:** medium unless the issue has an `effort:<level>` label (`low`,
+  `medium`, `high`, `xhigh`, `max`) or a trusted comment with
+  `/effort <level>`.
+- **Stacks:** an issue with sub-issues becomes a stack, one level per
+  sub-issue. Otherwise it stacks only when the fix splits into levels that
+  each stand alone.
+- **Labels:** `agent-working` while it runs, then `agent-done` or
+  `agent-blocked`. A blocked run comments on the issue with what it needs
+  from you.
+- **Comments:** only trusted users' comments on the issue count, and only
+  their review threads and the listed review bots' get answered.
+
+## How a run goes
+
+One job on `crew-l`. Claude works in one session that the workflow resumes
+phase by phase:
+
+1. **Build:** triage and reproduce, then TDD each level, run the gates,
+   check the UI in a headless browser and take screenshots, and get the
+   adversarial review. Commits stay local.
+2. **Publish:** with a fresh App token, push and open draft PRs, attaching
+   screenshots with `gh pr create --attach`.
+3. **Wait:** the workflow, not Claude, polls until every PR's checks finish
+   and each review bot has reviewed the head commit (or
+   `review-timeout-minutes` passes). With `ready-for-bots`, drafts are
+   marked ready once CI is green, for bots that skip drafts (CodeRabbit
+   does by default).
+4. **Respond and publish:** failures and open threads go back to Claude,
+   which fixes locally, then pushes and replies with a new token. Up to
+   `max-rounds` times.
+5. **Report:** issue-fix-stack's report goes in the job summary.
+
+## Tokens
+
+- Claude's `GH_TOKEN` is the job's read-only `GITHUB_TOKEN`, except in
+  publish phases. Then it's an App installation token limited to this one
+  repository, minted for that phase and valid for an hour.
+- The App key reaches the main step through a file, written in a step of
+  its own and deleted on read. So it's never in Claude's environment or on
+  disk while Claude runs.
+- Claude has sudo on a throwaway VM, so a hijacked session could in
+  principle dig the key out of the runner's memory. That's the remaining
+  exposure. Crew blocks the VM from the LAN, the tailnet and the host.
+
+## Inputs
+
+| Input | Default | |
+|---|---|---|
+| `trusted-users` | (required) | Logins whose issues, labels and comments count. |
+| `app-id` | (required) | `${{ vars.AGENT_APP_ID }}` |
+| `label` | `agent-ready` | |
+| `runs-on` | `crew-l` | |
+| `model` | `claude-opus-5-5` | |
+| `effort` | `medium` | The default effort. |
+| `max-turns` | `500` | Per phase. |
+| `phase-timeout-minutes` | `150` | |
+| `timeout-minutes` | `360` | For the whole job. |
+| `max-rounds` | `3` | CI and review rounds after the first publish. |
+| `review-bots` | | Bots to wait for and answer, like `coderabbitai[bot]`. |
+| `review-timeout-minutes` | `20` | |
+| `ready-for-bots` | `false` | |
+| `working-directory`, `elixir-version`, `otp-version`, `node-version`, `go-version`, `setup` | | As in flake-hunt. `setup` gets the `SETUP_SECRETS` secret. |
+| `git-user-name`, `git-user-email` | the App's bot | The commit author. |
+| `claude-config`, `claude-config-path`, `claude-config-ref` | `ntodd/dotfiles`, `claude`, `main` | Where your Claude Code config lives. |
+| `transcripts` | `auto` | Uploads Claude's session transcripts; `auto` does it for private repos only. |
+
+Secrets: `AGENT_APP_PRIVATE_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` or
+`ANTHROPIC_API_KEY`, and optionally `OPENAI_API_KEY` (or `CODEX_AUTH_JSON`)
+and `SETUP_SECRETS`.
