@@ -1,7 +1,7 @@
 paths:
-  .github/workflows/flake-hunt.yml:
+  # job.workflow_sha and job.workflow_repository arrived in April 2026.
+  # actionlint 1.7.12 predates them; the fix (rhysd/actionlint#757) is
+  # unreleased. Drop this once a release has it.
+  .github/workflows/{flake-hunt,agent-ready}.yml:
     ignore:
-      # job.workflow_sha and job.workflow_repository arrived in April 2026.
-      # actionlint 1.7.12 predates them; the fix (rhysd/actionlint#757) is
-      # unreleased. Drop this once a release has it.
       - 'property "workflow_(sha|repository)" is not defined'
