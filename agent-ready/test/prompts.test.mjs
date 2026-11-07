@@ -63,3 +63,17 @@ test("the system prompt names the repo, the owner and the bot", () => {
 test("report includes the status and the reason when there is one", () => {
   assert.match(render("report", { repo: "r", issue, status: "blocked", reason: "CI still red", rounds: 3, prs: [5, 6] }), /Status: blocked \(CI still red\)\. Pull requests: #5, #6\. Review rounds: 3\./);
 });
+
+test("build uses the repo's PR template or the git-workflow one, and ends with how it was made", () => {
+  const p = render("build", { repo: "r", issue });
+  assert.match(p, /If the repo has a PR template .* use it\. Otherwise use this one:/);
+  assert.match(p, /\*\*What does this PR do\?\*\*/);
+  assert.match(p, /\*\*How this was made\*\*\n- \[x\] Reproduced on main/);
+  assert.match(p, /\*\*Decisions\*\*/);
+});
+
+test("the system prompt makes red CI the agent's to fix, main included", () => {
+  const p = render("system", { repo: "ntodd/sandbox", issue });
+  assert.match(p, /CI on the PRs has to end green/);
+  assert.match(p, /marks them ready and asks ntodd for a review/);
+});
