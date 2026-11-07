@@ -82,8 +82,16 @@ for repo in "${repos[@]}"; do
   repo_id=$(gh api "repos/$repo" --jq .id)
   default=$(gh api "repos/$repo" --jq .default_branch)
 
-  gh api -X PUT "user/installations/$install_id/repositories/$repo_id" --silent
-  echo "Added to $app."
+  if node "$(dirname "$0")/app/installation.mjs" "$dir" "$me" "$repo" >/dev/null; then
+    echo "$app is installed on it."
+  elif gh api -X PUT "user/installations/$install_id/repositories/$repo_id" --silent 2>/dev/null; then
+    echo "Added to $app."
+  else
+    # Adding a repo to an installation needs a classic PAT, which gh's token
+    # isn't. Choosing All repositories there saves doing this again.
+    echo "Add $repo to $app here, or choose All repositories: https://github.com/settings/installations/$install_id"
+    [ "$(uname)" = Darwin ] && open "https://github.com/settings/installations/$install_id"
+  fi
 
   gh variable set AGENT_APP_ID -R "$repo" --body "$app_id"
   gh secret set AGENT_APP_PRIVATE_KEY -R "$repo" <"$dir/private-key.pem"
