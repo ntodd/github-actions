@@ -28,8 +28,15 @@ push from it that touches `.github/workflows/`. Its ID and key land in
 Then, for each repo:
 
 ```sh
-CLAUDE_CODE_OAUTH_TOKEN=... OPENAI_API_KEY=... agent-ready/enable.sh ntodd/foo ntodd/bar
+CLAUDE_CODE_OAUTH_TOKEN=... OPENAI_API_KEY=... AGENT_ATTACH_TOKEN=... agent-ready/enable.sh ntodd/foo ntodd/bar
 ```
+
+`AGENT_ATTACH_TOKEN` is a fine-grained PAT for screenshots: all
+repositories, Contents and Pull requests read and write. GitHub's upload
+endpoint for PR attachments takes a user's token but not an App's. Claude
+never holds it; after each publish the workflow itself runs
+`gh pr edit --attach` for the `./screenshots/` images Claude referenced.
+Without it, the references become plain text.
 
 That adds the repos to the App, sets the `AGENT_APP_ID` variable and the
 `AGENT_APP_PRIVATE_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` and `OPENAI_API_KEY`
@@ -63,8 +70,8 @@ phase by phase:
 1. **Build:** triage and reproduce, then TDD each level, run the gates,
    check the UI in a headless browser and take screenshots, and get the
    adversarial review. Commits stay local.
-2. **Publish:** with a fresh App token, push and open draft PRs, attaching
-   screenshots with `gh pr create --attach`.
+2. **Publish:** with a fresh App token, push and open draft PRs. Then the
+   workflow attaches the screenshots the bodies reference.
 3. **Wait:** the workflow, not Claude, polls until every PR's checks finish
    and each review bot has reviewed the head commit (or
    `review-timeout-minutes` passes). With `ready-for-bots`, drafts are
@@ -110,5 +117,5 @@ phase by phase:
 | `transcripts` | `auto` | Uploads Claude's session transcripts; `auto` does it for private repos only. |
 
 Secrets: `AGENT_APP_PRIVATE_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` or
-`ANTHROPIC_API_KEY`, and optionally `OPENAI_API_KEY` (or `CODEX_AUTH_JSON`)
-and `SETUP_SECRETS`.
+`ANTHROPIC_API_KEY`, and optionally `AGENT_ATTACH_TOKEN`, `OPENAI_API_KEY`
+(or `CODEX_AUTH_JSON`) and `SETUP_SECRETS`.

@@ -6,7 +6,7 @@ import { runAgent } from "../lib/run.mjs";
 // clock moves, and a writer that records what it did.
 function world({ outcomes, prs = {}, threads = {}, bots = [], ...config } = {}) {
   let t = Date.parse("2026-11-07T12:00:00Z");
-  const log = { phases: [], tokens: [], writes: [], minted: 0 };
+  const log = { phases: [], tokens: [], writes: [], minted: 0, attached: [] };
   const script = [...outcomes];
   const claude = async ({ phase, token, prompt }) => {
     log.phases.push(phase);
@@ -51,6 +51,7 @@ function world({ outcomes, prs = {}, threads = {}, bots = [], ...config } = {}) 
       mint,
       writer,
       claude,
+      attach: async (n) => log.attached.push(n),
       render: (phase, vars) => `${phase}:${JSON.stringify(vars)}`,
       clock: { now: () => t, sleep: async (ms) => void (t += ms) },
       log: () => {},
@@ -120,6 +121,7 @@ test("failing CI gets a respond round with the failures, then a publish round", 
   assert.equal(res.status, "done");
   assert.equal(res.rounds, 1);
   assert.deepEqual(w.log.phases, ["build", "publish", "respond", "publish", "report"]);
+  assert.deepEqual(w.log.attached, [5, 5], "screenshots are attached after every publish");
   assert.match(prompts[0], /"name":"test"/);
   assert.match(prompts[0], /https:\/\/ci\/1/);
 });

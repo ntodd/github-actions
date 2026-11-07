@@ -18,8 +18,8 @@
 #
 # For each repo it adds the repo to the App's installation, sets the
 # AGENT_APP_ID variable and the AGENT_APP_PRIVATE_KEY secret, sets
-# CLAUDE_CODE_OAUTH_TOKEN and OPENAI_API_KEY from your environment when
-# they're there, creates the labels, adds the ruleset and opens a PR
+# CLAUDE_CODE_OAUTH_TOKEN, OPENAI_API_KEY and AGENT_ATTACH_TOKEN from your
+# environment when they're there, creates the labels, adds the ruleset and opens a PR
 # adding .github/workflows/agent-ready.yml.
 set -euo pipefail
 
@@ -100,6 +100,11 @@ for repo in "${repos[@]}"; do
     printenv CLAUDE_CODE_OAUTH_TOKEN | gh secret set CLAUDE_CODE_OAUTH_TOKEN -R "$repo"
   elif ! grep -qx CLAUDE_CODE_OAUTH_TOKEN <<<"$secrets"; then
     echo "No CLAUDE_CODE_OAUTH_TOKEN secret. Set one with: gh secret set CLAUDE_CODE_OAUTH_TOKEN -R $repo"
+  fi
+  if [ -n "${AGENT_ATTACH_TOKEN:-}" ]; then
+    printenv AGENT_ATTACH_TOKEN | gh secret set AGENT_ATTACH_TOKEN -R "$repo"
+  elif ! grep -qx AGENT_ATTACH_TOKEN <<<"$secrets"; then
+    echo "No AGENT_ATTACH_TOKEN secret, so screenshots won't be attached to PRs."
   fi
   if [ -n "${OPENAI_API_KEY:-}" ]; then
     printenv OPENAI_API_KEY | gh secret set OPENAI_API_KEY -R "$repo"
@@ -184,6 +189,7 @@ $author
       AGENT_APP_PRIVATE_KEY: \${{ secrets.AGENT_APP_PRIVATE_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
+      AGENT_ATTACH_TOKEN: \${{ secrets.AGENT_ATTACH_TOKEN }}
 EOF
   (
     cd "$tmp"

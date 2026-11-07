@@ -13,6 +13,8 @@ import { renderer } from "../lib/prompts.mjs";
 import { runAgent } from "../lib/run.mjs";
 import { main, mask, setOutput, summary } from "../lib/action.mjs";
 import { WRITE, takeKey } from "../lib/write.mjs";
+import { attacher } from "../lib/attach.mjs";
+import { existsSync } from "node:fs";
 
 main(async () => {
   const env = process.env;
@@ -23,6 +25,9 @@ main(async () => {
   mkdirSync(state, { recursive: true });
 
   const privateKey = takeKey(env.AGENT_APP_KEY_FILE);
+  // The PAT for screenshots, handed over the same way. Optional.
+  const attachToken = existsSync(env.AGENT_ATTACH_TOKEN_FILE) ? takeKey(env.AGENT_ATTACH_TOKEN_FILE).trim() : "";
+  mask(attachToken);
   const appId = env.AGENT_APP_ID;
 
   const trustedUsers = parseList(env.AGENT_TRUSTED_USERS);
@@ -90,6 +95,7 @@ main(async () => {
     mint,
     writer: (token) => client({ token, repo, apiUrl }),
     claude,
+    attach: attacher({ token: attachToken, stateDir: state, repo, read, writer: (token) => client({ token, repo, apiUrl }), mint, log }),
     render,
     clock: { now: () => Date.now(), sleep: (ms) => new Promise((r) => setTimeout(r, ms)) },
     log,

@@ -7,7 +7,7 @@ import { summarizeChecks, botsSettled, openThreads } from "./checks.mjs";
 
 const WORK = new Set(["ready", "blocked", "nothing-to-do"]);
 
-export async function runAgent({ repo, issue, config, readToken, github, mint, writer, claude, render, clock, log }) {
+export async function runAgent({ repo, issue, config, readToken, github, mint, writer, claude, attach = async () => {}, render, clock, log }) {
   const { label, maxRounds } = config;
   const phases = [];
   let prs = [];
@@ -41,6 +41,13 @@ export async function runAgent({ repo, issue, config, readToken, github, mint, w
     const numbers = Array.isArray(out.prs) ? out.prs.filter(Number.isInteger) : [];
     if (out.status !== "published" || numbers.length === 0) return { blocked: "Publishing reported no pull requests." };
     prs = [...new Set([...prs, ...numbers])];
+    for (const n of prs) {
+      try {
+        await attach(n);
+      } catch (err) {
+        log(`#${n}: couldn't attach screenshots: ${err.message}`);
+      }
+    }
     return {};
   };
 

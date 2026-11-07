@@ -90,3 +90,13 @@ test("a failed request throws with the status and path", async () => {
   const { gh: c } = gh([["GET /pulls/9", () => new Response("boom", { status: 502 })]]);
   await assert.rejects(c.pr(9), /GET \/repos\/ntodd\/sandbox\/pulls\/9: 502 boom/);
 });
+
+test("prBody reads a PR's body and setPrBody replaces it", async () => {
+  const { gh: c, calls } = gh([
+    ["GET /pulls/5", () => Response.json({ number: 5, body: "hi" })],
+    ["PATCH /pulls/5", () => Response.json({ number: 5 })],
+  ]);
+  assert.deepEqual(await c.prBody(5), { body: "hi" });
+  await c.setPrBody(5, "new");
+  assert.deepEqual(calls[1].body, { body: "new" });
+});

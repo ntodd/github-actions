@@ -127,6 +127,9 @@ on:
         required: false
       CODEX_AUTH_JSON:
         required: false
+      AGENT_ATTACH_TOKEN:
+        description: A fine-grained PAT (Contents and Pull requests, read and write) for attaching screenshots. GitHub's upload endpoint doesn't take App tokens. Claude never sees it.
+        required: false
       SETUP_SECRETS:
         description: NAME=value lines, set as environment variables for the setup input only.
         required: false
@@ -172,6 +175,7 @@ jobs:
             echo "AGENT_STATE=$base/state"
             echo "AGENT_MCP_CONFIG=$base/mcp.json"
             echo "AGENT_APP_KEY_FILE=$base/app-key.pem"
+            echo "AGENT_ATTACH_TOKEN_FILE=$base/attach-token"
           } >> "$GITHUB_ENV"
 
       - name: Gate
@@ -270,11 +274,15 @@ jobs:
       # The key goes to a file in a step of its own, so it's in no
       # environment the main step (and Claude under it) inherits. The main
       # step reads it and deletes the file.
-      - name: Hand over the App key
+      - name: Hand over the App key and the attach token
         if: steps.gate.outputs.run == 'true'
         env:
           KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
-        run: (umask 077 && printf '%s\n' "$KEY" > "$AGENT_APP_KEY_FILE")
+          ATTACH: ${{ secrets.AGENT_ATTACH_TOKEN }}
+        run: |
+          umask 077
+          printf '%s\n' "$KEY" > "$AGENT_APP_KEY_FILE"
+          if [ -n "$ATTACH" ]; then printf '%s' "$ATTACH" > "$AGENT_ATTACH_TOKEN_FILE"; fi
       - name: Work the issue
         id: main
         if: steps.gate.outputs.run == 'true'

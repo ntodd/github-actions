@@ -56,6 +56,8 @@ export function client({ token, repo, apiUrl = "https://api.github.com", fetch =
       const { data: p } = await call("GET", `${r}/pulls/${n}`);
       return { number: p.number, state: p.merged ? "merged" : p.state, draft: p.draft, headSha: p.head.sha, nodeId: p.node_id };
     },
+    prBody: async (n) => ({ body: (await call("GET", `${r}/pulls/${n}`)).data.body ?? "" }),
+    setPrBody: async (n, body) => void (await call("PATCH", `${r}/pulls/${n}`, { body })),
     checks: async (sha) => ({
       checkRuns: await list(`${r}/commits/${sha}/check-runs?filter=latest`, (d) => d.check_runs),
       statuses: (await call("GET", `${r}/commits/${sha}/status`)).data.statuses ?? [],

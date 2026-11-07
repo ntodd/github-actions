@@ -15,7 +15,7 @@ Do phases 0 to 3 of issue-fix-stack for this issue:
 3. For each level: TDD the fix, run the gates, check user-visible changes in the headless browser, and commit it (one commit per level, with `Fixes #{{number}}` or the sub-issue it fixes). Create stacks with `gh stack init` and `gh stack add`, following the stacked-pr skill, but don't submit them yet.
 4. Get the adversarial review, then disposition every finding.
 
-Then draft each PR's title and body: the repo's PR template if it has one, `Fixes #N`, what you verified and how, and the screenshots. Run the text through the humanizer skill. Save each as {{state}}/prs/<branch>.md with the title on the first line and the body after a blank line. Reference a screenshot as `![alt text](<path>)`, using the same path you'll pass to `--attach`.
+Then draft each PR's title and body: the repo's PR template if it has one, `Fixes #N`, what you verified and how, and the screenshots. Run the text through the humanizer skill. Save each as {{state}}/prs/<branch>.md with the title on the first line and the body after a blank line. Reference a screenshot as `![alt text](./screenshots/<file>.png)`.
 
 Finish with {{state}}/outcome.json:
 
