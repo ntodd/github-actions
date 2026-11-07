@@ -21,7 +21,7 @@ if (step.comment) fs.writeFileSync(path.join(state, "comment.md"), step.comment)
 if (step.report) fs.writeFileSync(path.join(state, "report.md"), step.report);
 console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "mix test" } }] } }));
 const finish = () => {
-  console.log(JSON.stringify({ type: "result", subtype: step.subtype ?? "success", is_error: false, num_turns: 4, total_cost_usd: 1.25, session_id: "s" }));
+  console.log(JSON.stringify({ type: "result", subtype: step.subtype ?? "success", is_error: false, num_turns: 4, total_cost_usd: step.cost ?? 1.25, session_id: "s" }));
   process.exit(step.exit ?? 0);
 };
 step.sleep ? setTimeout(finish, step.sleep) : finish();
@@ -84,6 +84,12 @@ test("the first phase starts the session and later ones resume it, each with tha
   assert.equal(first.github, null, "the job's GITHUB_TOKEN isn't passed on");
   assert.equal(first.key, null, "nor the App key");
   assert.equal(first.state, s.state);
+});
+
+test("a resumed session reports its running cost, so each phase gets only its own share", async () => {
+  const s = setup([{ outcome: { status: "ready" }, cost: 1.0 }, { outcome: { status: "published", prs: [1] }, cost: 1.25 }]);
+  assert.equal((await s.run({ phase: "build", token: "t", prompt: "p" })).cost, 1.0);
+  assert.equal((await s.run({ phase: "publish", token: "t", prompt: "p" })).cost, 0.25);
 });
 
 test("comment.md and report.md ride along on the outcome, and stale files are cleared first", async () => {

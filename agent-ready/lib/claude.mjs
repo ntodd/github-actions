@@ -24,6 +24,8 @@ const MISSING = "You ended the phase without writing outcome.json. Write it now,
 
 export function claudeRunner({ bin = "claude", sessionId, stateDir, cwd, model, effort, maxTurns, systemPromptFile, mcpConfig, env, timeoutMs, spawn = nodeSpawn, log }) {
   let started = false;
+  // A resumed session's result reports the session's running cost.
+  let spent = 0;
   const base = Object.fromEntries(Object.entries(env).filter(([k]) => !WITHHELD.some((re) => re.test(k))));
   const files = { outcome: join(stateDir, "outcome.json"), comment: join(stateDir, "comment.md"), report: join(stateDir, "report.md") };
 
@@ -93,7 +95,9 @@ export function claudeRunner({ bin = "claude", sessionId, stateDir, cwd, model, 
     const once = async (p) => {
       const { result } = await invoke(p, token, phase, limit);
       turns += result?.num_turns ?? 0;
-      cost += result?.total_cost_usd ?? 0;
+      const total = result?.total_cost_usd ?? 0;
+      cost += total >= spent ? total - spent : total;
+      spent = Math.max(spent, total);
       return result;
     };
 
