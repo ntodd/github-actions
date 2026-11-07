@@ -22,7 +22,7 @@ const WITHHELD = [
 
 const MISSING = "You ended the phase without writing outcome.json. Write it now, exactly as the phase asked, and stop.";
 
-export function claudeRunner({ bin = "claude", sessionId, stateDir, cwd, model, effort, maxTurns, systemPromptFile, mcpConfig, env, timeoutMs, spawn = nodeSpawn, log }) {
+export function claudeRunner({ bin = "claude", sessionId, stateDir, cwd, model, effort, maxTurns, systemPromptFile, mcpConfig, env, timeoutMs, spawn = nodeSpawn, log, onEvent = () => {} }) {
   let started = false;
   // A resumed session's result reports the session's running cost.
   let spent = 0;
@@ -58,6 +58,7 @@ export function claudeRunner({ bin = "claude", sessionId, stateDir, cwd, model, 
           return;
         }
         if (ev.type === "result") result = ev;
+        onEvent(ev);
         const out = streamLine(ev);
         if (out) log(out);
       });

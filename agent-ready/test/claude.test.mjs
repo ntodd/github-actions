@@ -27,7 +27,7 @@ const finish = () => {
 step.sleep ? setTimeout(finish, step.sleep) : finish();
 `;
 
-function setup(plan) {
+function setup(plan, extra = {}) {
   const dir = mkdtempSync(join(tmpdir(), "agent-claude-"));
   const bin = join(dir, "claude");
   writeFileSync(bin, STUB);
@@ -49,6 +49,7 @@ function setup(plan) {
     env,
     timeoutMs: 5_000,
     log: (l) => lines.push(l),
+    ...extra,
   });
   const calls = () => readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l));
   return { run, calls, lines, state };
@@ -125,4 +126,11 @@ test("streamLine turns stream-json events into short log lines", () => {
   assert.equal(streamLine({ type: "assistant", message: { content: [{ type: "tool_use", name: "Edit", input: { file_path: "lib/a.ex" } }] } }), "→ Edit: lib/a.ex");
   assert.equal(streamLine({ type: "user", message: {} }), null);
   assert.equal(streamLine({ type: "result", subtype: "success", num_turns: 9, total_cost_usd: 2.5 }), "result: success after 9 turns, $2.50");
+});
+
+test("every stream event goes to onEvent, for the status comment", async () => {
+  const events = [];
+  const s = setup([{ outcome: { status: "ready" } }], { onEvent: (ev) => events.push(ev.type) });
+  await s.run({ phase: "build", token: "ghs_read", prompt: "build it" });
+  assert.deepEqual(events, ["assistant", "result"]);
 });
