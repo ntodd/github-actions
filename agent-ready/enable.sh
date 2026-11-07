@@ -7,13 +7,16 @@
 #   --app <slug>       The App (default ntodd-agent). Its ID and key are read
 #                      from ~/.config/agent-ready/<slug>/, where
 #                      app/create-app.mjs put them.
-#   --ref <sha>        The ntodd/github-actions commit to pin (default: the
-#                      latest agent-ready/v* tag).
-#   --tag <name>       The tag named in the pin's comment (default: that tag).
+#   --ref <ref>        The ntodd/github-actions ref the caller uses (default
+#                      main, so updates apply without a repin). A commit SHA
+#                      pins it.
+#   --tag <name>       A comment for the pin, like agent-ready/v1.0.1.
 #   --trusted <logins> Who may start runs (default: you).
 #   --bot-author       Commit as the App's bot, not as your git identity.
-#   --no-ruleset       Don't add the ruleset that requires PRs into the
-#                      default branch.
+#   --no-ruleset       Don't add the ruleset that requires an approved PR
+#                      into the default branch. Admins are exempt from it,
+#                      and the App can't approve its own PRs, so it's what
+#                      stops the App from merging to the default branch.
 #   --no-pr            Set everything up but don't open the workflow PR.
 #
 # For each repo it adds the repo to the App's installation, sets the
@@ -24,7 +27,7 @@
 set -euo pipefail
 
 app=ntodd-agent
-ref=""
+ref=main
 tag=""
 trusted=""
 bot_author=false
@@ -57,12 +60,8 @@ me=$(gh api user --jq .login)
 trusted=${trusted:-$me}
 trusted_json=$(printf '%s' "$trusted" | tr -s ', ' '\n' | grep . | jq -R . | jq -sc .)
 
-if [ -z "$ref" ]; then
-  tag=${tag:-$(gh api repos/ntodd/github-actions/tags --paginate --jq '.[].name' | grep '^agent-ready/v' | sort -V | tail -1)}
-  [ -n "$tag" ] || { echo "No agent-ready/v* tag yet. Pass --ref <sha> --tag <name>." >&2 && exit 1; }
-  ref=$(gh api "repos/ntodd/github-actions/commits/$tag" --jq .sha)
-fi
-tag=${tag:-$ref}
+pin=$ref
+[ -n "$tag" ] && pin="$ref # $tag"
 
 install_id=$(node "$(dirname "$0")/app/installation.mjs" "$dir" "$me")
 [ -n "$install_id" ] || {
@@ -122,25 +121,27 @@ for repo in "${repos[@]}"; do
   echo "Labels set."
 
   if $ruleset; then
-    if gh api "repos/$repo/rulesets" --jq '.[].name' | grep -qx agent-ready; then
-      echo "Ruleset already there."
-    elif gh api -X POST "repos/$repo/rulesets" --silent --input - <<EOF; then
-{
+    # An existing agent-ready ruleset is brought up to date, so rerunning
+    # this tightens repos enabled before approvals were required.
+    rules='{
   "name": "agent-ready",
   "target": "branch",
   "enforcement": "active",
   "conditions": { "ref_name": { "include": ["~DEFAULT_BRANCH"], "exclude": [] } },
-  "bypass_actors": [{ "actor_type": "RepositoryRole", "actor_id": 5, "bypass_mode": "always" }],
+  "bypass_actors": [{ "actor_type": "RepositoryRole", "actor_id": 5, "bypass_mode": "exempt" }],
   "rules": [
     { "type": "deletion" },
     { "type": "non_fast_forward" },
-    { "type": "pull_request", "parameters": { "required_approving_review_count": 0, "dismiss_stale_reviews_on_push": false, "require_code_owner_review": false, "require_last_push_approval": false, "required_review_thread_resolution": false } }
+    { "type": "pull_request", "parameters": { "required_approving_review_count": 1, "dismiss_stale_reviews_on_push": false, "require_code_owner_review": false, "require_last_push_approval": false, "required_review_thread_resolution": false } }
   ]
-}
-EOF
-      echo "Ruleset added: $default needs a PR, except for admins."
+}'
+    id=$(gh api "repos/$repo/rulesets" --jq '.[] | select(.name == "agent-ready") | .id')
+    if [ -n "$id" ] && gh api -X PUT "repos/$repo/rulesets/$id" --silent --input - <<<"$rules"; then
+      echo "Ruleset updated: $default needs an approved PR, except for admins."
+    elif [ -z "$id" ] && gh api -X POST "repos/$repo/rulesets" --silent --input - <<<"$rules"; then
+      echo "Ruleset added: $default needs an approved PR, except for admins."
     else
-      echo "Couldn't add the ruleset (private repos need GitHub Pro for rulesets). The App could push to $default directly."
+      echo "Couldn't set the ruleset (private repos need GitHub Pro for rulesets). The App could merge its own PRs into $default."
     fi
   fi
 
@@ -173,7 +174,7 @@ jobs:
       contains(fromJSON('$trusted_json'), github.event.issue.user.login)
     concurrency:
       group: agent-ready-\${{ github.event.issue.number }}
-    uses: ntodd/github-actions/.github/workflows/agent-ready.yml@$ref # $tag
+    uses: ntodd/github-actions/.github/workflows/agent-ready.yml@$pin
     permissions:
       contents: read
       issues: read
