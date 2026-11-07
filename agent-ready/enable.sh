@@ -64,7 +64,7 @@ if [ -z "$ref" ]; then
 fi
 tag=${tag:-$ref}
 
-install_id=$(gh api user/installations --paginate --jq ".installations[] | select(.app_slug == \"$app\") | .id")
+install_id=$(node "$(dirname "$0")/app/installation.mjs" "$dir" "$me")
 [ -n "$install_id" ] || {
   echo "$app isn't installed. Install it with 'Only select repositories': https://github.com/apps/$app/installations/new" >&2
   exit 1
