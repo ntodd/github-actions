@@ -52,7 +52,7 @@ on:
         type: string
         default: ""
       setup:
-        description: Bash, run in the project's directory before deps.get, in the hunt and diagnose jobs. Append to $GITHUB_ENV to set variables for the tests.
+        description: Bash, run in the project's directory before deps.get, in the hunt and diagnose jobs. Append to $GITHUB_ENV to set variables for the tests. The SETUP_SECRETS secret's variables are set for it.
         type: string
         default: ""
       test-args:
@@ -88,6 +88,9 @@ on:
         description: From `claude setup-token`. Without it (or ANTHROPIC_API_KEY), issues go out without a diagnosis.
         required: false
       ANTHROPIC_API_KEY:
+        required: false
+      SETUP_SECRETS:
+        description: NAME=value lines, set as environment variables for the setup input only. For a private Hex repo's key, say.
         required: false
     outputs:
       flaky-count:
@@ -207,7 +210,8 @@ jobs:
         if: inputs.setup != ''
         env:
           FLAKE_HUNT_SETUP: ${{ inputs.setup }}
-        run: bash -euo pipefail -c "$FLAKE_HUNT_SETUP"
+          FLAKE_HUNT_SETUP_SECRETS: ${{ secrets.SETUP_SECRETS }}
+        run: bash "$GITHUB_WORKSPACE/.flake-hunt/flake-hunt/run/setup.sh"
       - run: mix deps.get
       - run: mix compile
       - name: Hunt
@@ -310,7 +314,8 @@ jobs:
         if: inputs.setup != ''
         env:
           FLAKE_HUNT_SETUP: ${{ inputs.setup }}
-        run: bash -euo pipefail -c "$FLAKE_HUNT_SETUP"
+          FLAKE_HUNT_SETUP_SECRETS: ${{ secrets.SETUP_SECRETS }}
+        run: bash "$GITHUB_WORKSPACE/.flake-hunt/flake-hunt/run/setup.sh"
       - run: mix deps.get
       - run: mix compile
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2

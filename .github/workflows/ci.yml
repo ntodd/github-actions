@@ -86,6 +86,9 @@ jobs:
       shards: 2
       runs-per-shard: 3
       dry-run: always
+      setup: '[ "$FLAKE_HUNT_E2E" = "a=b c" ]'
+    secrets:
+      SETUP_SECRETS: FLAKE_HUNT_E2E=a=b c
 
   e2e-check:
     needs: e2e

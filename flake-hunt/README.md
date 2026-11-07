@@ -56,7 +56,7 @@ without a diagnosis.
 | `runs-per-shard` | `25` | Suite runs per shard. |
 | `elixir-version`, `otp-version` | from `mise.toml` or `.tool-versions` | Looked for in the project's directory, then the repo root. |
 | `node-version`, `go-version` | | Installs Node or Go for suites that need them. |
-| `setup` | | Bash run in the project before `mix deps.get`, in the hunt and diagnose jobs. Start a database here, or append to `$GITHUB_ENV` to set variables for the tests. |
+| `setup` | | Bash run in the project before `mix deps.get`, in the hunt and diagnose jobs. Start a database here, or append to `$GITHUB_ENV` to set variables for the tests. Crew's runners have Docker and passwordless sudo. |
 | `test-args` | | Extra `mix test` arguments. |
 | `label` | `flaky-test` | The label on flake-hunt's issues. |
 | `max-diagnoses` | `3` | The most new flakes Claude looks at in one hunt. |
@@ -67,6 +67,30 @@ without a diagnosis.
 | `id` | from `working-directory` | Names the artifacts. Set it if one workflow hunts the same directory twice. |
 
 Outputs: `flaky-count` and `broken-count`.
+
+## Secrets
+
+| Secret | |
+|---|---|
+| `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` | Turns on diagnoses. |
+| `SETUP_SECRETS` | `NAME=value` lines, set as environment variables for `setup` and nothing after it. They're masked in the log. |
+
+`setup` can't see the calling repo's secrets, so pass the ones it needs in
+`SETUP_SECRETS`. For a private Hex repo:
+
+```yaml
+    with:
+      setup: |
+        mix hex.repo add oban https://repo.oban.pro \
+          --fetch-public-key SHA256:4/OSKi0NRF91QVVXlGAhb/BIMLnK8NHcx/EWs+aIWPc \
+          --auth-key "$OBAN_AUTH_KEY"
+    secrets:
+      SETUP_SECRETS: |
+        OBAN_AUTH_KEY=${{ secrets.OBAN_AUTH_KEY }}
+```
+
+The diagnose job runs `setup` too, so Claude can read whatever `setup`
+leaves on disk, such as the Hex key in `~/.hex`.
 
 ## What it files
 
