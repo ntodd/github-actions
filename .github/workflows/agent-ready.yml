@@ -1,0 +1,335 @@
+name: agent-ready
+
+# Works an issue labeled agent-ready into draft pull requests, the way its
+# owner would: issue-fix-stack with TDD, a headless browser, Codex review,
+# screenshots and stacks, then rounds of CI and review-bot feedback until
+# everything is green and answered. See agent-ready/README.md.
+#
+# Claude only ever holds a read-only token, except in short publish
+# phases that get a fresh App token for one repository. The App key never
+# reaches Claude's environment or disk.
+
+on:
+  workflow_call:
+    inputs:
+      trusted-users:
+        description: GitHub logins whose issues and labels start a run, and whose comments count. Comma or space separated.
+        type: string
+        required: true
+      app-id:
+        description: The GitHub App's ID (vars.AGENT_APP_ID).
+        type: string
+        required: true
+      label:
+        description: The label that starts a run.
+        type: string
+        default: agent-ready
+      runs-on:
+        type: string
+        default: crew-l
+      timeout-minutes:
+        type: number
+        default: 360
+      model:
+        type: string
+        default: claude-opus-5-5
+      effort:
+        description: The default effort. An effort:<level> label or a trusted `/effort <level>` comment overrides it.
+        type: string
+        default: medium
+      max-turns:
+        description: Claude's turn limit for each phase.
+        type: number
+        default: 500
+      phase-timeout-minutes:
+        type: number
+        default: 150
+      max-rounds:
+        description: How many times CI failures and review threads are sent back to Claude.
+        type: number
+        default: 3
+      review-bots:
+        description: Review bots to wait for and answer, such as coderabbitai[bot].
+        type: string
+        default: ""
+      review-timeout-minutes:
+        type: number
+        default: 20
+      ready-for-bots:
+        description: Mark the drafts ready once CI is green, for review bots that skip drafts.
+        type: boolean
+        default: false
+      working-directory:
+        description: Where setup and mix deps.get run. Claude works from the repo root.
+        type: string
+        default: .
+      elixir-version:
+        type: string
+        default: ""
+      otp-version:
+        type: string
+        default: ""
+      node-version:
+        type: string
+        default: "24"
+      go-version:
+        type: string
+        default: ""
+      setup:
+        description: Bash run in working-directory before mix deps.get. The SETUP_SECRETS secret's variables are set for it.
+        type: string
+        default: ""
+      git-user-name:
+        description: The commit author. Defaults to the App's bot.
+        type: string
+        default: ""
+      git-user-email:
+        type: string
+        default: ""
+      claude-config:
+        description: owner/repo holding the Claude Code config to use (CLAUDE.md, skills, commands, agents, hooks).
+        type: string
+        default: ntodd/dotfiles
+      claude-config-path:
+        type: string
+        default: claude
+      claude-config-ref:
+        type: string
+        default: main
+      transcripts:
+        description: Upload Claude's session transcripts as an artifact. auto does it for private repos only.
+        type: string
+        default: auto
+      claude-version:
+        type: string
+        default: stable
+      codex-version:
+        type: string
+        default: 0.167.0
+      playwright-mcp-version:
+        type: string
+        default: 0.0.84
+      gh-version:
+        type: string
+        default: 2.102.0
+      gh-stack-version:
+        type: string
+        default: v0.1.1
+    secrets:
+      AGENT_APP_PRIVATE_KEY:
+        required: true
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
+      ANTHROPIC_API_KEY:
+        required: false
+      OPENAI_API_KEY:
+        description: For Codex's review. Without it (or CODEX_AUTH_JSON), the review is Claude's.
+        required: false
+      CODEX_AUTH_JSON:
+        required: false
+      AGENT_ATTACH_TOKEN:
+        description: A fine-grained PAT (Contents and Pull requests, read and write) for attaching screenshots. GitHub's upload endpoint doesn't take App tokens. Claude never sees it.
+        required: false
+      SETUP_SECRETS:
+        description: NAME=value lines, set as environment variables for the setup input only.
+        required: false
+    outputs:
+      status:
+        value: ${{ jobs.agent.outputs.status }}
+      prs:
+        value: ${{ jobs.agent.outputs.prs }}
+
+permissions: {}
+
+jobs:
+  agent:
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+      checks: read
+      statuses: read
+      actions: read
+    outputs:
+      status: ${{ steps.main.outputs.status }}
+      prs: ${{ steps.main.outputs.prs }}
+    steps:
+      # The tools are checked out at the commit the caller pinned, then
+      # moved out of the workspace so they're never part of the repo Claude
+      # works in.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .agent-ready-tools
+          persist-credentials: false
+      - name: Place the tools
+        run: |
+          base=$RUNNER_TEMP/agent-ready
+          mkdir -p "$base"
+          mv .agent-ready-tools "$base/tools"
+          {
+            echo "AGENT_TOOLS=$base/tools"
+            echo "AGENT_STATE=$base/state"
+            echo "AGENT_MCP_CONFIG=$base/mcp.json"
+            echo "AGENT_APP_KEY_FILE=$base/app-key.pem"
+            echo "AGENT_ATTACH_TOKEN_FILE=$base/attach-token"
+          } >> "$GITHUB_ENV"
+
+      # Crew's image has no node on the PATH, and the gate needs one.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node-version }}
+      - name: Gate
+        id: gate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AGENT_LABEL: ${{ inputs.label }}
+          AGENT_TRUSTED_USERS: ${{ inputs.trusted-users }}
+          AGENT_DEFAULT_EFFORT: ${{ inputs.effort }}
+        run: node "$AGENT_TOOLS/agent-ready/gate/index.mjs"
+
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.claude-config }}
+          ref: ${{ inputs.claude-config-ref }}
+          path: .agent-ready-config
+          persist-credentials: false
+      - name: Place the Claude config
+        if: steps.gate.outputs.run == 'true'
+        run: mv .agent-ready-config "$RUNNER_TEMP/agent-ready/config"
+
+      - name: Pick the Elixir and OTP versions
+        id: versions
+        if: steps.gate.outputs.run == 'true'
+        env:
+          FLAKE_HUNT_ELIXIR: ${{ inputs.elixir-version }}
+          FLAKE_HUNT_OTP: ${{ inputs.otp-version }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        run: |
+          if [ -f "$WORKING_DIRECTORY/mix.exs" ] || [ -n "$FLAKE_HUNT_ELIXIR" ]; then
+            bash "$AGENT_TOOLS/flake-hunt/run/versions.sh" "$WORKING_DIRECTORY" .
+            echo "mix=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.versions.outputs.mix == 'true'
+        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          elixir-version: ${{ steps.versions.outputs.elixir }}
+          otp-version: ${{ steps.versions.outputs.otp }}
+      - if: steps.gate.outputs.run == 'true' && inputs.go-version != ''
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ inputs.go-version }}
+          cache: false
+      - if: steps.versions.outputs.mix == 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ inputs.working-directory }}/deps
+            ${{ inputs.working-directory }}/_build
+          key: agent-ready-${{ runner.os }}-${{ runner.arch }}-${{ steps.versions.outputs.elixir }}-${{ steps.versions.outputs.otp }}-${{ hashFiles(format('{0}/mix.lock', inputs.working-directory)) }}
+          restore-keys: |
+            agent-ready-${{ runner.os }}-${{ runner.arch }}-${{ steps.versions.outputs.elixir }}-${{ steps.versions.outputs.otp }}-
+      - name: Setup
+        if: steps.gate.outputs.run == 'true' && inputs.setup != ''
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          FLAKE_HUNT_SETUP: ${{ inputs.setup }}
+          FLAKE_HUNT_SETUP_SECRETS: ${{ secrets.SETUP_SECRETS }}
+        run: bash "$AGENT_TOOLS/flake-hunt/run/setup.sh"
+      - if: steps.versions.outputs.mix == 'true'
+        working-directory: ${{ inputs.working-directory }}
+        run: mix deps.get
+
+      - name: Install gh, Claude Code, Codex and Playwright
+        if: steps.gate.outputs.run == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AGENT_GH_VERSION: ${{ inputs.gh-version }}
+          AGENT_GH_STACK_VERSION: ${{ inputs.gh-stack-version }}
+          AGENT_CLAUDE_VERSION: ${{ inputs.claude-version }}
+          AGENT_CODEX_VERSION: ${{ inputs.codex-version }}
+          AGENT_PLAYWRIGHT_MCP_VERSION: ${{ inputs.playwright-mcp-version }}
+        run: bash "$AGENT_TOOLS/agent-ready/run/install.sh"
+      - name: Configure Claude, Codex and git
+        if: steps.gate.outputs.run == 'true'
+        env:
+          AGENT_MODEL: ${{ inputs.model }}
+          AGENT_EFFORT: ${{ steps.gate.outputs.effort }}
+          AGENT_GIT_NAME: ${{ inputs.git-user-name }}
+          AGENT_GIT_EMAIL: ${{ inputs.git-user-email }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          CONFIG_PATH: ${{ inputs.claude-config-path }}
+        run: bash "$AGENT_TOOLS/agent-ready/run/configure.sh" "$RUNNER_TEMP/agent-ready/config/$CONFIG_PATH"
+
+      # The key goes to a file in a step of its own, so it's in no
+      # environment the main step (and Claude under it) inherits. The main
+      # step reads it and deletes the file.
+      - name: Hand over the App key and the attach token
+        if: steps.gate.outputs.run == 'true'
+        env:
+          KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+          ATTACH: ${{ secrets.AGENT_ATTACH_TOKEN }}
+        run: |
+          umask 077
+          printf '%s\n' "$KEY" > "$AGENT_APP_KEY_FILE"
+          if [ -n "$ATTACH" ]; then printf '%s' "$ATTACH" > "$AGENT_ATTACH_TOKEN_FILE"; fi
+      - name: Work the issue
+        id: main
+        if: steps.gate.outputs.run == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AGENT_APP_ID: ${{ inputs.app-id }}
+          AGENT_ISSUE: ${{ steps.gate.outputs.issue }}
+          AGENT_LABEL: ${{ inputs.label }}
+          AGENT_TRUSTED_USERS: ${{ inputs.trusted-users }}
+          AGENT_MODEL: ${{ inputs.model }}
+          AGENT_EFFORT: ${{ steps.gate.outputs.effort }}
+          AGENT_MAX_TURNS: ${{ inputs.max-turns }}
+          AGENT_PHASE_TIMEOUT_MINUTES: ${{ inputs.phase-timeout-minutes }}
+          AGENT_MAX_ROUNDS: ${{ inputs.max-rounds }}
+          AGENT_REVIEW_BOTS: ${{ inputs.review-bots }}
+          AGENT_REVIEW_TIMEOUT_MINUTES: ${{ inputs.review-timeout-minutes }}
+          AGENT_READY_FOR_BOTS: ${{ inputs.ready-for-bots }}
+        run: |
+          [ -n "$ANTHROPIC_API_KEY" ] || unset ANTHROPIC_API_KEY
+          [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] || unset CLAUDE_CODE_OAUTH_TOKEN
+          node "$AGENT_TOOLS/agent-ready/run/index.mjs"
+
+      - name: Clean up after an unfinished run
+        if: always() && steps.gate.outputs.run == 'true'
+        env:
+          KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+          AGENT_APP_ID: ${{ inputs.app-id }}
+          AGENT_ISSUE: ${{ steps.gate.outputs.issue }}
+        run: |
+          (umask 077 && printf '%s\n' "$KEY" > "$AGENT_APP_KEY_FILE")
+          unset KEY
+          node "$AGENT_TOOLS/agent-ready/run/cleanup.mjs"
+      - name: Gather the transcripts
+        if: always() && steps.gate.outputs.run == 'true' && (inputs.transcripts == 'always' || (inputs.transcripts == 'auto' && github.event.repository.private))
+        run: |
+          mkdir -p "$RUNNER_TEMP/agent-ready/transcripts"
+          cp -R "$HOME/.claude/projects" "$RUNNER_TEMP/agent-ready/transcripts/" 2>/dev/null || true
+          cp -R "$AGENT_STATE" "$RUNNER_TEMP/agent-ready/transcripts/state" 2>/dev/null || true
+          echo "upload=true" >> "$GITHUB_OUTPUT"
+        id: transcripts
+      - if: always() && steps.transcripts.outputs.upload == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: agent-ready-${{ steps.gate.outputs.issue }}-transcripts
+          path: ${{ runner.temp }}/agent-ready/transcripts/
+          retention-days: 14
+          include-hidden-files: true
+          if-no-files-found: ignore
