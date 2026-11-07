@@ -20,9 +20,11 @@ repositories*:
 node agent-ready/app/create-app.mjs        # opens GitHub; click Create
 ```
 
-The App can write contents, pull requests and issues, and read checks,
-statuses and actions. It has no workflows permission, so GitHub refuses any
-push from it that touches `.github/workflows/`. Its ID and key land in
+The App can write contents, pull requests, issues and actions, and read
+checks and statuses. Actions write is only for the workflow to rerun a
+flaky job; the tokens Claude gets ask for actions read. It has no
+workflows permission, so GitHub refuses any push from it that touches
+`.github/workflows/`. Its ID and key land in
 `~/.config/agent-ready/ntodd-agent/`.
 
 Then, for each repo:
@@ -63,9 +65,17 @@ Codex.
 - **Stacks:** an issue with sub-issues becomes a stack, one level per
   sub-issue. Otherwise it stacks only when the fix splits into levels that
   each stand alone.
-- **Labels:** `agent-working` while it runs, then `agent-done` or
-  `agent-blocked`. A blocked run comments on the issue with what it needs
-  from you.
+- **Progress:** a status comment on the issue lists each phase with how
+  long it took and what the agent is doing now. It's edited in place, at
+  most every 5 minutes during a long phase, so it doesn't notify anyone.
+- **Done:** CI is green and every thread has a reply. The PRs come out of
+  draft, the issue's author (or `reviewers`) is asked to review them, and
+  the issue gets `agent-done`.
+- **Blocked:** anything else, and the issue gets `agent-blocked` and a
+  comment that starts with **Blocked:** and the exact reason. That's a
+  question only you can answer, checks still failing after `max-rounds`,
+  a fix that needs a change under `.github/workflows/`, or an error. The
+  PRs stay drafts.
 - **Comments:** only trusted users' comments on the issue count, and only
   their review threads and the listed review bots' get answered.
 
@@ -86,8 +96,15 @@ phase by phase:
    does by default).
 4. **Respond and publish:** failures and open threads go back to Claude,
    which fixes locally, then pushes and replies with a new token. Up to
-   `max-rounds` times.
+   `max-rounds` times. A failure is Claude's to fix even when main fails
+   the same way. When all that's left is a flake or a cancelled job,
+   the workflow reruns the job instead.
 5. **Report:** issue-fix-stack's report goes in the job summary.
+
+PR bodies follow the repo's PR template, or the git-workflow one when it
+has none, and end with **How this was made** (a checklist of what it ran:
+reproduction, TDD, gates, the headless browser, the adversarial review)
+and **Decisions**.
 
 ## Tokens
 
@@ -118,6 +135,7 @@ phase by phase:
 | `review-bots` | | Bots to wait for and answer, like `coderabbitai[bot]`. |
 | `review-timeout-minutes` | `20` | |
 | `ready-for-bots` | `false` | |
+| `reviewers` | the issue's author | Asked to review when the PRs are done. Logins or `org/team`. |
 | `working-directory`, `elixir-version`, `otp-version`, `node-version`, `go-version`, `setup` | | As in flake-hunt. `setup` gets the `SETUP_SECRETS` secret. Elixir is set up whenever the inputs or a `mise.toml` or `.tool-versions` name a version, even with no `mix.exs` in `working-directory`. |
 | `ruby-version` | | Installs Ruby, with `bundle install` when there's a `Gemfile.lock`. |
 | `git-user-name`, `git-user-email` | the App's bot | The commit author. |

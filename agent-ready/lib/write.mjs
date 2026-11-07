@@ -23,3 +23,8 @@ export function takeKey(file) {
   unlinkSync(file);
   return key;
 }
+
+// Only the workflow uses this, to rerun a flaky job. Claude never gets it:
+// actions: write can also start and cancel workflows. The App needs
+// Actions: Read and write for it; without that a flake ends the run blocked.
+export const RERUN = { metadata: "read", actions: "write" };
