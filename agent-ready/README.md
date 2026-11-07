@@ -111,7 +111,8 @@ phase by phase:
 | `review-bots` | | Bots to wait for and answer, like `coderabbitai[bot]`. |
 | `review-timeout-minutes` | `20` | |
 | `ready-for-bots` | `false` | |
-| `working-directory`, `elixir-version`, `otp-version`, `node-version`, `go-version`, `setup` | | As in flake-hunt. `setup` gets the `SETUP_SECRETS` secret. |
+| `working-directory`, `elixir-version`, `otp-version`, `node-version`, `go-version`, `setup` | | As in flake-hunt. `setup` gets the `SETUP_SECRETS` secret. Elixir is set up whenever the inputs or a `mise.toml` or `.tool-versions` name a version, even with no `mix.exs` in `working-directory`. |
+| `ruby-version` | | Installs Ruby, with `bundle install` when there's a `Gemfile.lock`. |
 | `git-user-name`, `git-user-email` | the App's bot | The commit author. |
 | `claude-config`, `claude-config-path`, `claude-config-ref` | `ntodd/dotfiles`, `claude`, `main` | Where your Claude Code config lives. |
 | `transcripts` | `auto` | Uploads Claude's session transcripts; `auto` does it for private repos only. |
