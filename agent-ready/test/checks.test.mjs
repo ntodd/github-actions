@@ -75,3 +75,33 @@ test("openThreads keeps unresolved threads started by trusted users or listed bo
   assert.deepEqual(res.map((t) => t.id), ["T_ntodd", "T_coderabbitai"]);
   assert.deepEqual(res[0], { id: "T_ntodd", author: "ntodd", path: "lib/a.ex", line: 3, outdated: false, url: "https://x/ntodd", body: "from ntodd" });
 });
+
+test("summarizeChecks keeps only each workflow's latest run of a check, so a superseded cancel doesn't count", () => {
+  const res = summarizeChecks({
+    checkRuns: [
+      run("test", "completed", "success", { id: 30, workflow: 1 }),
+      run("test", "completed", "cancelled", { id: 20, workflow: 1 }),
+      run("test", "completed", "failure", { id: 25, workflow: 2 }),
+    ],
+    statuses: [],
+  });
+  assert.equal(res.state, "failure");
+  assert.deepEqual(res.failed.map((f) => f.conclusion), ["failure"], "the other workflow's test still counts");
+
+  const later = summarizeChecks({ checkRuns: [run("test", "completed", "success", { id: 1, workflow: 1 }), run("test", "completed", "failure", { id: 2, workflow: 1 })], statuses: [] });
+  assert.equal(later.state, "failure", "a newer failure beats an older pass");
+});
+
+test("summarizeChecks gives each failed Actions check its job ID, so it can be rerun", () => {
+  const res = summarizeChecks({
+    checkRuns: [
+      run("test", "completed", "failure", { html_url: "https://github.com/o/r/actions/runs/11/job/22" }),
+      run("external", "completed", "failure", { html_url: "https://ci.example/build/9" }),
+    ],
+    statuses: [],
+  });
+  assert.deepEqual(res.failed.map((f) => [f.name, f.job]), [
+    ["test", 22],
+    ["external", undefined],
+  ]);
+});
