@@ -12,7 +12,7 @@ Do phases 0 to 3 of issue-fix-stack for this issue:
 
 1. Triage it and reproduce it on current main.
 2. Design the levels.
-3. For each level: TDD the fix, run the gates, check user-visible changes in the headless browser, and commit it (one commit per level, with `Fixes #{{number}}` or the sub-issue it fixes). Create stacks with `gh stack init` and `gh stack add`, following the stacked-pr skill, but don't submit them yet.
+3. For each level: TDD the fix, run the gates, check user-visible changes in the headless browser, and commit it (one commit per level, with `Fixes #{{number}}` or the sub-issue it fixes). A single level is a plain branch named the git-workflow way (`bug/<issue>-<slug>`, `feature/<issue>-<slug>` or `task/<issue>-<slug>`). Only a stack uses `gh stack init` and `gh stack add` with `stack/` branches, following the stacked-pr skill. Don't submit or push anything yet.
 4. Get the adversarial review, then disposition every finding.
 
 Then draft each PR's title and body: the repo's PR template if it has one, `Fixes #N`, what you verified and how, and the screenshots. Run the text through the humanizer skill. Save each as {{state}}/prs/<branch>.md with the title on the first line and the body after a blank line. Reference a screenshot as `![alt text](./screenshots/<file>.png)`.
