@@ -58,7 +58,18 @@ Codex.
 
 - **Start:** label an issue `agent-ready`. Only issues a trusted user wrote
   and labeled start a run (`trusted-users`, you by default). Removing and
-  re-adding the label starts it again.
+  re-adding the label starts it again. You can also start one from the
+  Actions tab (*Run workflow*, with the issue number) on an open issue
+  that has the label.
+- **Flaky tests:** with flake-hunt's `agent-workflow` set, each flaky
+  test it files or reopens gets the label and a run, and the agent fixes
+  the flake. flake-hunt's issues are the only ones a trusted user didn't
+  write that the gate accepts: written by `github-actions[bot]` with
+  flake-hunt's marker. Only workflows in the repo can write as that bot,
+  never Claude, whose writes are the App's. A label added with the job's
+  token doesn't start workflows, so flake-hunt dispatches the caller
+  instead, and `github-actions[bot]` may dispatch only on those issues.
+  The owner (the first trusted user) is asked to review.
 - **Effort:** medium unless the issue has an `effort:<level>` label (`low`,
   `medium`, `high`, `xhigh`, `max`) or a trusted comment with
   `/effort <level>`.

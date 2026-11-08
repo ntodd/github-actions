@@ -4,7 +4,7 @@ import { runAgent } from "../lib/run.mjs";
 
 // A fake world: a scripted Claude, GitHub read state that changes as the
 // clock moves, and a writer that records what it did.
-function world({ outcomes, prs = {}, threads = {}, bots = [], rerun, ...config } = {}) {
+function world({ outcomes, prs = {}, threads = {}, bots = [], rerun, author = "ntodd", ...config } = {}) {
   let t = Date.parse("2026-11-07T12:00:00Z");
   const log = { phases: [], tokens: [], writes: [], minted: 0, attached: [], steps: [], finished: null };
   const script = [...outcomes];
@@ -47,7 +47,7 @@ function world({ outcomes, prs = {}, threads = {}, bots = [], rerun, ...config }
   const run = () =>
     runAgent({
       repo: "ntodd/sandbox",
-      issue: { number: 7, title: "Fix it", body: "Broken", comments: [], author: "ntodd" },
+      issue: { number: 7, title: "Fix it", body: "Broken", comments: [], author },
       config: {
         label: "agent-ready",
         trustedUsers: ["ntodd"],
@@ -94,6 +94,8 @@ test("a clean run builds, publishes, waits for green CI, writes the report and l
   assert.deepEqual(w.log.tokens, ["read", "app-2", "read"]);
   assert.deepEqual(w.log.writes, [
     ["removeLabel", "app-1", 7, "agent-ready"],
+    ["removeLabel", "app-1", 7, "agent-done"],
+    ["removeLabel", "app-1", 7, "agent-blocked"],
     ["addLabels", "app-1", 7, ["agent-working"]],
     ["markReady", "app-3", "PR_5"],
     ["requestReviewers", "app-3", 5, ["ntodd"]],
@@ -119,12 +121,22 @@ test("when it's done, the reviewers it's given are asked, and a PR that's alread
   assert.equal(w.log.finished, "**agent-ready is done.** #5 and #6 are ready for review.");
 });
 
+test("on an issue a bot wrote, like flake-hunt's, the owner is asked to review", async () => {
+  const w = world({
+    author: "github-actions[bot]",
+    outcomes: [{ status: "ready" }, { status: "published", prs: [5] }, { status: "done", report: "ok" }],
+    prs: { 5: pr("a1"), checksFor: () => green },
+  });
+  await w.run();
+  assert.deepEqual(w.log.writes.find(([op]) => op === "requestReviewers"), ["requestReviewers", "app-3", 5, ["ntodd"]]);
+});
+
 test("a run that needs a decision comments on the issue and labels it blocked", async () => {
   const w = world({ outcomes: [{ status: "blocked", comment: "Which default do you want?" }] });
   const res = await w.run();
   assert.equal(res.status, "blocked");
   assert.deepEqual(w.log.phases, ["build"]);
-  assert.deepEqual(w.log.writes.slice(2), [
+  assert.deepEqual(w.log.writes.slice(4), [
     ["comment", "app-2", 7, "**Blocked:** The build stopped before opening a pull request.\n\nWhich default do you want?\n\n[Run log](https://run)"],
     ["removeLabel", "app-2", 7, "agent-working"],
     ["addLabels", "app-2", 7, ["agent-blocked"]],

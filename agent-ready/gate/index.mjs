@@ -10,7 +10,16 @@ main(async () => {
   const env = process.env;
   const event = JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, "utf8"));
   const trustedUsers = parseList(env.AGENT_TRUSTED_USERS);
-  const res = checkTrigger(event, { label: env.AGENT_LABEL, trustedUsers });
+  const gh = client({ token: env.GITHUB_TOKEN, repo: env.GITHUB_REPOSITORY, apiUrl: env.GITHUB_API_URL });
+  const eventName = env.GITHUB_EVENT_NAME;
+  // A dispatched run (flake-hunt's, or one started by hand) names its
+  // issue. A labeled one carries it.
+  let issue = event.issue;
+  if (eventName === "workflow_dispatch") {
+    const n = Number(event.inputs?.issue);
+    issue = Number.isInteger(n) && n > 0 ? await gh.issue(n) : null;
+  }
+  const res = checkTrigger(event, { label: env.AGENT_LABEL, trustedUsers, eventName, issue });
   setOutput("run", res.run);
   if (!res.run) {
     setOutput("reason", res.reason);
@@ -18,10 +27,9 @@ main(async () => {
     console.log(`Not running: ${res.reason}.`);
     return;
   }
-  const number = event.issue.number;
-  const gh = client({ token: env.GITHUB_TOKEN, repo: env.GITHUB_REPOSITORY, apiUrl: env.GITHUB_API_URL });
+  const number = issue.number;
   const effort = resolveEffort({
-    labels: event.issue.labels ?? [],
+    labels: issue.labels ?? [],
     comments: await gh.comments(number),
     trustedUsers,
     defaultEffort: env.AGENT_DEFAULT_EFFORT,

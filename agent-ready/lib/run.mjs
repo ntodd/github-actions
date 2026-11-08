@@ -56,7 +56,10 @@ export async function runAgent({ repo, issue, config, readToken, github, mint, w
   // up for whoever has to look at it. Returns the PRs it handed over and
   // what went wrong, which goes on the issue.
   const handOver = async (w) => {
-    const who = config.reviewers?.length ? config.reviewers : [issue.author].filter(Boolean);
+    // The issue's author, unless that's flake-hunt's bot or someone else
+    // who can't review: then the first trusted user.
+    const author = config.trustedUsers?.includes(String(issue.author ?? "").toLowerCase()) ? issue.author : config.trustedUsers?.[0];
+    const who = config.reviewers?.length ? config.reviewers : [author].filter(Boolean);
     const ready = [];
     const problems = [];
     for (const n of prs) {
@@ -150,7 +153,8 @@ export async function runAgent({ repo, issue, config, readToken, github, mint, w
 
   try {
     const w = writer(await mint());
-    await w.removeLabel(issue.number, label);
+    // A reopened issue (flake-hunt's, say) may still say how the last run ended.
+    for (const l of [label, "agent-done", "agent-blocked"]) await w.removeLabel(issue.number, l);
     await w.addLabels(issue.number, ["agent-working"]);
 
     const built = await phase("build", {}, "Build: triage, reproduce, TDD and review");
