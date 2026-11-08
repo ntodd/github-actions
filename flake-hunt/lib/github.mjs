@@ -70,6 +70,16 @@ export function client({ token, repo, apiUrl = "https://api.github.com", fetch =
       return request("PATCH", `/repos/${repo}/issues/${number}`, { state: "open" });
     },
 
+    addLabels(number, labels) {
+      return request("POST", `/repos/${repo}/issues/${number}/labels`, { labels });
+    },
+
+    // Starts a workflow_dispatch run. It's the one event the job's token
+    // can start a workflow with: a label it adds doesn't trigger anything.
+    dispatch(workflow, ref, inputs) {
+      return request("POST", `/repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`, { ref, inputs });
+    },
+
     async defaultBranch() {
       return (await request("GET", `/repos/${repo}`)).default_branch;
     },

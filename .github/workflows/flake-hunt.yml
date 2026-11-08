@@ -7,7 +7,8 @@ name: Flake hunt
 #   hunt      one job per shard: runs the suite runs-per-shard times
 #   triage    finds the flakes, matches them to issues, writes prompts
 #   diagnose  Claude, for new flakes, with a read-only token
-#   report    opens, comments on or reopens the issues
+#   report    opens, comments on or reopens the issues, and starts
+#             agent-ready on the new and reopened ones
 #
 # The jobs check out this repo at job.workflow_sha, the commit the caller
 # pinned, and use its actions from there.
@@ -79,6 +80,14 @@ on:
         description: auto (a dry run anywhere but the default branch), always or never.
         type: string
         default: auto
+      agent-workflow:
+        description: The repo's agent-ready caller workflow, like agent-ready.yml. Each new or reopened issue gets agent-label and a run of it, so an agent opens a PR for the fix. Empty turns it off.
+        type: string
+        default: ""
+      agent-label:
+        description: The label the agent-ready caller starts on.
+        type: string
+        default: agent-ready
       timeout-minutes:
         description: For each hunt and diagnose job.
         type: number
@@ -347,9 +356,12 @@ jobs:
     if: ${{ !cancelled() && needs.triage.result == 'success' }}
     runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 15
+    # actions: write starts agent-workflow's runs. A label added with this
+    # token doesn't trigger workflows, but a workflow_dispatch does.
     permissions:
       contents: read
       issues: write
+      actions: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -373,3 +385,5 @@ jobs:
           diagnoses: ${{ runner.temp }}/diagnoses
           label: ${{ inputs.label }}
           dry-run: ${{ inputs.dry-run }}
+          agent-workflow: ${{ inputs.agent-workflow }}
+          agent-label: ${{ inputs.agent-label }}

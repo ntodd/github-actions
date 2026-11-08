@@ -13,8 +13,14 @@ inputs:
   dry-run:
     description: auto (a dry run unless this is the default branch), always or never.
     default: auto
+  agent-workflow:
+    description: An agent-ready caller workflow in this repo, like agent-ready.yml. Each new or reopened issue gets agent-label and a run of it. The token needs actions write.
+    default: ""
+  agent-label:
+    description: The label agent-ready starts on.
+    default: agent-ready
   token:
-    description: Writes the issues.
+    description: Writes the issues, and starts agent-workflow.
     default: ${{ github.token }}
 runs:
   using: node24

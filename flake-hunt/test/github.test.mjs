@@ -86,6 +86,24 @@ test("createIssue, comment and reopen send the right requests", async () => {
   );
 });
 
+test("addLabels and dispatch send the right requests", async () => {
+  const { gh, calls } = make([
+    { method: "POST", match: /\/issues\/9\/labels$/, reply: { body: [] } },
+    { method: "POST", match: /\/dispatches$/, reply: { status: 204, body: null } },
+  ]);
+
+  await gh.addLabels(9, ["agent-ready"]);
+  await gh.dispatch("agent-ready.yml", "main", { issue: "9" });
+
+  assert.deepEqual(
+    calls.map((c) => [c.method, new URL(c.url).pathname, c.body]),
+    [
+      ["POST", "/repos/ntodd/crew/issues/9/labels", { labels: ["agent-ready"] }],
+      ["POST", "/repos/ntodd/crew/actions/workflows/agent-ready.yml/dispatches", { ref: "main", inputs: { issue: "9" } }],
+    ],
+  );
+});
+
 test("errors carry the status and GitHub's message", async () => {
   const { gh } = make([{ method: "POST", match: /\/issues$/, reply: { status: 403, body: { message: "Resource not accessible by integration" } } }]);
   await assert.rejects(gh.createIssue({ title: "T", body: "B", labels: [] }), /403.*Resource not accessible/);

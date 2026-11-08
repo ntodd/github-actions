@@ -1,6 +1,9 @@
 // Acts on triage.json: opens, comments on or reopens issues, then writes
 // the job summary. A dry run only writes the summary, with the bodies it
 // would have posted.
+//
+// With an agent (agent-ready's caller workflow), each new or reopened
+// issue also gets the agent's label and a dispatched run on it.
 
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -17,7 +20,7 @@ function escapeHtml(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-export async function runReport({ triageDir, diagnosesDir, label, dryRun, gh, ctx, summaryFile, log = console.log }) {
+export async function runReport({ triageDir, diagnosesDir, label, dryRun, gh, ctx, summaryFile, agent = null, log = console.log }) {
   const triage = JSON.parse(readFileSync(join(triageDir, "triage.json"), "utf8"));
   const fullCtx = { ...ctx, workingDirectory: triage.workingDirectory };
   const results = [];
@@ -37,6 +40,7 @@ export async function runReport({ triageDir, diagnosesDir, label, dryRun, gh, ct
     const result = { flake: p.flake, action: p.action, issue: p.issue };
     results.push(result);
     if (p.action === "skip") continue;
+    if (agent && p.action !== "comment") result.agent = agent.workflow;
 
     attempted += 1;
     const diagnosis = p.diagnose ? readDiagnosis(diagnosesDir, p.diagnose) : null;
@@ -54,16 +58,19 @@ export async function runReport({ triageDir, diagnosesDir, label, dryRun, gh, ct
 
     try {
       if (p.action === "create") {
-        const issue = await gh.createIssue({ title, body, labels: [label] });
+        const issue = await gh.createIssue({ title, body, labels: result.agent ? [label, agent.label] : [label] });
         result.issue = { number: issue.number };
       } else {
         await gh.comment(p.issue.number, body);
         if (p.action === "reopen") await gh.reopen(p.issue.number);
+        if (result.agent) await gh.addLabels(p.issue.number, [agent.label]);
       }
+      result.done = true;
+      if (result.agent) await gh.dispatch(agent.workflow, agent.ref, { issue: String(result.issue.number) });
     } catch (e) {
       failed += 1;
-      result.error = e.message;
-      log(`::error::${p.flake.module} "${p.flake.name}": ${e.message}`);
+      result.error = result.done && result.agent ? `couldn't start ${agent.workflow}: ${e.message}` : e.message;
+      log(`::error::${p.flake.module} "${p.flake.name}": ${result.error}`);
     }
   }
 
