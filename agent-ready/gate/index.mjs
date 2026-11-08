@@ -19,6 +19,7 @@ main(async () => {
     const n = Number(event.inputs?.issue);
     issue = Number.isInteger(n) && n > 0 ? await gh.issue(n) : null;
   }
+  if (issue && !issue.pull_request) issue = { ...issue, editors: await gh.editors(issue.number) };
   const res = checkTrigger(event, { label: env.AGENT_LABEL, trustedUsers, eventName, issue });
   setOutput("run", res.run);
   if (!res.run) {

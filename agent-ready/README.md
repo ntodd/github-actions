@@ -88,7 +88,10 @@ Codex.
   a fix that needs a change under `.github/workflows/`, or an error. The
   PRs stay drafts.
 - **Comments:** only trusted users' comments on the issue count, and only
-  their review threads and the listed review bots' get answered.
+  their review threads and the listed review bots' get answered. An issue
+  whose body or title someone untrusted edited doesn't run, and only a
+  trusted user's sub-issues are part of the set. The App can edit and add
+  issues, so this keeps Claude from writing its own next task.
 
 ## How a run goes
 

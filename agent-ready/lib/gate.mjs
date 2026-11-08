@@ -49,7 +49,29 @@ export function checkTrigger(event, { label, trustedUsers, eventName = "issues",
     return no(`${event.sender?.login} ${dispatched ? "started the run" : "added the label"} and isn't trusted`);
   }
   if (!trusted.has(login(issue.user)) && !flake) return no(`${issue.user?.login} wrote the issue and isn't trusted`);
+  const editor = untrustedEditor(issue, trustedUsers);
+  if (editor) return no(`${editor} edited #${issue.number} and isn't trusted`);
   return { run: true };
+}
+
+// Who edited the issue's body or title (issue.editors, from the gate),
+// other than a trusted user, or flake-hunt on its own issue. The App's
+// token can edit any issue, so without this Claude could rewrite one and
+// have it worked the next time it's labeled, or flake-hunt reopens it.
+export function untrustedEditor(issue, trustedUsers) {
+  const trusted = new Set(trustedUsers.map((u) => u.toLowerCase()));
+  const flake = isFlakeHuntIssue(issue);
+  return (issue.editors ?? []).find((e) => {
+    const l = String(e).toLowerCase();
+    return !trusted.has(l) && !(flake && l === FLAKE_HUNT_BOT);
+  });
+}
+
+// Sub-issues are the run's set, so only a trusted user's count. The App
+// can add sub-issues too.
+export function trustedSubIssues(subIssues, trustedUsers) {
+  const trusted = new Set(trustedUsers.map((u) => u.toLowerCase()));
+  return subIssues.filter((s) => trusted.has(String(s.user ?? "").toLowerCase()));
 }
 
 export function trustedComments(comments, trustedUsers) {

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkTrigger, resolveEffort, trustedComments, parseList } from "../lib/gate.mjs";
+import { checkTrigger, resolveEffort, trustedComments, trustedSubIssues, parseList } from "../lib/gate.mjs";
 
 const event = (over = {}) => ({
   action: "labeled",
@@ -83,6 +83,25 @@ test("a dispatch needs an open issue that still has the label", () => {
   assert.match(checkTrigger(...dispatch(flakeIssue({ state: "closed" }))).reason, /#9 isn't open/);
   assert.match(checkTrigger(...dispatch(flakeIssue({ pull_request: {} }))).reason, /#9 is a pull request/);
   assert.match(checkTrigger({ inputs: {}, sender: { login: "ntodd" } }, { ...opts, eventName: "workflow_dispatch", issue: null }).reason, /no issue/);
+});
+
+test("an issue someone untrusted edited doesn't run, even one a trusted user wrote", () => {
+  const edited = flakeIssue({ editors: ["github-actions[bot]", "ntodd-agent[bot]"] });
+  assert.match(checkTrigger(...dispatch(edited)).reason, /ntodd-agent\[bot\] edited #9 and isn't trusted/);
+  const mine = event({ issue: { ...event().issue, editors: ["ntodd-agent[bot]"] } });
+  assert.match(checkTrigger(mine, opts).reason, /ntodd-agent\[bot\] edited #7/);
+  const byBot = event({ issue: { ...event().issue, editors: ["github-actions[bot]"] } });
+  assert.match(checkTrigger(byBot, opts).reason, /github-actions\[bot\] edited #7/);
+  assert.equal(checkTrigger(...dispatch(flakeIssue({ editors: ["github-actions[bot]", "NTodd"] }))).run, true);
+});
+
+test("trustedSubIssues keeps the sub-issues a trusted user or flake-hunt opened", () => {
+  const subs = [
+    { number: 8, user: "ntodd" },
+    { number: 9, user: "ntodd-agent[bot]" },
+    { number: 10, user: "github-actions[bot]" },
+  ];
+  assert.deepEqual(trustedSubIssues(subs, ["ntodd"]).map((s) => s.number), [8]);
 });
 
 test("checkTrigger refuses to run with no trusted users", () => {
