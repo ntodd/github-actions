@@ -44,11 +44,31 @@ export function client({ token, repo, apiUrl = "https://api.github.com", fetch =
   const r = `/repos/${owner}/${name}`;
   return {
     issue: async (n) => (await call("GET", `${r}/issues/${n}`)).data,
+    // Everyone who edited the body or changed the title, as REST logins
+    // (GraphQL drops a bot's "[bot]"). A deleted account is "ghost", and
+    // edits past the first 100 count as someone unknown.
+    editors: async (n) => {
+      const d = await graphql(
+        `query($owner: String!, $name: String!, $number: Int!) {
+          repository(owner: $owner, name: $name) {
+            issue(number: $number) {
+              userContentEdits(first: 100) { pageInfo { hasNextPage } nodes { editor { __typename login } } }
+              timelineItems(first: 100, itemTypes: [RENAMED_TITLE_EVENT]) { pageInfo { hasNextPage } nodes { ... on RenamedTitleEvent { actor { __typename login } } } }
+            }
+          }
+        }`,
+        { owner, name, number: n },
+      );
+      const { userContentEdits: edits, timelineItems: renames } = d.repository.issue;
+      if (edits.pageInfo.hasNextPage || renames.pageInfo.hasNextPage) return ["(more than 100 edits)"];
+      const rest = (a) => (!a ? "ghost" : a.__typename === "Bot" ? `${a.login}[bot]` : a.login);
+      return [...edits.nodes.map((e) => rest(e.editor)), ...renames.nodes.map((e) => rest(e.actor))];
+    },
     user: async (login) => (await call("GET", `/users/${encodeURIComponent(login)}`)).data,
     comments: (n) => list(`${r}/issues/${n}/comments`),
     subIssues: async (n) => {
       try {
-        return (await list(`${r}/issues/${n}/sub_issues`)).map((i) => ({ number: i.number, title: i.title, state: i.state }));
+        return (await list(`${r}/issues/${n}/sub_issues`)).map((i) => ({ number: i.number, title: i.title, state: i.state, user: i.user?.login }));
       } catch (err) {
         if (/: 404 /.test(err.message)) return [];
         throw err;

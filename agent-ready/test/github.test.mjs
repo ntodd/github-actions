@@ -94,6 +94,38 @@ test("threads comes from GraphQL", async () => {
   assert.deepEqual(calls[0].body.variables, { owner: "ntodd", name: "sandbox", number: 5 });
 });
 
+test("editors lists who edited an issue's body or renamed it, as REST logins, with deleted accounts as ghost", async () => {
+  const { gh: c, calls } = gh([
+    [
+      "POST /graphql",
+      () =>
+        Response.json({
+          data: {
+            repository: {
+              issue: {
+                userContentEdits: { pageInfo: { hasNextPage: false }, nodes: [{ editor: { __typename: "Bot", login: "github-actions" } }, { editor: null }] },
+                timelineItems: { pageInfo: { hasNextPage: false }, nodes: [{ actor: { __typename: "User", login: "ntodd" } }, { actor: { __typename: "Bot", login: "ntodd-agent" } }] },
+              },
+            },
+          },
+        }),
+    ],
+  ]);
+  assert.deepEqual(await c.editors(7), ["github-actions[bot]", "ghost", "ntodd", "ntodd-agent[bot]"]);
+  assert.deepEqual(calls[0].body.variables, { owner: "ntodd", name: "sandbox", number: 7 });
+});
+
+test("editors past the first page count as someone untrusted", async () => {
+  const page = { pageInfo: { hasNextPage: true }, nodes: [] };
+  const { gh: c } = gh([["POST /graphql", () => Response.json({ data: { repository: { issue: { userContentEdits: page, timelineItems: { pageInfo: { hasNextPage: false }, nodes: [] } } } } })]]);
+  assert.deepEqual(await c.editors(7), ["(more than 100 edits)"]);
+});
+
+test("sub-issues carry their author", async () => {
+  const { gh: c } = gh([["GET /issues/7/sub_issues", () => Response.json([{ number: 8, title: "A", state: "open", user: { login: "ntodd" } }])]]);
+  assert.deepEqual(await c.subIssues(7), [{ number: 8, title: "A", state: "open", user: "ntodd" }]);
+});
+
 test("removeLabel tolerates a label that isn't there, and sub-issues are empty without the API", async () => {
   const { gh: c } = gh([]);
   await c.removeLabel(7, "agent-ready");

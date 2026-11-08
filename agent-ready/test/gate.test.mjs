@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkTrigger, resolveEffort, trustedComments, parseList } from "../lib/gate.mjs";
+import { checkTrigger, resolveEffort, trustedComments, trustedSubIssues, parseList } from "../lib/gate.mjs";
 
 const event = (over = {}) => ({
   action: "labeled",
@@ -40,6 +40,68 @@ test("checkTrigger compares logins without case and ignores other labels, events
   assert.equal(checkTrigger(event({ action: "opened" }), { label: "agent-ready", trustedUsers: ["ntodd"] }).run, false);
   const closed = event({ issue: { ...event().issue, state: "closed" } });
   assert.equal(checkTrigger(closed, { label: "agent-ready", trustedUsers: ["ntodd"] }).run, false);
+});
+
+const flakeIssue = (over = {}) => ({
+  number: 9,
+  state: "open",
+  user: { login: "github-actions[bot]" },
+  labels: [{ name: "flaky-test" }, { name: "agent-ready" }],
+  body: "Failed **2 of 96** runs.\n\n<!-- flake-hunt:%3A%3ADemo.Test%3A%3Atest%20flaky -->\n",
+  ...over,
+});
+const opts = { label: "agent-ready", trustedUsers: ["ntodd"] };
+const dispatch = (issue, sender = "github-actions[bot]") => [{ inputs: { issue: String(issue.number) }, sender: { login: sender } }, { ...opts, eventName: "workflow_dispatch", issue }];
+
+test("a dispatch from flake-hunt runs on the flake-hunt issue it names", () => {
+  assert.deepEqual(checkTrigger(...dispatch(flakeIssue())), { run: true });
+});
+
+test("a dispatch from github-actions[bot] runs only on a flake-hunt issue", () => {
+  const plain = flakeIssue({ body: "Bump the deps" });
+  assert.match(checkTrigger(...dispatch(plain)).reason, /may only start runs on flake-hunt's issues/);
+  const mine = flakeIssue({ user: { login: "ntodd" } });
+  assert.match(checkTrigger(...dispatch(mine)).reason, /may only start runs on flake-hunt's issues/);
+  assert.match(checkTrigger(...dispatch(flakeIssue(), "stranger")).reason, /stranger started the run and isn't trusted/);
+});
+
+test("the flake-hunt marker counts only from github-actions[bot]", () => {
+  const forged = flakeIssue({ user: { login: "stranger" } });
+  assert.match(checkTrigger(...dispatch(forged, "ntodd")).reason, /stranger wrote/);
+  const labeled = event({ issue: forged });
+  assert.match(checkTrigger(labeled, opts).reason, /stranger wrote/);
+});
+
+test("a trusted user can dispatch a run, or label a flake-hunt issue by hand", () => {
+  assert.equal(checkTrigger(...dispatch(flakeIssue({ user: { login: "ntodd" } }), "ntodd")).run, true);
+  assert.equal(checkTrigger(event({ issue: flakeIssue() }), opts).run, true);
+});
+
+test("a dispatch needs an open issue that still has the label", () => {
+  const unlabeled = flakeIssue({ labels: [{ name: "flaky-test" }, { name: "agent-working" }] });
+  assert.match(checkTrigger(...dispatch(unlabeled)).reason, /#9 isn't labeled agent-ready/);
+  assert.match(checkTrigger(...dispatch(flakeIssue({ state: "closed" }))).reason, /#9 isn't open/);
+  assert.match(checkTrigger(...dispatch(flakeIssue({ pull_request: {} }))).reason, /#9 is a pull request/);
+  assert.match(checkTrigger({ inputs: {}, sender: { login: "ntodd" } }, { ...opts, eventName: "workflow_dispatch", issue: null }).reason, /no issue/);
+});
+
+test("an issue someone untrusted edited doesn't run, even one a trusted user wrote", () => {
+  const edited = flakeIssue({ editors: ["github-actions[bot]", "ntodd-agent[bot]"] });
+  assert.match(checkTrigger(...dispatch(edited)).reason, /ntodd-agent\[bot\] edited #9 and isn't trusted/);
+  const mine = event({ issue: { ...event().issue, editors: ["ntodd-agent[bot]"] } });
+  assert.match(checkTrigger(mine, opts).reason, /ntodd-agent\[bot\] edited #7/);
+  const byBot = event({ issue: { ...event().issue, editors: ["github-actions[bot]"] } });
+  assert.match(checkTrigger(byBot, opts).reason, /github-actions\[bot\] edited #7/);
+  assert.equal(checkTrigger(...dispatch(flakeIssue({ editors: ["github-actions[bot]", "NTodd"] }))).run, true);
+});
+
+test("trustedSubIssues keeps the sub-issues a trusted user or flake-hunt opened", () => {
+  const subs = [
+    { number: 8, user: "ntodd" },
+    { number: 9, user: "ntodd-agent[bot]" },
+    { number: 10, user: "github-actions[bot]" },
+  ];
+  assert.deepEqual(trustedSubIssues(subs, ["ntodd"]).map((s) => s.number), [8]);
 });
 
 test("checkTrigger refuses to run with no trusted users", () => {

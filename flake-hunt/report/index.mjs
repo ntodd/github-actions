@@ -8,12 +8,15 @@ main(async () => {
 
   const mode = input("dry-run", "auto");
   if (!["auto", "always", "never"].includes(mode)) throw new Error(`dry-run must be auto, always or never, not ${mode}`);
+  const workflow = input("agent-workflow", "");
+  const branch = mode === "auto" || workflow ? await gh.defaultBranch() : null;
   let dryRun = mode === "always";
   if (mode === "auto") {
-    const branch = await gh.defaultBranch();
     dryRun = process.env.GITHUB_REF !== `refs/heads/${branch}`;
     if (dryRun) console.log(`Dry run: ${process.env.GITHUB_REF} isn't ${branch}.`);
   }
+  // The agent's run uses the default branch's copy of its workflow.
+  const agent = workflow ? { workflow, label: input("agent-label", "agent-ready"), ref: branch } : null;
 
   const runUrl = `${serverUrl}/${repo}/actions/runs/${runId}${attempt && attempt !== "1" ? `/attempts/${attempt}` : ""}`;
   await runReport({
@@ -24,5 +27,6 @@ main(async () => {
     gh,
     ctx: { repo, sha: process.env.GITHUB_SHA, serverUrl, runUrl },
     summaryFile: process.env.GITHUB_STEP_SUMMARY,
+    agent,
   });
 });

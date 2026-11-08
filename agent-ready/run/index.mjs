@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { client } from "../lib/github.mjs";
 import { installationToken, appSlug } from "../lib/app-token.mjs";
-import { trustedComments, parseList } from "../lib/gate.mjs";
+import { trustedComments, trustedSubIssues, untrustedEditor, parseList } from "../lib/gate.mjs";
 import { claudeRunner } from "../lib/claude.mjs";
 import { renderer } from "../lib/prompts.mjs";
 import { runAgent } from "../lib/run.mjs";
@@ -34,13 +34,16 @@ main(async () => {
   const trustedUsers = parseList(env.AGENT_TRUSTED_USERS);
   const read = client({ token: env.GITHUB_TOKEN, repo, apiUrl });
   const raw = await read.issue(number);
+  // The gate checked this before setup. Check again, now that it's read.
+  const editor = untrustedEditor({ ...raw, editors: await read.editors(number) }, trustedUsers);
+  if (editor) throw new Error(`${editor} edited #${number} after the gate checked it, and isn't trusted`);
   const issue = {
     number,
     title: raw.title,
     body: raw.body ?? "",
     labels: (raw.labels ?? []).map((l) => (typeof l === "string" ? l : l.name)),
     comments: trustedComments(await read.comments(number), trustedUsers),
-    subIssues: await read.subIssues(number),
+    subIssues: trustedSubIssues(await read.subIssues(number), trustedUsers),
     author: raw.user?.login,
   };
 

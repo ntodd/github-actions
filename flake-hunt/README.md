@@ -29,15 +29,25 @@ permissions: {}
 
 jobs:
   hunt:
-    uses: ntodd/github-actions/.github/workflows/flake-hunt.yml@<sha> # flake-hunt/v1
+    uses: ntodd/github-actions/.github/workflows/flake-hunt.yml@main
     permissions:
       contents: read
       issues: write
+      actions: write
     with:
       runs-per-shard: ${{ github.event_name == 'pull_request' && 2 || 25 }}
+      # Optional: start agent-ready on each new flake, so an agent opens
+      # the fix as a PR.
+      agent-workflow: agent-ready.yml
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 ```
+
+The caller uses flake-hunt's `main`, so changes here apply everywhere
+without a repin. Pin a commit SHA instead to hold a repo back.
+
+`actions: write` is for `agent-workflow`. The report job asks for it
+either way, so a caller that doesn't grant it fails to start.
 
 For a monorepo, add one job per Mix project with `working-directory` set.
 
@@ -62,6 +72,8 @@ without a diagnosis.
 | `max-diagnoses` | `3` | The most new flakes Claude looks at in one hunt. |
 | `claude-model` | Claude Code's default | |
 | `claude-version` | `stable` | The Claude Code version to install. |
+| `agent-workflow` | | The repo's [agent-ready](../agent-ready) caller, like `agent-ready.yml`. Each new or reopened issue gets `agent-label` and a run of it. |
+| `agent-label` | `agent-ready` | |
 | `dry-run` | `auto` | `auto` files issues only on the default branch, and anywhere else writes them to the job summary. Also `always` or `never`. |
 | `timeout-minutes` | `60` | For each hunt and diagnose job. |
 | `id` | from `working-directory` | Names the artifacts. Set it if one workflow hunts the same directory twice. |
@@ -103,6 +115,16 @@ hunts:
   It flaked again, so the fix didn't take.
 - **Closed as not planned:** left alone. That's how to stop tracking a test.
 
+With `agent-workflow` set, a new or reopened issue also gets the
+`agent-ready` label, and the report dispatches the caller with the issue's
+number (`gh workflow run agent-ready.yml -f issue=N` does the same by
+hand). That's why the report job needs `actions: write`: a label it adds
+with its own token doesn't trigger workflows, but a dispatch does. The
+caller needs a `workflow_dispatch` trigger with an `issue` input, which
+`agent-ready/enable.sh` writes. A still-open issue only gets a comment, so
+a flake an agent is already on, or is blocked on, doesn't start another
+run.
+
 A test that fails every run isn't filed, since that's a broken test and not
 a flaky one. It's listed in the job summary instead. If CI is green for that
 test, it probably needs something the hunt's runners lack.
@@ -125,7 +147,8 @@ plan ─▶ hunt × shards ─▶ triage ─▶ diagnose ─▶ report
   prompts. The job's token is read-only and the checkout keeps no
   credentials, so Claude can't push or write issues.
 - **report** (`report/`) files the issues with the job's `issues: write`
-  token and writes the job summary.
+  token, starts `agent-workflow` on the new and reopened ones, and writes
+  the job summary.
 
 ## Costs
 

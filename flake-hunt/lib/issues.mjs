@@ -147,8 +147,7 @@ export function renderComment(flake, ctx, { reopened, diagnosis }) {
   );
 }
 
-function outcome(result, dryRun) {
-  if (result.error) return `failed: ${result.error}`;
+function did(result, dryRun) {
   const n = result.issue?.number;
   switch (result.action) {
     case "create":
@@ -162,6 +161,12 @@ function outcome(result, dryRun) {
     default:
       return result.action;
   }
+}
+
+function outcome(result, dryRun) {
+  if (result.error) return result.done ? `${did(result, dryRun)}, but ${result.error}` : `failed: ${result.error}`;
+  if (!result.agent) return did(result, dryRun);
+  return `${did(result, dryRun)} and ${dryRun ? "start" : "started"} ${result.agent}`;
 }
 
 function cell(text) {
