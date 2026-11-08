@@ -7,7 +7,7 @@
 
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { renderComment, renderIssue, renderSummary, titleFor } from "./issues.mjs";
+import { planIssues, renderComment, renderIssue, renderSummary, titleFor } from "./issues.mjs";
 
 function readDiagnosis(dir, id) {
   const file = join(dir, `${id}.md`);
@@ -28,7 +28,17 @@ export async function runReport({ triageDir, diagnosesDir, label, dryRun, gh, ct
   let attempted = 0;
   let failed = 0;
 
-  if (!dryRun && triage.plan.some((p) => p.action === "create")) {
+  // Plan again from the issues as they are now. A rerun of a report that
+  // failed partway, or a later hunt's report, would otherwise open a
+  // second issue or start a second agent.
+  const plan = dryRun
+    ? triage.plan
+    : planIssues(
+        triage.plan.map((p) => p.flake),
+        await gh.listIssues(label),
+      ).map((p, i) => ({ ...p, diagnose: triage.plan[i].diagnose }));
+
+  if (!dryRun && plan.some((p) => p.action === "create")) {
     try {
       await gh.ensureLabel(label);
     } catch (e) {
@@ -36,7 +46,7 @@ export async function runReport({ triageDir, diagnosesDir, label, dryRun, gh, ct
     }
   }
 
-  for (const p of triage.plan) {
+  for (const p of plan) {
     const result = { flake: p.flake, action: p.action, issue: p.issue };
     results.push(result);
     if (p.action === "skip") continue;
@@ -69,7 +79,10 @@ export async function runReport({ triageDir, diagnosesDir, label, dryRun, gh, ct
       if (result.agent) await gh.dispatch(agent.workflow, agent.ref, { issue: String(result.issue.number) });
     } catch (e) {
       failed += 1;
-      result.error = result.done && result.agent ? `couldn't start ${agent.workflow}: ${e.message}` : e.message;
+      result.error =
+        result.done && result.agent
+          ? `couldn't start ${agent.workflow}: ${e.message}. Once that's fixed, start it with \`gh workflow run ${agent.workflow} -f issue=${result.issue.number}\``
+          : e.message;
       log(`::error::${p.flake.module} "${p.flake.name}": ${result.error}`);
     }
   }

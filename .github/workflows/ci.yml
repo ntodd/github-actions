@@ -80,6 +80,7 @@ jobs:
     permissions:
       contents: read
       issues: write
+      actions: write
     with:
       working-directory: flake-hunt/test/fixture
       runs-on: ubuntu-24.04

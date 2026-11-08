@@ -212,11 +212,11 @@ test("report opens an issue with the diagnosis and writes the summary", async ()
 test("report comments on an open issue and reopens a closed one", async () => {
   const issues = [{ number: 3, state: "closed", state_reason: "completed", body: markerFor("::Demo.Test::test flaky"), updated_at: "2026-01-01" }];
   const triageDir = await triaged(issues);
-  const gh = new FakeGitHub();
+  const gh = new FakeGitHub(issues);
 
   await runReport({ triageDir, diagnosesDir: join(tmp(), "missing"), label: "flaky-test", dryRun: false, gh, ctx, summaryFile: join(tmp(), "s.md") });
 
-  assert.deepEqual(gh.calls.filter((c) => c[0] !== "label").map((c) => c.slice(0, 2)), [["comment", 3], ["reopen", 3]]);
+  assert.deepEqual(gh.calls.filter((c) => c[0] !== "label" && c[0] !== "list").map((c) => c.slice(0, 2)), [["comment", 3], ["reopen", 3]]);
   assert.match(gh.calls.find((c) => c[0] === "comment")[2], /Flaky again/);
 });
 
@@ -283,18 +283,18 @@ test("with an agent workflow, a new issue gets its label and starts a run on it"
 test("with an agent workflow, a reopened issue is labeled again and gets a run, and a still-open one doesn't", async () => {
   const key = "::Demo.Test::test flaky";
   const closed = [{ number: 3, state: "closed", state_reason: "completed", body: markerFor(key), updated_at: "2026-01-01" }];
-  let gh = new FakeGitHub();
+  let gh = new FakeGitHub(closed);
   await runReport({ triageDir: await triaged(closed), diagnosesDir: tmp(), label: "flaky-test", dryRun: false, gh, ctx, summaryFile: join(tmp(), "s.md"), agent });
   assert.deepEqual(
-    gh.calls.filter((c) => c[0] !== "label").map((c) => c.slice(0, 2)),
+    gh.calls.filter((c) => c[0] !== "label" && c[0] !== "list").map((c) => c.slice(0, 2)),
     [["comment", 3], ["reopen", 3], ["addLabels", 3], ["dispatch", "agent-ready.yml"]],
   );
   assert.deepEqual(gh.calls.find((c) => c[0] === "addLabels")[2], ["agent-ready"]);
 
-  gh = new FakeGitHub();
   const open = [{ number: 4, state: "open", body: markerFor(key) }];
+  gh = new FakeGitHub(open);
   await runReport({ triageDir: await triaged(open), diagnosesDir: tmp(), label: "flaky-test", dryRun: false, gh, ctx, summaryFile: join(tmp(), "s.md"), agent });
-  assert.deepEqual(gh.calls.map((c) => c[0]), ["comment"]);
+  assert.deepEqual(gh.calls.map((c) => c[0]), ["list", "comment"]);
 });
 
 test("an agent run that won't start fails the report, after the issue is filed", async () => {
@@ -309,7 +309,21 @@ test("an agent run that won't start fails the report, after the issue is filed",
     runReport({ triageDir, diagnosesDir: tmp(), label: "flaky-test", dryRun: false, gh, ctx, summaryFile, agent }),
     /1 of 1 issue updates failed/,
   );
-  assert.match(readFileSync(summaryFile, "utf8"), /opened #50, but couldn't start agent-ready\.yml: GitHub 422/);
+  assert.match(readFileSync(summaryFile, "utf8"), /opened #50, but couldn't start agent-ready\.yml: GitHub 422.*gh workflow run agent-ready\.yml -f issue=50/);
+});
+
+test("a rerun report acts on the issues as they are now, not as triage saw them", async () => {
+  const key = "::Demo.Test::test flaky";
+  // Triage saw no issue, and then a report that failed later opened one.
+  let gh = new FakeGitHub([{ number: 50, state: "open", body: markerFor(key) }]);
+  await runReport({ triageDir: await triaged(), diagnosesDir: tmp(), label: "flaky-test", dryRun: false, gh, ctx, summaryFile: join(tmp(), "s.md"), agent });
+  assert.deepEqual(gh.calls.map((c) => c.slice(0, 2)), [["list", "flaky-test"], ["comment", 50]]);
+
+  // Triage saw it closed, and another report has reopened it and started an agent since.
+  const closed = [{ number: 3, state: "closed", state_reason: "completed", body: markerFor(key), updated_at: "2026-01-01" }];
+  gh = new FakeGitHub([{ ...closed[0], state: "open", state_reason: "reopened" }]);
+  await runReport({ triageDir: await triaged(closed), diagnosesDir: tmp(), label: "flaky-test", dryRun: false, gh, ctx, summaryFile: join(tmp(), "s.md"), agent });
+  assert.deepEqual(gh.calls.map((c) => c[0]), ["list", "comment"]);
 });
 
 test("a dry run with an agent workflow says it would start one", async () => {
