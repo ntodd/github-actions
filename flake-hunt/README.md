@@ -29,7 +29,7 @@ permissions: {}
 
 jobs:
   hunt:
-    uses: ntodd/github-actions/.github/workflows/flake-hunt.yml@<sha> # flake-hunt/v1
+    uses: ntodd/github-actions/.github/workflows/flake-hunt.yml@main
     permissions:
       contents: read
       issues: write
@@ -42,6 +42,9 @@ jobs:
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 ```
+
+The caller uses flake-hunt's `main`, so changes here apply everywhere
+without a repin. Pin a commit SHA instead to hold a repo back.
 
 `actions: write` is for `agent-workflow`. The report job asks for it
 either way, so a caller that doesn't grant it fails to start.
