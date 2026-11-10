@@ -75,6 +75,9 @@ class FakeGitHub {
   async addLabels(number, labels) {
     this.calls.push(["addLabels", number, labels]);
   }
+  async setBody(number, body) {
+    this.calls.push(["setBody", number, body]);
+  }
   async dispatch(workflow, ref, inputs) {
     this.calls.push(["dispatch", workflow, ref, inputs]);
   }
@@ -287,7 +290,7 @@ test("with an agent workflow, a reopened issue is labeled again and gets a run, 
   await runReport({ triageDir: await triaged(closed), diagnosesDir: tmp(), label: "flaky-test", dryRun: false, gh, ctx, summaryFile: join(tmp(), "s.md"), agent });
   assert.deepEqual(
     gh.calls.filter((c) => c[0] !== "label" && c[0] !== "list").map((c) => c.slice(0, 2)),
-    [["comment", 3], ["reopen", 3], ["addLabels", 3], ["dispatch", "agent-ready.yml"]],
+    [["addLabels", 3], ["comment", 3], ["reopen", 3], ["dispatch", "agent-ready.yml"]],
   );
   assert.deepEqual(gh.calls.find((c) => c[0] === "addLabels")[2], ["agent-ready"]);
 
@@ -339,4 +342,202 @@ test("triage fails clearly when no shard uploaded anything", async () => {
     runTriage({ resultsDir: join(tmp(), "never-downloaded"), outDir: tmp(), workingDirectory: ".", label: "l", maxDiagnoses: 1, canDiagnose: false, gh: new FakeGitHub(), template: "" }),
     /No run reported any tests \(0 runs\)/,
   );
+});
+
+// Grouping by cause: one run, and one PR, per cause.
+
+const rateLimited = (pid) =>
+  `  1) test x (Demo.Test)\n     test/demo_test.exs:3\n     ** (DBConnection.ConnectionError) client #PID<0.${pid}.0> timed out after ${pid}ms\n     stacktrace:\n       (demo 0.1.0) lib/demo/rate_limit.ex:42: Demo.RateLimit.hit/2\n       test/demo_test.exs:5: (test)\n`;
+const ownFailure = (name) => `  1) test ${name} (Demo.Test)\n     test/demo_test.exs:3\n     Assertion with == failed\n     code:  assert ${name}() == 2\n     stacktrace:\n       test/demo_test.exs:4: (test)\n`;
+
+// Three flakes: a and b fail the same way, and c its own way.
+async function triagedGroups(issues = [], messages = { a: rateLimited(412), b: rateLimited(977), c: ownFailure("c") }) {
+  const results = tmp();
+  const lines = [];
+  for (const run of [1, 2]) {
+    for (const [n, message] of Object.entries(messages)) lines.push(t(`test ${n}`, run, run === 2 ? "failed" : "passed", run === 2 ? { message } : {}));
+    lines.push(r(run, Object.keys(messages).length));
+  }
+  writeResults(results, 1, lines);
+  const out = tmp();
+  await runTriage({ resultsDir: results, outDir: out, workingDirectory: ".", label: "flaky-test", maxDiagnoses: 0, canDiagnose: false, gh: new FakeGitHub(issues), template: "" });
+  return out;
+}
+const report = async (gh, triageDir, over = {}) => {
+  const summaryFile = join(tmp(), "s.md");
+  await runReport({ triageDir, diagnosesDir: tmp(), label: "flaky-test", dryRun: false, gh, ctx, summaryFile, agent, ...over });
+  return readFileSync(summaryFile, "utf8");
+};
+const keyOf = (n) => `::Demo.Test::test ${n}`;
+
+test("flakes that fail the same way make one group: one run, on the first, which lists the others", async () => {
+  const gh = new FakeGitHub();
+  const summary = await report(gh, await triagedGroups());
+
+  const created = gh.calls.filter((c) => c[0] === "create").map((c) => c[1]);
+  assert.deepEqual(created.map((c) => [c.title, c.labels]), [
+    ['Flaky test: Demo.Test "a"', ["flaky-test", "agent-ready"]],
+    ['Flaky test: Demo.Test "b"', ["flaky-test"]],
+    ['Flaky test: Demo.Test "c"', ["flaky-test", "agent-ready"]],
+  ]);
+  // b points at a, the first issue (#50), in its body.
+  assert.match(created[1].body, /Likely the same cause as #50/);
+  assert.match(created[1].body, /<!-- flake-hunt-lead:50 -->/);
+  assert.ok(created[1].body.trimEnd().endsWith(markerFor(keyOf("b"))), "the key marker stays last");
+  // Then a's body lists b, before a's run starts.
+  const edits = gh.calls.filter((c) => c[0] === "setBody");
+  assert.deepEqual(edits.map((c) => c[1]), [50]);
+  assert.match(edits[0][2], /### Likely the same cause\n\n#51 flaked/);
+  assert.match(edits[0][2], /<!-- flake-hunt-group:51 -->/);
+  assert.ok(gh.calls.indexOf(edits[0]) < gh.calls.findIndex((c) => c[0] === "dispatch"));
+  assert.deepEqual(gh.calls.filter((c) => c[0] === "dispatch").map((c) => c[3]), [{ issue: "50" }, { issue: "52" }]);
+  assert.match(summary, /opened #50 and started agent-ready\.yml, for it and #51/);
+  assert.match(summary, /opened #51, likely the same cause as #50/);
+});
+
+test("flakes that fail in different ways stay apart, each with a run of its own", async () => {
+  const gh = new FakeGitHub();
+  await report(gh, await triagedGroups([], { a: ownFailure("a"), b: ownFailure("b") }));
+  assert.deepEqual(gh.calls.filter((c) => c[0] === "dispatch").map((c) => c[3]), [{ issue: "50" }, { issue: "51" }]);
+  assert.ok(!gh.calls.some((c) => c[0] === "setBody"));
+  assert.ok(gh.calls.filter((c) => c[0] === "create").every((c) => !/same cause/.test(c[1].body)));
+});
+
+test("without an agent workflow nothing is grouped", async () => {
+  const gh = new FakeGitHub();
+  await report(gh, await triagedGroups(), { agent: null });
+  assert.ok(gh.calls.filter((c) => c[0] === "create").every((c) => !/same cause/.test(c[1].body)));
+  assert.ok(!gh.calls.some((c) => c[0] === "setBody"));
+});
+
+test("a reopened flake joins a group the same way a new one does", async () => {
+  const closed = [{ number: 3, state: "closed", state_reason: "completed", body: `Old body.\n\n${markerFor(keyOf("b"))}\n`, updated_at: "2026-01-01" }];
+  const gh = new FakeGitHub(closed);
+  await report(gh, await triagedGroups(closed));
+
+  const ops = gh.calls.filter((c) => c[0] !== "label" && c[0] !== "list");
+  // a is first and new; b is reopened behind it, with no label and no run.
+  assert.deepEqual(ops.map((c) => c.slice(0, 2).map((x) => (typeof x === "object" ? x.title : x))), [
+    ["create", 'Flaky test: Demo.Test "a"'],
+    ["comment", 3],
+    ["setBody", 3],
+    ["reopen", 3],
+    ["setBody", 50],
+    ["dispatch", "agent-ready.yml"],
+    ["create", 'Flaky test: Demo.Test "c"'],
+    ["dispatch", "agent-ready.yml"],
+  ]);
+  assert.match(ops[1][2], /Flaky again[\s\S]*Likely the same cause as #50/);
+  assert.match(ops[2][2], /^Old body\.[\s\S]*<!-- flake-hunt-lead:50 -->\n\n<!-- flake-hunt:/);
+  assert.match(ops[4][2], /<!-- flake-hunt-group:3 -->/);
+  assert.ok(!gh.calls.some((c) => c[0] === "addLabels" && c[1] === 3));
+});
+
+test("a reopened flake that leads a group lists the others, in place of any list from before", async () => {
+  const old = `Old body.\n\n<!-- flake-hunt-same-cause -->\n### Likely the same cause\n\nstale\n\n<!-- flake-hunt-group:1,2 -->\n\n${markerFor(keyOf("a"))}\n`;
+  const closed = [{ number: 3, state: "closed", state_reason: "completed", body: old, updated_at: "2026-01-01" }];
+  const gh = new FakeGitHub(closed);
+  await report(gh, await triagedGroups(closed));
+  const edit = gh.calls.find((c) => c[0] === "setBody" && c[1] === 3)[2];
+  assert.doesNotMatch(edit, /stale|group:1,2/);
+  assert.match(edit, /<!-- flake-hunt-group:50 -->/);
+  assert.deepEqual(gh.calls.find((c) => c[0] === "addLabels"), ["addLabels", 3, ["agent-ready"]]);
+  assert.deepEqual(gh.calls.filter((c) => c[0] === "dispatch").map((c) => c[3]), [{ issue: "3" }, { issue: "51" }]);
+});
+
+test("rerunning a report doesn't regroup or start anything again", async () => {
+  const triageDir = await triagedGroups();
+  const first = new FakeGitHub();
+  await report(first, triageDir);
+  // The issues as the first report left them.
+  const bodies = new Map(first.calls.filter((c) => c[0] === "create").map((c, i) => [50 + i, c[1].body]));
+  for (const [, n, body] of first.calls.filter((c) => c[0] === "setBody")) bodies.set(n, body);
+  const now = [...bodies].map(([number, body]) => ({ number, state: "open", body }));
+
+  const again = new FakeGitHub(now);
+  await report(again, triageDir);
+  assert.deepEqual(again.calls.map((c) => c.slice(0, 2)), [["list", "flaky-test"], ["comment", 50], ["comment", 51], ["comment", 52]]);
+});
+
+test("once a group's first issue is closed, an issue left open in it gets a run of its own", async () => {
+  const lead = { number: 50, state: "closed", state_reason: "completed", body: `x\n\n<!-- flake-hunt-group:51 -->\n\n${markerFor(keyOf("z"))}\n`, updated_at: "2026-01-01" };
+  const follower = { number: 51, state: "open", body: `Body.\n\n<!-- flake-hunt-same-cause -->\n### Likely the same cause\n\nold\n\n<!-- flake-hunt-lead:50 -->\n\n${markerFor(keyOf("b"))}\n` };
+  const issues = [lead, follower];
+  const gh = new FakeGitHub(issues);
+  const summary = await report(gh, await triagedGroups(issues, { b: ownFailure("b") }));
+  const ops = gh.calls.filter((c) => c[0] !== "list");
+  assert.deepEqual(ops.map((c) => c.slice(0, 2)), [["addLabels", 51], ["comment", 51], ["setBody", 51], ["dispatch", "agent-ready.yml"]]);
+  assert.match(ops[1][2], /#50 is closed and this still flakes/);
+  assert.equal(ops[2][2], `Body.\n\n${markerFor(keyOf("b"))}\n`);
+  assert.match(summary, /commented on #51 and started agent-ready\.yml: #50 is closed/);
+
+  // While the first issue is open, it's only a comment.
+  const waiting = new FakeGitHub([{ ...lead, state: "open" }, follower]);
+  await report(waiting, await triagedGroups([{ ...lead, state: "open" }, follower], { b: ownFailure("b") }));
+  assert.deepEqual(waiting.calls.map((c) => c[0]), ["list", "comment"]);
+});
+
+test("when a group's first issue can't be opened, the next one leads", async () => {
+  const gh = new FakeGitHub();
+  let first = true;
+  gh.createIssue = async (issue) => {
+    gh.calls.push(["create", issue]);
+    if (first) {
+      first = false;
+      throw new Error("GitHub 502");
+    }
+    return { number: gh.next++ };
+  };
+  await assert.rejects(report(gh, await triagedGroups([], { a: rateLimited(1), b: rateLimited(2) })), /1 of 2 issue updates failed/);
+  const created = gh.calls.filter((c) => c[0] === "create").map((c) => c[1]);
+  assert.deepEqual(created.map((c) => c.labels), [["flaky-test", "agent-ready"], ["flaky-test", "agent-ready"]]);
+  assert.deepEqual(gh.calls.filter((c) => c[0] === "dispatch").map((c) => c[3]), [{ issue: "50" }]);
+});
+
+test("a dry run says which flakes it would group", async () => {
+  const gh = new FakeGitHub();
+  const summaryFile = join(tmp(), "s.md");
+  await runReport({ triageDir: await triagedGroups(), diagnosesDir: tmp(), label: "flaky-test", dryRun: true, gh, ctx, summaryFile, agent });
+  assert.deepEqual(gh.calls, []);
+  const summary = readFileSync(summaryFile, "utf8");
+  assert.match(summary, /Demo.Test "b" \| 1\/2 \| would open an issue, likely the same cause as Demo.Test "a"/);
+  assert.match(summary, /Demo.Test "a" \| 1\/2 \| would open an issue and start agent-ready\.yml, for it and 1 more/);
+});
+
+test("a group's first issue that flakes again regroups with its open others, and starts one run", async () => {
+  const lead = { number: 50, state: "closed", state_reason: "completed", body: `x\n\n<!-- flake-hunt-same-cause -->\n### Likely the same cause\n\nold\n\n<!-- flake-hunt-group:51 -->\n\n${markerFor(keyOf("a"))}\n`, updated_at: "2026-01-01" };
+  const follower = { number: 51, state: "open", body: `y\n\n<!-- flake-hunt-same-cause -->\n### Likely the same cause\n\nold\n\n<!-- flake-hunt-lead:50 -->\n\n${markerFor(keyOf("b"))}\n` };
+  const issues = [lead, follower];
+  const gh = new FakeGitHub(issues);
+  await report(gh, await triagedGroups(issues, { a: rateLimited(1), b: rateLimited(2) }));
+  assert.deepEqual(gh.calls.filter((c) => c[0] === "dispatch").map((c) => c[3]), [{ issue: "50" }]);
+  const lists = gh.calls.filter((c) => c[0] === "setBody" && c[1] === 50);
+  assert.match(lists.at(-1)[2], /<!-- flake-hunt-group:51 -->/);
+  assert.ok(!gh.calls.some((c) => c[0] === "addLabels" && c[1] === 51));
+});
+
+test("a promotion labels the issue before it takes the pointer out, so a rerun can finish it", async () => {
+  const lead = { number: 50, state: "closed", state_reason: "completed", body: `x\n\n${markerFor(keyOf("z"))}\n`, updated_at: "2026-01-01" };
+  const follower = { number: 51, state: "open", body: `Body.\n\n<!-- flake-hunt-same-cause -->\n### Likely the same cause\n\nold\n\n<!-- flake-hunt-lead:50 -->\n\n${markerFor(keyOf("b"))}\n` };
+  const gh = new FakeGitHub([lead, follower]);
+  await report(gh, await triagedGroups([lead, follower], { b: ownFailure("b") }));
+  const ops = gh.calls.map((c) => c[0]);
+  assert.ok(ops.indexOf("addLabels") < ops.indexOf("setBody"));
+});
+
+test("a reopened follower gets its pointer before it's reopened", async () => {
+  const closed = [{ number: 3, state: "closed", state_reason: "completed", body: `Old body.\n\n${markerFor(keyOf("b"))}\n`, updated_at: "2026-01-01" }];
+  const gh = new FakeGitHub(closed);
+  await report(gh, await triagedGroups(closed));
+  const on3 = gh.calls.filter((c) => c[1] === 3).map((c) => c[0]);
+  assert.ok(on3.indexOf("setBody") < on3.indexOf("reopen"));
+});
+
+test("a group whose first issue can't list the others fails the report, and still starts its run", async () => {
+  const gh = new FakeGitHub();
+  gh.setBody = async () => {
+    throw new Error("GitHub 502");
+  };
+  await assert.rejects(report(gh, await triagedGroups()), /1 of 3 issue updates failed/);
+  assert.deepEqual(gh.calls.filter((c) => c[0] === "dispatch").map((c) => c[3]), [{ issue: "50" }, { issue: "52" }]);
 });

@@ -36,8 +36,8 @@ jobs:
       actions: write
     with:
       runs-per-shard: ${{ github.event_name == 'pull_request' && 2 || 25 }}
-      # Optional: start agent-ready on each new flake, so an agent opens
-      # the fix as a PR.
+      # Optional: start agent-ready on the new flakes, one run per likely
+      # cause, so an agent opens the fix as a PR.
       agent-workflow: agent-ready.yml
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -72,7 +72,7 @@ without a diagnosis.
 | `max-diagnoses` | `3` | The most new flakes Claude looks at in one hunt. |
 | `claude-model` | Claude Code's default | |
 | `claude-version` | `stable` | The Claude Code version to install. |
-| `agent-workflow` | | The repo's [agent-ready](../agent-ready) caller, like `agent-ready.yml`. Each new or reopened issue gets `agent-label` and a run of it. |
+| `agent-workflow` | | The repo's [agent-ready](../agent-ready) caller, like `agent-ready.yml`. The new and reopened issues are grouped by likely cause, and each group's first issue gets `agent-label` and a run of it. |
 | `agent-label` | `agent-ready` | |
 | `dry-run` | `auto` | `auto` files issues only on the default branch, and anywhere else writes them to the job summary. Also `always` or `never`. |
 | `timeout-minutes` | `60` | For each hunt and diagnose job. |
@@ -115,15 +115,44 @@ hunts:
   It flaked again, so the fix didn't take.
 - **Closed as not planned:** left alone. That's how to stop tracking a test.
 
-With `agent-workflow` set, a new or reopened issue also gets the
-`agent-ready` label, and the report dispatches the caller with the issue's
-number (`gh workflow run agent-ready.yml -f issue=N` does the same by
-hand). That's why the report job needs `actions: write`: a label it adds
-with its own token doesn't trigger workflows, but a dispatch does. The
-caller needs a `workflow_dispatch` trigger with an `issue` input, which
+With `agent-workflow` set, the report groups the hunt's new and reopened
+flakes by likely cause first, since one cause often breaks many tests and
+a run per test makes the same fix many times. Two flakes are in a group
+when a failure of one matches a failure of the other:
+
+- the same failure, once what changes from run to run is stripped: the
+  test's own name and line, PIDs, email and IP addresses, and numbers,
+  except in the values an assertion compared
+- or the same error, raised from the same stack outside the test body (a
+  setup, a support module, the code under test), where only the test's
+  own `code:` line differs
+
+It errs toward keeping flakes apart. An assertion that fails in the test
+body only matches the same assertion failing with the same values.
+
+Each group's first issue (the one that failed most often) gets the
+`agent-ready` label, and the report dispatches the caller with its number
+(`gh workflow run agent-ready.yml -f issue=N` does the same by hand). Its
+body lists the others under "Likely the same cause", and agent-ready works
+them all from there: it checks each one's failing seeds against the fix,
+and the PR closes the ones it covers. The others point at the first issue,
+keep their own tracking, and get no label and no run. If a later hunt
+finds one of them still flaky after the first issue has closed, it gets
+the label and a run of its own, grouped with that hunt's new flakes the
+same way. A rerun of a report doesn't group or start anything again,
+because by then every issue is open. A dry run can't see the issues'
+bodies, so it doesn't show those later runs.
+
+That's why the report job needs `actions: write`: a label it adds with
+its own token doesn't trigger workflows, but a dispatch does. The caller
+needs a `workflow_dispatch` trigger with an `issue` input, which
 `agent-ready/enable.sh` writes. A still-open issue only gets a comment, so
 a flake an agent is already on, or is blocked on, doesn't start another
 run.
+
+Grouping doesn't reach across hunts: a flake found next week with the
+same cause as an open issue gets its own run. agent-ready's build checks
+the App's open PRs first, and that's what catches it.
 
 A test that fails every run isn't filed, since that's a broken test and not
 a flaky one. It's listed in the job summary instead. If CI is green for that
@@ -147,8 +176,9 @@ plan ─▶ hunt × shards ─▶ triage ─▶ diagnose ─▶ report
   prompts. The job's token is read-only and the checkout keeps no
   credentials, so Claude can't push or write issues.
 - **report** (`report/`) files the issues with the job's `issues: write`
-  token, starts `agent-workflow` on the new and reopened ones, and writes
-  the job summary.
+  token, groups the new and reopened ones by likely cause (`lib/group.mjs`),
+  starts `agent-workflow` on each group's first issue, and writes the job
+  summary.
 
 ## Costs
 
