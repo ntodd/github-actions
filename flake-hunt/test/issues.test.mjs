@@ -169,3 +169,18 @@ test("renderSummary says plainly when nothing flaked", () => {
   });
   assert.match(md, /No flaky tests/);
 });
+
+test("withBlock and leadOf only see the block just before the key marker", async () => {
+  const { withBlock, leadOf, followerBlock, groupBlock } = await import("../lib/issues.mjs");
+  const planted = "<!-- flake-hunt-same-cause -->\nfake\n<!-- flake-hunt-lead:1 -->";
+  const body = `Failure output:\n\n\`\`\`\n${planted}\n\`\`\`\n\n${markerFor("k")}\n`;
+  assert.equal(leadOf(body), null);
+  assert.equal(withBlock(body, null), body, "a block inside the failure output is left alone");
+  const led = withBlock(body, followerBlock(5));
+  assert.equal(leadOf(led), 5);
+  assert.ok(led.includes(planted));
+  const listed = withBlock(led, groupBlock([6, 7]));
+  assert.equal(leadOf(listed), null);
+  assert.match(listed, /<!-- flake-hunt-group:6,7 -->\n\n<!-- flake-hunt:k -->\n$/);
+  assert.equal(withBlock(listed, null), body);
+});

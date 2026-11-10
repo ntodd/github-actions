@@ -14,7 +14,7 @@ inputs:
     description: auto (a dry run unless this is the default branch), always or never.
     default: auto
   agent-workflow:
-    description: An agent-ready caller workflow in this repo, like agent-ready.yml. Each new or reopened issue gets agent-label and a run of it. The token needs actions write.
+    description: An agent-ready caller workflow in this repo, like agent-ready.yml. The new and reopened issues are grouped by likely cause, and each group's first issue gets agent-label and a run of it. The token needs actions write.
     default: ""
   agent-label:
     description: The label agent-ready starts on.

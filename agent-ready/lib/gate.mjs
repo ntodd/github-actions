@@ -88,28 +88,47 @@ export const latestLabeled = (events, label) => events.filter((e) => e.label ===
 
 const same = (a, b) => String(a ?? "").toLowerCase() === String(b ?? "").toLowerCase();
 
-// The one issue a PR closes. Anything else is refused: none, several, one
-// in another repo (other/repo#7 is never #7), or a list GitHub only gave
-// part of.
-export function closingIssue(pr, repo) {
+// The issues a PR closes, all in this repo. Anything else is refused:
+// none, one in another repo (other/repo#7 is never #7), or a list GitHub
+// only gave part of.
+export function closingIssues(pr, repo) {
   const c = pr.closes;
   if (!c || c.more || c.total !== c.issues?.length) return { reason: `couldn't read everything #${pr.number} closes` };
-  if (c.total !== 1) return { reason: `#${pr.number} closes ${c.total} issues, not exactly one` };
-  const [only] = c.issues;
-  if (!same(only.repo, repo)) return { reason: `#${pr.number} closes ${only.repo}#${only.number}, which is in another repo` };
-  return { issue: only.number };
+  if (c.total === 0) return { reason: `#${pr.number} closes 0 issues` };
+  const away = c.issues.find((i) => !same(i.repo, repo));
+  if (away) return { reason: `#${pr.number} closes ${away.repo}#${away.number}, which is in another repo` };
+  return { issues: c.issues.map((i) => i.number) };
 }
+
+// flake-hunt's report groups the flakes of one hunt that fail the same
+// way. The group's first issue lists the others in its body, which only
+// flake-hunt or a trusted user can have written (untrustedEditor). The
+// list sits right before the key marker at the end: a failure message or
+// a diagnosis earlier in the body can hold anything.
+const FLAKE_GROUP_MARKER = /<!-- flake-hunt-group:([\d,]+) -->\s*<!-- flake-hunt:\S+ -->\s*$/;
+
+export function flakeGroup(issue) {
+  if (!isFlakeHuntIssue(issue)) return [];
+  const m = FLAKE_GROUP_MARKER.exec(issue.body);
+  return m ? m[1].split(",").filter(Boolean).map(Number) : [];
+}
+
+// "#1", "#1 and #2", "#1, #2 and #3".
+export const numberList = (ns) => {
+  const t = ns.map((n) => `#${n}`);
+  return t.length < 2 ? t.join("") : `${t.slice(0, -1).join(", ")} and ${t.at(-1)}`;
+};
 
 // Who may start a resolve run, and on what. A PR being the App's, or
 // saying it closes an issue, isn't enough: Claude can open and edit PRs in
 // publish phases. So an agent PR needs an issue a trusted user wrote and
 // labeled (the label is gone by now, because every run removes it, so the
 // proof is the issue's timeline, which the App can't forge), and a PR
-// opened after that label that closes that issue and nothing else. A
-// trusted user's own PR needs their /resolve comment on it. appBot is the
+// opened after that label that closes that issue (and, for a flake-hunt
+// group, the others alsoCloses allows, in others). A trusted user's own PR needs their /resolve comment on it. appBot is the
 // App's login. Only null skips that check: the gate doesn't know the login
 // and passes null, and run/index.mjs checks it before Claude starts.
-export function checkResolve({ request, sender, pr, issue, labeled, comment, repo, label, trustedUsers, appBot }) {
+export function checkResolve({ request, sender, pr, issue, labeled, others = {}, comment, repo, label, trustedUsers, appBot }) {
   const trusted = new Set(trustedUsers.map((u) => u.toLowerCase()));
   const no = (reason) => ({ run: false, reason });
   if (trusted.size === 0) return no("no trusted-users are set");
@@ -153,10 +172,32 @@ export function checkResolve({ request, sender, pr, issue, labeled, comment, rep
   if (!trusted.has(labeler) && !(flake && labeler === FLAKE_HUNT_BOT)) return no(`${labeled.actor} last labeled ${i} ${label} and isn't trusted`);
   if (appBot !== null && !same(pr.author, appBot)) return no(`${pr.author} opened ${n}, not ${appBot}`);
   if (!(Date.parse(pr.createdAt) > Date.parse(labeled.at))) return no(`${n} was opened before ${i} was last labeled ${label}`);
-  const closing = closingIssue(pr, repo);
+  const closing = closingIssues(pr, repo);
   if (closing.reason) return no(closing.reason);
-  if (closing.issue !== issue.number) return no(`${n} closes #${closing.issue}, not ${i}`);
+  if (!closing.issues.includes(issue.number)) return no(`${n} closes ${numberList(closing.issues)}, not ${i}`);
+  for (const m of closing.issues.filter((x) => x !== issue.number)) {
+    const why = alsoCloses({ m, n, i, issue, flake, other: others?.[m], trustedUsers });
+    if (why) return no(why);
+  }
   return { run: true, kind: "agent" };
+}
+
+// A flake-hunt group's PR closes the group's first issue and any of the
+// others the fix covered. Each of those has to be in the first issue's
+// group, flake-hunt's, and unedited. The group is the proof: flake-hunt
+// labels nearly every issue it files, so a label proves nothing about
+// this PR. Closed is fine: the owner may have closed a duplicate by hand.
+// others: { [number]: { issue, labeled } }.
+function alsoCloses({ m, n, i, issue, flake, other, trustedUsers }) {
+  if (!flake) return `${n} also closes #${m}, and only a flake-hunt group's pull request closes more than one issue`;
+  if (!flakeGroup(issue).includes(m)) return `${n} also closes #${m}, which isn't in ${i}'s group`;
+  const o = other?.issue;
+  if (!o) return `there's no issue #${m}`;
+  if (o.pull_request) return `#${m} is a pull request, not an issue`;
+  if (!isFlakeHuntIssue(o)) return `#${m} isn't one of flake-hunt's issues`;
+  const editor = untrustedEditor(o, trustedUsers);
+  if (editor) return `${editor} edited #${m} and isn't trusted`;
+  return null;
 }
 
 // Who edited the issue's body or title (issue.editors, from the gate),

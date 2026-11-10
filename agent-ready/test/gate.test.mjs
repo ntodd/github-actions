@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkTrigger, checkResolve, closingIssue, latestLabeled, parseRequest, isResolveComment, resolveEffort, trustedComments, trustedSubIssues, parseList } from "../lib/gate.mjs";
+import { checkTrigger, checkResolve, closingIssues, flakeGroup, latestLabeled, parseRequest, isResolveComment, resolveEffort, trustedComments, trustedSubIssues, parseList } from "../lib/gate.mjs";
 
 const event = (over = {}) => ({
   action: "labeled",
@@ -279,13 +279,13 @@ test("checkResolve refuses an own PR whose title or description someone untruste
 test("checkResolve refuses a cross-repo, ambiguous, missing or partly fetched closing reference", () => {
   const closes = (c) => checkResolve(resolve({ pr: agentPr({ closes: c }) })).reason;
   assert.match(closes({ total: 1, more: false, issues: [{ number: 7, repo: "other/repo" }] }), /#9 closes other\/repo#7, which is in another repo/);
-  assert.match(closes({ total: 2, more: false, issues: [{ number: 7, repo: "ntodd/sandbox" }, { number: 8, repo: "ntodd/sandbox" }] }), /#9 closes 2 issues, not exactly one/);
+  assert.match(closes({ total: 2, more: false, issues: [{ number: 7, repo: "ntodd/sandbox" }, { number: 8, repo: "ntodd/sandbox" }] }), /#9 also closes #8, and only a flake-hunt group's pull request closes more than one issue/);
   assert.match(closes({ total: 0, more: false, issues: [] }), /#9 closes 0 issues/);
   assert.match(closes({ total: 12, more: true, issues: [{ number: 7, repo: "ntodd/sandbox" }] }), /couldn't read everything #9 closes/);
   assert.match(closes({ total: 2, more: false, issues: [{ number: 7, repo: "ntodd/sandbox" }] }), /couldn't read everything #9 closes/);
   assert.match(closes(null), /couldn't read everything #9 closes/);
   assert.match(closes({ total: 1, more: false, issues: [{ number: 8, repo: "ntodd/sandbox" }] }), /#9 closes #8, not #7/);
-  assert.deepEqual(closingIssue(agentPr(), "NTodd/Sandbox"), { issue: 7 });
+  assert.deepEqual(closingIssues(agentPr(), "NTodd/Sandbox"), { issues: [7] });
 });
 
 const myPr = (over = {}) => agentPr({ number: 12, author: "ntodd", headRef: "feature/mine", closes: { total: 0, more: false, issues: [] }, ...over });
@@ -317,4 +317,60 @@ test("github-actions[bot] may dispatch a resolve, but still only builds flake-hu
   assert.equal(req.mode, "build");
   const issue = { number: 7, state: "open", user: { login: "ntodd" }, labels: [{ name: "agent-ready" }], body: "Bump the deps" };
   assert.match(checkTrigger(...dispatch(issue)).reason, /may only start runs on flake-hunt's issues/);
+});
+
+// flake-hunt's groups: one PR for the first issue that closes the others.
+
+const groupBody = (numbers) => `Failed **2 of 96** runs.\n\n<!-- flake-hunt-group:${numbers.join(",")} -->\n\n<!-- flake-hunt:%3A%3ADemo.Test%3A%3Atest%20flaky -->\n`;
+const lead = (over = {}) => flakeIssue({ number: 7, editors: [], body: groupBody([8, 10]), ...over });
+const follower = (number, over = {}) => ({ issue: flakeIssue({ number, editors: [], labels: [{ name: "flaky-test" }], ...over }), labeled: null });
+const closesAll = (numbers) => ({ total: numbers.length, more: false, issues: numbers.map((number) => ({ number, repo: "ntodd/sandbox" })) });
+const group = (over = {}) =>
+  resolve({
+    issue: lead(),
+    labeled: labeledBy("github-actions[bot]"),
+    pr: agentPr({ closes: closesAll([7, 8, 10]) }),
+    others: { 8: follower(8), 10: follower(10) },
+    ...over,
+  });
+
+test("flakeGroup reads the others' numbers from a flake-hunt issue, and from nothing else", () => {
+  assert.deepEqual(flakeGroup(lead()), [8, 10]);
+  assert.deepEqual(flakeGroup(flakeIssue()), []);
+  assert.deepEqual(flakeGroup(myIssue({ body: "<!-- flake-hunt-group:8,10 -->" })), []);
+  assert.deepEqual(flakeGroup(null), []);
+  // A list that isn't right before the key marker is just text, like one in a failure message.
+  assert.deepEqual(flakeGroup(flakeIssue({ body: "```\n<!-- flake-hunt-group:8,10 -->\n```\n\n" + flakeIssue().body })), []);
+});
+
+test("checkResolve allows a PR that closes a flake-hunt group: the first issue, and others its body lists", () => {
+  assert.deepEqual(checkResolve(group()), { run: true, kind: "agent" });
+  // Part of the group is fine: an issue the fix didn't cover stays open.
+  assert.equal(checkResolve(group({ pr: agentPr({ closes: closesAll([7, 10]) }) })).run, true);
+  // A follower someone already closed by hand doesn't hold the PR up.
+  assert.equal(checkResolve(group({ others: { 8: follower(8, { state: "closed" }), 10: follower(10) } })).run, true);
+});
+
+test("checkResolve refuses a group's PR that also closes an issue nobody labeled", () => {
+  const stray = { 8: follower(8), 10: follower(10), 11: follower(11) };
+  const res = checkResolve(group({ pr: agentPr({ closes: closesAll([7, 8, 10, 11]) }), others: stray }));
+  assert.match(res.reason, /#9 also closes #11, which isn't in #7's group/);
+});
+
+test("checkResolve refuses another flake-hunt issue outside the group, even one labeled agent-ready itself", () => {
+  // flake-hunt labels nearly every issue it files, so that label proves nothing about this PR.
+  const labeled = { 8: follower(8), 10: follower(10), 11: { ...follower(11), labeled: labeledBy("github-actions[bot]", "2026-11-08T12:00:00Z") } };
+  assert.match(checkResolve(group({ pr: agentPr({ closes: closesAll([7, 8, 10, 11]) }), others: labeled })).reason, /#9 also closes #11, which isn't in #7's group/);
+});
+
+test("checkResolve refuses a group's PR when one of the others isn't flake-hunt's, was edited, or is missing", () => {
+  const swap = (n, other) => checkResolve(group({ others: { 8: follower(8), 10: follower(10), [n]: other } })).reason;
+  assert.match(swap(8, { issue: myIssue({ number: 8 }), labeled: null }), /#8 isn't one of flake-hunt's issues/);
+  assert.match(swap(8, follower(8, { editors: [BOT] })), /ntodd-agent\[bot\] edited #8 and isn't trusted/);
+  assert.match(swap(8, { issue: null, labeled: null }), /there's no issue #8/);
+  assert.match(swap(8, follower(8, { pull_request: {} })), /#8 is a pull request/);
+});
+
+test("checkResolve refuses a group's PR that doesn't close the issue it's resolved for", () => {
+  assert.match(checkResolve(group({ pr: agentPr({ closes: closesAll([8, 10]) }) })).reason, /#9 closes #8 and #10, not #7/);
 });

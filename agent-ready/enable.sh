@@ -116,6 +116,7 @@ for repo in "${repos[@]}"; do
   gh label create agent-done -R "$repo" --force --color 0e8a16 --description "agent-ready finished" >/dev/null
   gh label create agent-blocked -R "$repo" --force --color d93f0b --description "agent-ready needs you" >/dev/null
   gh label create agent-conflict -R "$repo" --force --color b60205 --description "agent-ready couldn't resolve this PR's conflict" >/dev/null
+  gh label create agent-covered -R "$repo" --force --color c2e0c6 --description "agent-ready found an open PR that already fixes this" >/dev/null
   for e in low medium high xhigh max; do
     gh label create "effort:$e" -R "$repo" --force --color c5def5 --description "agent-ready effort" >/dev/null
   done

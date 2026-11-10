@@ -70,6 +70,10 @@ export function client({ token, repo, apiUrl = "https://api.github.com", fetch =
       return request("PATCH", `/repos/${repo}/issues/${number}`, { state: "open" });
     },
 
+    setBody(number, body) {
+      return request("PATCH", `/repos/${repo}/issues/${number}`, { body });
+    },
+
     addLabels(number, labels) {
       return request("POST", `/repos/${repo}/issues/${number}/labels`, { labels });
     },

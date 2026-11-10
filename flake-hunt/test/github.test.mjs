@@ -65,7 +65,7 @@ test("ensureLabel tolerates a label another job created first", async () => {
   await gh.ensureLabel("flaky-test");
 });
 
-test("createIssue, comment and reopen send the right requests", async () => {
+test("createIssue, comment, reopen and setBody send the right requests", async () => {
   const { gh, calls } = make([
     { method: "POST", match: /\/issues$/, reply: { status: 201, body: { number: 9 } } },
     { method: "POST", match: /\/issues\/9\/comments$/, reply: { status: 201, body: {} } },
@@ -75,6 +75,7 @@ test("createIssue, comment and reopen send the right requests", async () => {
   assert.equal((await gh.createIssue({ title: "T", body: "B", labels: ["flaky-test"] })).number, 9);
   await gh.comment(9, "C");
   await gh.reopen(9);
+  await gh.setBody(9, "B2");
 
   assert.deepEqual(
     calls.map((c) => [c.method, new URL(c.url).pathname, c.body]),
@@ -82,6 +83,7 @@ test("createIssue, comment and reopen send the right requests", async () => {
       ["POST", "/repos/ntodd/crew/issues", { title: "T", body: "B", labels: ["flaky-test"] }],
       ["POST", "/repos/ntodd/crew/issues/9/comments", { body: "C" }],
       ["PATCH", "/repos/ntodd/crew/issues/9", { state: "open" }],
+      ["PATCH", "/repos/ntodd/crew/issues/9", { body: "B2" }],
     ],
   );
 });

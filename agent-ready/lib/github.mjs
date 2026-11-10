@@ -15,7 +15,7 @@ const PULL = `
   labels(first: 50) { nodes { name } }
   userContentEdits(first: 100) { pageInfo { hasNextPage } nodes { editor { __typename login } } }
   timelineItems(first: 100, itemTypes: [RENAMED_TITLE_EVENT]) { pageInfo { hasNextPage } nodes { ... on RenamedTitleEvent { actor { __typename login } } } }
-  closingIssuesReferences(first: 10) { totalCount pageInfo { hasNextPage } nodes { number repository { nameWithOwner } } }`;
+  closingIssuesReferences(first: 50) { totalCount pageInfo { hasNextPage } nodes { number repository { nameWithOwner } } }`;
 
 const pull = (p) => ({
   number: p.number,
@@ -109,6 +109,8 @@ export function client({ token, repo, apiUrl = "https://api.github.com", fetch =
       if (edits.pageInfo.hasNextPage || renames.pageInfo.hasNextPage) return ["(more than 100 edits)"];
       return [...edits.nodes.map((e) => restLogin(e.editor)), ...renames.nodes.map((e) => restLogin(e.actor))];
     },
+    // The open issues with a label. GitHub lists PRs as issues too.
+    labeledIssues: async (label) => (await list(`${r}/issues?${new URLSearchParams({ state: "open", labels: label })}`)).filter((i) => !i.pull_request),
     user: async (login) => (await call("GET", `/users/${encodeURIComponent(login)}`)).data,
     comments: (n) => list(`${r}/issues/${n}/comments`),
     subIssues: async (n) => {

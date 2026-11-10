@@ -4,8 +4,9 @@
 // it's where the run reports.
 
 import { readFileSync } from "node:fs";
-import { checkTrigger, parseRequest, resolveEffort, parseList } from "../lib/gate.mjs";
+import { checkTrigger, parseRequest, resolveEffort, parseList, isFlakeHuntIssue } from "../lib/gate.mjs";
 import { prepareResolve } from "../lib/resolve.mjs";
+import { awaitTurn } from "../lib/queue.mjs";
 import { client } from "../lib/github.mjs";
 import { main, setOutput, summary } from "../lib/action.mjs";
 
@@ -15,6 +16,7 @@ main(async () => {
   const trustedUsers = parseList(env.AGENT_TRUSTED_USERS);
   const gh = client({ token: env.GITHUB_TOKEN, repo: env.GITHUB_REPOSITORY, apiUrl: env.GITHUB_API_URL });
   const eventName = env.GITHUB_EVENT_NAME;
+  const clock = { now: () => Date.now(), sleep: (ms) => new Promise((r) => setTimeout(r, ms)) };
   const skip = (reason) => {
     setOutput("run", false);
     setOutput("reason", reason);
@@ -36,7 +38,7 @@ main(async () => {
       repo: env.GITHUB_REPOSITORY,
       label: env.AGENT_LABEL,
       trustedUsers,
-      clock: { now: () => Date.now(), sleep: (ms) => new Promise((r) => setTimeout(r, ms)) },
+      clock,
       wait: false,
     });
     if (!prep.go) return skip(prep.reason);
@@ -44,8 +46,21 @@ main(async () => {
   } else {
     if (eventName === "workflow_dispatch") issue = request.issue ? await gh.issue(request.issue) : null;
     if (issue && !issue.pull_request) issue = { ...issue, editors: await gh.editors(issue.number) };
-    const res = checkTrigger(event, { label: env.AGENT_LABEL, trustedUsers, eventName, issue });
+    let res = checkTrigger(event, { label: env.AGENT_LABEL, trustedUsers, eventName, issue });
     if (!res.run) return skip(res.reason);
+    // Builds on flake-hunt's issues take turns, so each can see the PRs
+    // the ones before it opened. See lib/queue.mjs.
+    if (isFlakeHuntIssue(issue)) {
+      const turn = await awaitTurn({ github: gh, issue: issue.number, label: env.AGENT_LABEL, repo: env.GITHUB_REPOSITORY, clock, log: console.log });
+      if (turn.waitedMs > 0) {
+        // The wait can be long. Check the issue again as it is now.
+        issue = { ...(await gh.issue(issue.number)), editors: await gh.editors(issue.number) };
+        res = checkTrigger(event, { label: env.AGENT_LABEL, trustedUsers, eventName, issue });
+        if (!res.run) return skip(res.reason);
+        // checkTrigger takes a labeled event's word for the label.
+        if (!(issue.labels ?? []).some((l) => (l.name ?? l) === env.AGENT_LABEL)) return skip(`#${issue.number} isn't labeled ${env.AGENT_LABEL} any more`);
+      }
+    }
   }
   setOutput("run", true);
   const number = issue.number;

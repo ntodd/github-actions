@@ -134,11 +134,58 @@ export function renderIssue(flake, ctx, diagnosis) {
   return sections.filter(Boolean).join("\n\n") + "\n";
 }
 
-export function renderComment(flake, ctx, { reopened, diagnosis }) {
+// A group's issues say so in their bodies, in a block between these
+// markers. The first issue's lists the others, and agent-ready reads it
+// (agent-ready/lib/gate.mjs): its PR may close them too. Each of the
+// others names the first, so a later hunt can start a run on one the fix
+// left open.
+//
+// Only a block right before the key marker, at the very end, counts. A
+// failure message or a diagnosis can hold anything, markers included.
+const BLOCK_START = "<!-- flake-hunt-same-cause -->";
+const BLOCK = /<!-- flake-hunt-same-cause -->(?:(?!<!-- flake-hunt-same-cause -->)[\s\S])*?<!-- flake-hunt-(?:group|lead):[\d,]+ -->\s*(?=<!-- flake-hunt:\S+ -->\s*$)/;
+const LEAD = /<!-- flake-hunt-lead:(\d+) -->\s*<!-- flake-hunt:\S+ -->\s*$/;
+const KEY_AT_END = /<!-- flake-hunt:\S+ -->\s*$/;
+
+const numbers = (ns) => {
+  const t = ns.map((n) => `#${n}`);
+  return t.length < 2 ? t.join("") : `${t.slice(0, -1).join(", ")} and ${t.at(-1)}`;
+};
+
+export function groupBlock(others) {
+  const verb = others.length === 1 ? "fails" : "fail";
+  return `${BLOCK_START}\n### Likely the same cause\n\n${numbers(others)} flaked in the same hunt and ${verb} the same way as this test, so one agent run, on this issue, works them all. Each keeps its own issue, and the fix closes the ones it covers.\n\n<!-- flake-hunt-group:${others.join(",")} -->`;
+}
+
+export function followerNote(lead) {
+  return `Likely the same cause as #${lead}: it flaked in the same hunt and fails the same way. The agent run on #${lead} works this one too, and its fix closes this if it covers it.`;
+}
+
+export function followerBlock(lead) {
+  return `${BLOCK_START}\n### Likely the same cause\n\n${followerNote(lead)} If #${lead} is closed and this still flakes, the next hunt starts a run on this one.\n\n<!-- flake-hunt-lead:${lead} -->`;
+}
+
+// The body with its block replaced by this one, or taken out with null.
+// The block goes just before the key marker, which stays last.
+export function withBlock(body, block) {
+  const bare = String(body ?? "").replace(BLOCK, "");
+  if (!block) return bare;
+  const at = bare.search(KEY_AT_END);
+  return at < 0 ? `${bare.trimEnd()}\n\n${block}\n` : `${bare.slice(0, at)}${block}\n\n${bare.slice(at)}`;
+}
+
+// The group's first issue, if this issue is one of the others.
+export function leadOf(body) {
+  const m = LEAD.exec(body ?? "");
+  return m ? Number(m[1]) : null;
+}
+
+export function renderComment(flake, ctx, { reopened, diagnosis, note = null }) {
   const lead = reopened ? "Flaky again after this was closed." : "Still flaky.";
   return (
     [
       `${lead} ${rateLine(flake, ctx)} ${seedsLine(flake)}`,
+      note,
       failuresBlock(flake),
       diagnosisBlock(diagnosis),
     ]
@@ -165,8 +212,12 @@ function did(result, dryRun) {
 
 function outcome(result, dryRun) {
   if (result.error) return result.done ? `${did(result, dryRun)}, but ${result.error}` : `failed: ${result.error}`;
+  if (result.follows) return `${did(result, dryRun)}, likely the same cause as ${result.follows}`;
   if (!result.agent) return did(result, dryRun);
-  return `${did(result, dryRun)} and ${dryRun ? "start" : "started"} ${result.agent}`;
+  const started = `${did(result, dryRun)} and ${dryRun ? "start" : "started"} ${result.agent}`;
+  if (result.promoted) return `${started}: #${result.promoted} is closed and this still flakes`;
+  if (result.others?.length) return `${started}, for it and ${dryRun ? `${result.others.length} more` : numbers(result.others)}`;
+  return started;
 }
 
 function cell(text) {

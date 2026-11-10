@@ -12,8 +12,9 @@
 import { summarizeChecks, botsSettled, openThreads } from "./checks.mjs";
 import { silent, clean } from "./status.mjs";
 import { awaitMergeable } from "./resolve.mjs";
+import { isFlakeHuntIssue } from "./gate.mjs";
 
-const WORK = new Set(["ready", "blocked", "nothing-to-do"]);
+const WORK = new Set(["ready", "blocked", "nothing-to-do", "covered"]);
 
 const prList = (ns) => {
   const t = ns.map((n) => `#${n}`);
@@ -77,6 +78,8 @@ export async function runAgent({ repo, issue, resolve = null, config, readToken,
   let rounds = 0;
   let report = "";
   let comment = "";
+  // The App's open PR that the build found already fixes this flake.
+  let coveredBy = null;
 
   const phase = async (name, vars, step, token = readToken) => {
     log(`${name}: starting`);
@@ -129,6 +132,7 @@ export async function runAgent({ repo, issue, resolve = null, config, readToken,
       .join("\n\n");
 
   const headline = (status, reason, { ready = [], problems = [] }) => {
+    if (status === "covered") return `**agent-ready is done.** #${coveredBy} already fixes this, so there's no pull request of its own.${comment ? ` The next comment shows the seeds that pass with #${coveredBy}.` : ""} Close this by hand when #${coveredBy} merges.`;
     if (status !== "done") return `**agent-ready is blocked.** ${sentence(reason)}`;
     if (own) return `**agent-ready is done.** #${resolve.pr} merges into \`${resolve.baseRef}\` again, and CI is green.`;
     if (!prs.length) return "**agent-ready is done.** No pull request was needed, and the next comment says why.";
@@ -143,7 +147,7 @@ export async function runAgent({ repo, issue, resolve = null, config, readToken,
       const w = writer(await mint());
       if (status === "done" && !own) handed = await handOver(w);
       const problems = handed.problems?.length ? `The pull requests are done, but:\n\n${handed.problems.map((p) => `- ${p}`).join("\n")}` : "";
-      const body = status === "done" ? [comment, problems].filter(Boolean).join("\n\n") : blockedNote(reason);
+      const body = status === "done" || status === "covered" ? [comment, problems].filter(Boolean).join("\n\n") : blockedNote(reason);
       if (body) await w.comment(issue.number, body);
       await w.removeLabel(issue.number, "agent-working");
       // The merge may be pushed and the base have moved again since.
@@ -157,14 +161,41 @@ export async function runAgent({ repo, issue, resolve = null, config, readToken,
       const stuck = Boolean(resolve) && status !== "done" && conflicting;
       if (own) await w.addLabels(issue.number, [status === "done" ? "agent-done" : stuck ? "agent-conflict" : "agent-blocked"]);
       else {
-        await w.addLabels(issue.number, [status === "done" ? "agent-done" : "agent-blocked"]);
+        await w.addLabels(issue.number, [{ done: "agent-done", covered: "agent-covered" }[status] ?? "agent-blocked"]);
         if (stuck) await w.addLabels(resolve.pr, ["agent-conflict"]);
+      }
+      // Last, so a PR that won't take the comment can't leave the issue
+      // labeled agent-working. It asks for a close by hand: a PR that
+      // closes an issue outside its group fails the resolve checks.
+      if (status === "covered") {
+        try {
+          await w.comment(
+            coveredBy,
+            `#${issue.number} is another flaky test, and the agent run on it found it passes its failing seeds with this branch, so it didn't open a fix of its own. Close #${issue.number} by hand when this merges.`,
+          );
+        } catch (err) {
+          log(`couldn't comment on #${coveredBy}: ${err.message}`);
+        }
       }
     } catch (err) {
       log(`couldn't update the issue: ${err.message}`);
     }
     await progress.finish(headline(status, reason, handed));
     return { status, reason, prs, rounds, report, phases };
+  };
+
+  // The build found an open PR of the App's that already fixes this
+  // flake. The issue stays open for that PR, and isn't labeled done:
+  // nothing of this run's waits for a review.
+  const covered = async (out) => {
+    const n = out.pr;
+    if (!isFlakeHuntIssue({ user: { login: issue.author }, body: issue.body })) return finish("blocked", "the build ended covered, which only a flake-hunt issue can");
+    if (!Number.isInteger(n)) return finish("blocked", "the build said an open pull request already fixes this, but didn't say which pull request");
+    const p = await github.pull(n);
+    const app = String(config.appBot ?? "").toLowerCase();
+    if (!p || p.state !== "open" || !app || String(p.author).toLowerCase() !== app) return finish("blocked", `the build said #${n} already fixes this, but #${n} isn't an open pull request of ${config.appBot}'s`);
+    coveredBy = n;
+    return finish("covered", "");
   };
 
   const publish = async (round) => {
@@ -284,10 +315,13 @@ export async function runAgent({ repo, issue, resolve = null, config, readToken,
       for (const l of ["agent-done", "agent-blocked"]) await w.removeLabel(issue.number, l);
       await w.removeLabel(resolve.pr, "agent-conflict");
     } else {
-      // A reopened issue (flake-hunt's, say) may still say how the last run ended.
-      for (const l of [label, "agent-done", "agent-blocked"]) await w.removeLabel(issue.number, l);
+      // agent-working goes on first: a run on another flake-hunt issue
+      // waits while this one has either label (queue.mjs). A reopened
+      // issue may still say how the last run ended.
+      await w.addLabels(issue.number, ["agent-working"]);
+      for (const l of [label, "agent-done", "agent-blocked", "agent-covered"]) await w.removeLabel(issue.number, l);
     }
-    await w.addLabels(issue.number, ["agent-working"]);
+    if (resolve) await w.addLabels(issue.number, ["agent-working"]);
 
     if (resolve) {
       prs = [resolve.pr];
@@ -300,6 +334,7 @@ export async function runAgent({ repo, issue, resolve = null, config, readToken,
       if (built.status !== "ready") {
         comment = built.comment ?? "";
         if (built.status === "nothing-to-do") return await finish("done", "nothing-to-do");
+        if (built.status === "covered") return await covered(built);
         return await finish("blocked", why(built, "the build stopped before opening a pull request"));
       }
 
