@@ -1,6 +1,8 @@
 // Runs after everything else. If the main step never finished (it was
 // cancelled, timed out or crashed before runAgent returned), move the
-// issue from agent-working to agent-blocked and say so on it.
+// issue from agent-working to agent-blocked and say so on it. A resolve
+// run's PR also gets agent-conflict, so the sweep doesn't start another
+// run on it until someone has looked.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -9,6 +11,7 @@ import { installationToken } from "../lib/app-token.mjs";
 import { main, mask } from "../lib/action.mjs";
 import { WRITE, takeKey } from "../lib/write.mjs";
 import { stopped } from "../lib/status.mjs";
+import { parseRequest } from "../lib/gate.mjs";
 
 main(async () => {
   const env = process.env;
@@ -32,4 +35,6 @@ main(async () => {
   await gh.comment(n, `**Blocked:** the agent-ready run stopped before it finished (cancelled, timed out or crashed), so nothing here is complete. [Run log](${run})`);
   await gh.removeLabel(n, "agent-working");
   await gh.addLabels(n, ["agent-blocked"]);
+  const request = parseRequest(env.GITHUB_EVENT_NAME, JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, "utf8")).inputs);
+  if (request.mode === "resolve") await gh.addLabels(request.pr, ["agent-conflict"]);
 });

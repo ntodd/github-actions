@@ -1,13 +1,14 @@
 // The main step: wires the real GitHub, App tokens and Claude into
 // runAgent, then writes the job summary.
 
-import { writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { client } from "../lib/github.mjs";
 import { installationToken, appSlug } from "../lib/app-token.mjs";
-import { trustedComments, trustedSubIssues, untrustedEditor, parseList } from "../lib/gate.mjs";
+import { trustedComments, trustedSubIssues, untrustedEditor, parseRequest, parseList } from "../lib/gate.mjs";
+import { prepareResolve, isStack } from "../lib/resolve.mjs";
 import { claudeRunner } from "../lib/claude.mjs";
 import { renderer } from "../lib/prompts.mjs";
 import { runAgent } from "../lib/run.mjs";
@@ -21,32 +22,21 @@ main(async () => {
   const env = process.env;
   const repo = env.GITHUB_REPOSITORY;
   const apiUrl = env.GITHUB_API_URL;
-  const number = Number(env.AGENT_ISSUE);
   const state = env.AGENT_STATE;
   mkdirSync(state, { recursive: true });
-
   const privateKey = takeKey(env.AGENT_APP_KEY_FILE);
   // The PAT for screenshots, handed over the same way. Optional.
   const attachToken = existsSync(env.AGENT_ATTACH_TOKEN_FILE) ? takeKey(env.AGENT_ATTACH_TOKEN_FILE).trim() : "";
   mask(attachToken);
   const appId = env.AGENT_APP_ID;
 
+  // The gate read the mode from the same payload with the same parser.
+  const event = JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, "utf8"));
+  const request = parseRequest(env.GITHUB_EVENT_NAME, event.inputs);
+  if (request.error) throw new Error(request.error);
+
   const trustedUsers = parseList(env.AGENT_TRUSTED_USERS);
   const read = client({ token: env.GITHUB_TOKEN, repo, apiUrl });
-  const raw = await read.issue(number);
-  // The gate checked this before setup. Check again, now that it's read.
-  const editor = untrustedEditor({ ...raw, editors: await read.editors(number) }, trustedUsers);
-  if (editor) throw new Error(`${editor} edited #${number} after the gate checked it, and isn't trusted`);
-  const issue = {
-    number,
-    title: raw.title,
-    body: raw.body ?? "",
-    labels: (raw.labels ?? []).map((l) => (typeof l === "string" ? l : l.name)),
-    comments: trustedComments(await read.comments(number), trustedUsers),
-    subIssues: trustedSubIssues(await read.subIssues(number), trustedUsers),
-    author: raw.user?.login,
-  };
-
   const mintWith = async (permissions) => {
     const { token } = await installationToken({ appId, privateKey, repo, permissions, apiUrl });
     mask(token);
@@ -57,6 +47,59 @@ main(async () => {
   const runUrl = `${env.GITHUB_SERVER_URL}/${repo}/actions/runs/${env.GITHUB_RUN_ID}`;
   const slug = await appSlug({ appId, privateKey, apiUrl });
   const bot = `${slug}[bot]`;
+  const clock = { now: () => Date.now(), sleep: (ms) => new Promise((r) => setTimeout(r, ms)) };
+
+  // What the run works and where it reports: the issue, or for a resolve
+  // run on a trusted user's own PR, the PR itself.
+  let number = Number(env.AGENT_ISSUE);
+  let issue;
+  let resolve = null;
+  if (request.mode === "resolve") {
+    // The gate ran these checks without the App's login. This is the full
+    // set, before Claude does anything.
+    const prep = await prepareResolve({ request, sender: event.sender, github: read, repo, label: env.AGENT_LABEL, trustedUsers, appBot: bot, clock });
+    if (!prep.go) {
+      // Nothing to do, or not allowed. Either way the issue and its labels
+      // stay as they are, and result.json tells cleanup.mjs the run ended.
+      const res = { status: "skipped", reason: prep.reason, prs: [], rounds: 0, report: "", phases: [] };
+      writeFileSync(join(state, "result.json"), JSON.stringify(res, null, 2));
+      summary(`agent-ready didn't resolve #${request.pr}: ${prep.reason}.`);
+      console.log(`Not resolving #${request.pr}: ${prep.reason}.`);
+      setOutput("status", res.status);
+      setOutput("prs", "");
+      if (prep.refused) process.exitCode = 1;
+      return;
+    }
+    const { pr } = prep;
+    const own = prep.kind === "own";
+    number = own ? pr.number : prep.issue.number;
+    resolve = { pr: pr.number, own, stack: isStack(pr, await read.openPulls()), headRef: pr.headRef, baseRef: pr.baseRef, headSha: pr.headSha };
+    issue = own
+      ? { number, title: pr.title, body: pr.body, labels: pr.labels, comments: [], subIssues: [], author: pr.author }
+      : {
+          number,
+          title: prep.issue.title,
+          body: prep.issue.body ?? "",
+          labels: (prep.issue.labels ?? []).map((l) => (typeof l === "string" ? l : l.name)),
+          comments: trustedComments(await read.comments(number), trustedUsers),
+          subIssues: [],
+          author: prep.issue.user?.login,
+        };
+  } else {
+    const raw = await read.issue(number);
+    // The gate checked this before setup. Check again, now that it's read.
+    const editor = untrustedEditor({ ...raw, editors: await read.editors(number) }, trustedUsers);
+    if (editor) throw new Error(`${editor} edited #${number} after the gate checked it, and isn't trusted`);
+    issue = {
+      number,
+      title: raw.title,
+      body: raw.body ?? "",
+      labels: (raw.labels ?? []).map((l) => (typeof l === "string" ? l : l.name)),
+      comments: trustedComments(await read.comments(number), trustedUsers),
+      subIssues: trustedSubIssues(await read.subIssues(number), trustedUsers),
+      author: raw.user?.login,
+    };
+  }
 
   // Commits are the App bot's unless the caller named an author.
   const gitGet = (key) => spawnSync("git", ["config", "--global", key], { encoding: "utf8" }).stdout.trim();
@@ -68,7 +111,7 @@ main(async () => {
 
   const render = renderer({ owner: trustedUsers[0], state, bot });
   const systemPromptFile = join(state, "system.md");
-  writeFileSync(systemPromptFile, render("system", { repo, issue }));
+  writeFileSync(systemPromptFile, render("system", { repo, issue, resolve }));
 
   const log = (line) => console.log(line);
   // The status comment on the issue. cleanup.mjs finds it by this file if
@@ -102,6 +145,7 @@ main(async () => {
   const res = await runAgent({
     repo,
     issue,
+    resolve,
     config: {
       label: env.AGENT_LABEL,
       trustedUsers,
@@ -126,7 +170,7 @@ main(async () => {
     },
     progress,
     render,
-    clock: { now: () => Date.now(), sleep: (ms) => new Promise((r) => setTimeout(r, ms)) },
+    clock,
     log,
   });
 
@@ -135,7 +179,7 @@ main(async () => {
   const cost = res.phases.reduce((a, p) => a + (p.cost ?? 0), 0);
   summary(
     [
-      `## agent-ready: #${number} ${issue.title}`,
+      `## agent-ready${resolve ? " (resolve)" : ""}: #${number} ${issue.title}`,
       "",
       `**${res.status}**${res.reason ? `: ${res.reason}` : ""}. ${env.AGENT_MODEL} at ${env.AGENT_EFFORT} effort, ${res.rounds} review round${res.rounds === 1 ? "" : "s"}, $${cost.toFixed(2)}.`,
       "",

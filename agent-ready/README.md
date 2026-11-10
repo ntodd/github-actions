@@ -43,6 +43,8 @@ Without it, the references become plain text.
 That checks the repos are on the App, sets the `AGENT_APP_ID` variable and
 the secrets, creates the labels, adds a ruleset, and opens a PR with the
 caller workflow. Rerunning it with `--no-pr` updates all but the caller.
+The caller holds the triggers and the two small jobs that start resolve
+runs, so rerun it without `--no-pr` to pick up changes to those.
 
 The caller uses agent-ready's `main`, so changes here apply everywhere
 without a repin. Pass `--ref <sha>` to pin a repo instead.
@@ -50,7 +52,11 @@ without a repin. Pass `--ref <sha>` to pin a repo instead.
 The ruleset requires an approved PR into the default branch, and admins
 are exempt from it. It's what keeps the agent off the default branch: the
 App can't push there, and it can't approve its own PRs, so it can't merge
-them either. Without
+them either. The approval has to cover the PR's last push
+(`require_last_push_approval`), so the App can't push to a PR you've
+approved and then merge it on that approval. Only the admin role bypasses
+the ruleset, and the App has no administration permission, so it can't
+edit it. Without
 `OPENAI_API_KEY`, a Claude subagent does the adversarial review instead of
 Codex.
 
@@ -82,6 +88,8 @@ Codex.
 - **Done:** CI is green and every thread has a reply. The PRs come out of
   draft, the issue's author (or `reviewers`) is asked to review them, and
   the issue gets `agent-done`.
+- **Conflicts:** when the default branch moves and a PR conflicts with it,
+  a resolve run merges it in. See [Keeping PRs mergeable](#keeping-prs-mergeable).
 - **Blocked:** anything else, and the issue gets `agent-blocked` and a
   comment that starts with **Blocked:** and the exact reason. That's a
   question only you can answer, checks still failing after `max-rounds`,
@@ -92,6 +100,78 @@ Codex.
   whose body or title someone untrusted edited doesn't run, and only a
   trusted user's sub-issues are part of the set. The App can edit and add
   issues, so this keeps Claude from writing its own next task.
+
+## Keeping PRs mergeable
+
+Merge one of several queued PRs and the rest can end up conflicting with
+the default branch. A **resolve run** fixes one: it merges the default
+branch into the PR's branch, resolves the conflicts the way the PR meant,
+gets CI green again, and hands the PR back.
+
+- **The sweep:** five minutes after a push to the default branch, and once
+  a day, a small job on GitHub's runners looks at the App's open PRs and
+  starts a resolve run on each one that conflicts. At most five a sweep,
+  one per issue, the least recently updated first. PRs that are only
+  behind are left alone: they still merge, and updating them would only
+  rerun CI. It also skips stacks, PRs labeled `agent-conflict`, PRs with
+  a resolve run already queued, and issues a run is still working or
+  whose build ended `agent-blocked`.
+- **`/resolve`:** comment exactly that on a PR, like `@dependabot rebase`.
+  It works on the App's PRs and on PRs you wrote yourself, and does nothing
+  when the PR doesn't conflict. The sweep never touches your own PRs.
+- **What it does:** a merge, never a rebase, so review history stays and
+  nothing is force-pushed. Changes stay limited to what it takes to
+  integrate the two sides, and generated files (lock files, say) are
+  regenerated. A comment on the PR says which commit of the default
+  branch was merged and which files were resolved.
+- **Done** means CI is green and GitHub says the PR is mergeable. If the
+  default branch moved again in the meantime, it resolves again, as one of
+  `max-rounds`.
+- **Blocked** when it would have to guess: the default branch already does
+  what the PR does (it asks you to close the PR), the two sides want
+  different things, a check fails the same way on the default branch, or
+  GitHub refuses the push. The reason goes where a run's always does, and
+  the PR gets `agent-conflict` while it still conflicts, so the sweep
+  doesn't try again until you've looked. `/resolve` clears it.
+- **On your own PR** there's no issue, so the status comment and the
+  labels go on the PR. It doesn't answer review threads, change the draft
+  state or ask for a review, and when the PR doesn't make clear what you
+  meant it blocks and asks. The App pushes a merge commit to your branch,
+  so pull before you push again.
+- **Stacks** aren't handled yet. A resolve run on a stack's PR ends
+  blocked and says so.
+
+A resolve run is a `workflow_dispatch` of the caller with `mode: resolve`,
+so it shares the issue's concurrency group with the issue's build run and
+never runs alongside it. A PR being the App's, or saying it closes an
+issue, isn't enough to start one, because Claude can open and edit PRs
+while it publishes. The gate, and the main step again before Claude
+starts, check that:
+
+- the issue is open, a trusted user (or flake-hunt) wrote it, and nobody
+  untrusted edited it
+- the last time the issue was labeled `agent-ready`, a trusted user did it
+  (flake-hunt's bot, on flake-hunt's issues). That's GitHub's record in
+  the issue's timeline, which the App can't forge
+- the PR is open, the App opened it after that label, its branch is in the
+  same repo, it goes into the default branch, and it closes that issue and
+  no other
+- the head is still the commit that was checked, and the PR still
+  conflicts. If not, the run stops without touching the issue
+
+For a PR of your own, it checks instead that you wrote the PR, that nobody
+untrusted edited its title or description, that its
+branch is in the same repo and goes into the default branch, and that the
+`/resolve` comment the dispatch names is on that PR, says exactly
+`/resolve`, and is yours.
+
+What this doesn't stop: within an issue you labeled, a hijacked run could
+open a second PR that says it closes the issue, and a resolve run would
+then work on that PR.
+
+The App has no workflows permission. A merge can bring in the default
+branch's changes under `.github/workflows/`, and GitHub may refuse that
+push. When it does, the run ends blocked with GitHub's message.
 
 ## How a run goes
 

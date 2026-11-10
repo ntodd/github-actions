@@ -6,7 +6,7 @@ Reusable workflows and actions for my repos, mostly meant to run on
 | | |
 |---|---|
 | [flake-hunt](flake-hunt/) | Runs a Mix project's suite many times and files an issue for each flaky test, with a diagnosis from Claude. |
-| [agent-ready](agent-ready/) | Works an issue labeled `agent-ready` into draft PRs, then keeps at them until CI is green and review threads are answered. |
+| [agent-ready](agent-ready/) | Works an issue labeled `agent-ready` into draft PRs, then keeps at them until CI is green and review threads are answered. Resolves their conflicts when the default branch moves, and any PR's on `/resolve`. |
 
 ## Using them
 

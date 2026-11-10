@@ -1,6 +1,52 @@
 // The GitHub calls the run makes, over fetch. One client per token: the
 // job's read-only GITHUB_TOKEN for watching, an App token for writes.
 
+// A GraphQL actor as its REST login: a bot's gets "[bot]" back, and a
+// deleted account is "ghost".
+const restLogin = (a) => (!a ? "ghost" : a.__typename === "Bot" ? `${a.login}[bot]` : a.login);
+
+// What a resolve run, the sweep and the /resolve job read about a PR.
+const PULL = `
+  number id state isDraft title body createdAt updatedAt mergeable
+  headRefOid headRefName baseRefName
+  headRepository { nameWithOwner }
+  baseRepository { defaultBranchRef { name } }
+  author { __typename login }
+  labels(first: 50) { nodes { name } }
+  userContentEdits(first: 100) { pageInfo { hasNextPage } nodes { editor { __typename login } } }
+  timelineItems(first: 100, itemTypes: [RENAMED_TITLE_EVENT]) { pageInfo { hasNextPage } nodes { ... on RenamedTitleEvent { actor { __typename login } } } }
+  closingIssuesReferences(first: 10) { totalCount pageInfo { hasNextPage } nodes { number repository { nameWithOwner } } }`;
+
+const pull = (p) => ({
+  number: p.number,
+  nodeId: p.id,
+  state: p.state.toLowerCase(),
+  draft: p.isDraft,
+  title: p.title,
+  body: p.body ?? "",
+  author: restLogin(p.author),
+  createdAt: p.createdAt,
+  updatedAt: p.updatedAt,
+  mergeable: p.mergeable,
+  headSha: p.headRefOid,
+  headRef: p.headRefName,
+  // A fork that's been deleted has no head repository.
+  headRepo: p.headRepository?.nameWithOwner ?? "",
+  baseRef: p.baseRefName,
+  defaultBranch: p.baseRepository?.defaultBranchRef?.name ?? "",
+  labels: p.labels.nodes.map((l) => l.name),
+  // Everyone who edited the description or the title, as for an issue.
+  editors:
+    p.userContentEdits.pageInfo.hasNextPage || p.timelineItems.pageInfo.hasNextPage
+      ? ["(more than 100 edits)"]
+      : [...p.userContentEdits.nodes.map((e) => restLogin(e.editor)), ...p.timelineItems.nodes.map((e) => restLogin(e.actor))],
+  closes: {
+    total: p.closingIssuesReferences.totalCount,
+    more: p.closingIssuesReferences.pageInfo.hasNextPage,
+    issues: p.closingIssuesReferences.nodes.map((i) => ({ number: i.number, repo: i.repository.nameWithOwner })),
+  },
+});
+
 export function client({ token, repo, apiUrl = "https://api.github.com", fetch = globalThis.fetch }) {
   const [owner, name] = repo.split("/");
   const headers = {
@@ -61,8 +107,7 @@ export function client({ token, repo, apiUrl = "https://api.github.com", fetch =
       );
       const { userContentEdits: edits, timelineItems: renames } = d.repository.issue;
       if (edits.pageInfo.hasNextPage || renames.pageInfo.hasNextPage) return ["(more than 100 edits)"];
-      const rest = (a) => (!a ? "ghost" : a.__typename === "Bot" ? `${a.login}[bot]` : a.login);
-      return [...edits.nodes.map((e) => rest(e.editor)), ...renames.nodes.map((e) => rest(e.actor))];
+      return [...edits.nodes.map((e) => restLogin(e.editor)), ...renames.nodes.map((e) => restLogin(e.actor))];
     },
     user: async (login) => (await call("GET", `/users/${encodeURIComponent(login)}`)).data,
     comments: (n) => list(`${r}/issues/${n}/comments`),
@@ -78,6 +123,60 @@ export function client({ token, repo, apiUrl = "https://api.github.com", fetch =
       const { data: p } = await call("GET", `${r}/pulls/${n}`);
       return { number: p.number, state: p.merged ? "merged" : p.state, draft: p.draft, headSha: p.head.sha, nodeId: p.node_id };
     },
+    // One PR with its mergeable state, or null when there's no such PR.
+    // GitHub works mergeable out in the background, so it can be UNKNOWN.
+    pull: async (n) => {
+      const { data } = await call("POST", "/graphql", {
+        query: `query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) {${PULL} } } }`,
+        variables: { owner, name, number: n },
+      });
+      const found = data.data?.repository?.pullRequest;
+      if (found) return pull(found);
+      if (data.errors?.every((e) => e.type === "NOT_FOUND")) return null;
+      throw new Error(`GraphQL: ${(data.errors ?? [{ message: "no pull request in the answer" }]).map((e) => e.message).join("; ")}`);
+    },
+    // Every open PR, least recently updated first.
+    openPulls: async () => {
+      const out = [];
+      let cursor = null;
+      do {
+        const d = await graphql(
+          `query($owner: String!, $name: String!, $cursor: String) {
+            repository(owner: $owner, name: $name) {
+              pullRequests(states: OPEN, first: 30, after: $cursor, orderBy: { field: UPDATED_AT, direction: ASC }) { pageInfo { hasNextPage endCursor } nodes {${PULL} } }
+            }
+          }`,
+          { owner, name, cursor },
+        );
+        const page = d.repository.pullRequests;
+        out.push(...page.nodes.map(pull));
+        cursor = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
+      } while (cursor);
+      return out;
+    },
+    // Who added each label and when, oldest first. This is GitHub's record
+    // of who labeled an issue, which outlives the label.
+    labelEvents: async (n) =>
+      (await list(`${r}/issues/${n}/events`)).filter((e) => e.event === "labeled").map((e) => ({ label: e.label?.name, actor: e.actor?.login ?? "ghost", at: e.created_at })),
+    commentById: async (id) => {
+      const { data: c } = await call("GET", `${r}/issues/comments/${id}`, undefined, { ok: [404] });
+      return c && { id: c.id, pr: Number(/\/issues\/(\d+)$/.exec(c.issue_url ?? "")?.[1]), body: c.body ?? "", author: c.user?.login };
+    },
+    branchSha: async (branch) => (await call("GET", `${r}/git/ref/heads/${branch.split("/").map(encodeURIComponent).join("/")}`)).data.object.sha,
+    // The PRs with a resolve run that's queued or going, read from the
+    // names the caller gives its dispatched runs ("... resolve #9"). A run
+    // labels its issue agent-working only once it's on a runner, and this
+    // covers the wait before that.
+    activeResolves: async (workflow) => {
+      const { data } = await call("GET", `${r}/actions/workflows/${encodeURIComponent(workflow)}/runs?event=workflow_dispatch&per_page=100`);
+      return (data.workflow_runs ?? [])
+        .filter((w) => w.status !== "completed")
+        .map((w) => Number(/resolve #(\d+)/.exec(w.display_title ?? "")?.[1]))
+        .filter(Boolean);
+    },
+    // inputs are strings. From the job's GITHUB_TOKEN this does start a
+    // workflow, unlike most events that token causes.
+    dispatch: async (workflow, ref, inputs) => void (await call("POST", `${r}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`, { ref, inputs })),
     prBody: async (n) => ({ body: (await call("GET", `${r}/pulls/${n}`)).data.body ?? "" }),
     setPrBody: async (n, body) => void (await call("PATCH", `${r}/pulls/${n}`, { body })),
     // Each check run gets the workflow, event and branch it ran for, so

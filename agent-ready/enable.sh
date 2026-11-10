@@ -23,7 +23,7 @@
 # AGENT_APP_ID variable and the AGENT_APP_PRIVATE_KEY secret, sets
 # CLAUDE_CODE_OAUTH_TOKEN, OPENAI_API_KEY and AGENT_ATTACH_TOKEN from your
 # environment when they're there, creates the labels, adds the ruleset and opens a PR
-# adding .github/workflows/agent-ready.yml.
+# adding .github/workflows/agent-ready.yml. Run it again to update all of that.
 set -euo pipefail
 
 app=ntodd-agent
@@ -115,6 +115,7 @@ for repo in "${repos[@]}"; do
   gh label create agent-working -R "$repo" --force --color fbca04 --description "agent-ready is working on this" >/dev/null
   gh label create agent-done -R "$repo" --force --color 0e8a16 --description "agent-ready finished" >/dev/null
   gh label create agent-blocked -R "$repo" --force --color d93f0b --description "agent-ready needs you" >/dev/null
+  gh label create agent-conflict -R "$repo" --force --color b60205 --description "agent-ready couldn't resolve this PR's conflict" >/dev/null
   for e in low medium high xhigh max; do
     gh label create "effort:$e" -R "$repo" --force --color c5def5 --description "agent-ready effort" >/dev/null
   done
@@ -123,6 +124,13 @@ for repo in "${repos[@]}"; do
   if $ruleset; then
     # An existing agent-ready ruleset is brought up to date, so rerunning
     # this tightens repos enabled before approvals were required.
+    #
+    # require_last_push_approval: a resolve run pushes to PRs you may have
+    # approved already. With this, a PR can't merge until someone other
+    # than its last pusher approves that push, so the App can't merge its
+    # own resolution on an approval from before it. The bypass is for the
+    # admin role alone, and the App has no administration permission, so it
+    # can't edit the ruleset.
     rules='{
   "name": "agent-ready",
   "target": "branch",
@@ -132,14 +140,14 @@ for repo in "${repos[@]}"; do
   "rules": [
     { "type": "deletion" },
     { "type": "non_fast_forward" },
-    { "type": "pull_request", "parameters": { "required_approving_review_count": 1, "dismiss_stale_reviews_on_push": false, "require_code_owner_review": false, "require_last_push_approval": false, "required_review_thread_resolution": false } }
+    { "type": "pull_request", "parameters": { "required_approving_review_count": 1, "dismiss_stale_reviews_on_push": false, "require_code_owner_review": false, "require_last_push_approval": true, "required_review_thread_resolution": false } }
   ]
 }'
     id=$(gh api "repos/$repo/rulesets" --jq '.[] | select(.name == "agent-ready") | .id')
     if [ -n "$id" ] && gh api -X PUT "repos/$repo/rulesets/$id" --silent --input - <<<"$rules"; then
-      echo "Ruleset updated: $default needs an approved PR, except for admins."
+      echo "Ruleset updated: $default needs a PR whose last push is approved, except for admins."
     elif [ -z "$id" ] && gh api -X POST "repos/$repo/rulesets" --silent --input - <<<"$rules"; then
-      echo "Ruleset added: $default needs an approved PR, except for admins."
+      echo "Ruleset added: $default needs a PR whose last push is approved, except for admins."
     else
       echo "Couldn't set the ruleset (private repos need GitHub Pro for rulesets). The App could merge its own PRs into $default."
     fi
@@ -159,35 +167,67 @@ name: agent-ready
 #
 # An effort:<level> label (low, medium, high, xhigh, max) or an
 # "/effort <level>" comment changes the effort from medium.
+#
+# It also keeps its pull requests mergeable. After a push to $default, a
+# sweep starts a resolve run on each of them that now conflicts, and a
+# "/resolve" comment asks for one on a pull request, yours included.
+
+# The sweep reads these names to see which pull requests already have a
+# resolve run queued.
+run-name: "\${{ inputs.mode == 'resolve' && format('agent-ready: resolve #{0}', inputs.pr) || 'agent-ready' }}"
 
 on:
   issues:
     types: [labeled]
   # flake-hunt starts a run on each flaky test it files. A run can be
-  # started by hand too, on an open issue labeled agent-ready.
+  # started by hand too, on an open issue labeled agent-ready. The jobs
+  # below dispatch the resolve runs.
   workflow_dispatch:
     inputs:
+      # Strings, so one that's left out arrives empty and not as 0.
       issue:
-        description: The issue to work. It has to be labeled agent-ready.
-        type: number
-        required: true
+        description: The issue to work. A build needs it labeled agent-ready.
+        type: string
+      mode:
+        description: Leave empty to build. "resolve" merges $default into a pull request that conflicts with it.
+        type: string
+      pr:
+        description: "For resolve: the pull request."
+        type: string
+      head:
+        description: "For resolve: the pull request's head SHA when it was checked."
+        type: string
+      comment:
+        description: "For resolve on a pull request of your own, with no issue: the ID of your /resolve comment."
+        type: string
+  issue_comment:
+    types: [created]
+  push:
+    branches: [$default]
+  schedule:
+    - cron: "23 9 * * *"
 
 permissions: {}
 
 jobs:
   agent:
     # The reusable workflow's gate checks all this again, and checks the
-    # issue a dispatched run names.
+    # issue or pull request a dispatched run names.
     if: >-
       (github.event_name == 'workflow_dispatch' &&
       (contains(fromJSON('$trusted_json'), github.event.sender.login) ||
       github.event.sender.login == 'github-actions[bot]')) ||
-      (github.event.label.name == 'agent-ready' &&
+      (github.event_name == 'issues' &&
+      github.event.label.name == 'agent-ready' &&
       contains(fromJSON('$trusted_json'), github.event.sender.login) &&
       (contains(fromJSON('$trusted_json'), github.event.issue.user.login) ||
       github.event.issue.user.login == 'github-actions[bot]'))
+    # One run at a time for an issue, or for a pull request with no issue.
+    # The two share a number sequence, so the groups never collide. Other
+    # events skip this job, and get a group of their own so they can't
+    # displace a run that's waiting.
     concurrency:
-      group: agent-ready-\${{ github.event.issue.number || inputs.issue }}
+      group: agent-ready-\${{ (github.event_name == 'issues' && github.event.issue.number) || inputs.issue || inputs.pr || github.run_id }}
     uses: ntodd/github-actions/.github/workflows/agent-ready.yml@$pin
     permissions:
       contents: read
@@ -205,6 +245,71 @@ $author
       CLAUDE_CODE_OAUTH_TOKEN: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
       AGENT_ATTACH_TOKEN: \${{ secrets.AGENT_ATTACH_TOKEN }}
+
+  # "/resolve" on a pull request, like "@dependabot rebase": if it
+  # conflicts with $default, start a resolve run on it. It runs
+  # agent-ready's own tooling and never checks out the pull request.
+  resolve-comment:
+    if: >-
+      github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+      github.event.comment.body == '/resolve' &&
+      contains(fromJSON('$trusted_json'), github.event.sender.login) &&
+      contains(fromJSON('$trusted_json'), github.event.comment.user.login)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ntodd/github-actions
+          ref: $pin
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - run: node agent-ready/resolve/index.mjs
+        env:
+          GITHUB_TOKEN: \${{ github.token }}
+          AGENT_TRUSTED_USERS: $trusted
+          AGENT_APP_BOT: "${app}[bot]"
+
+  # After a push to $default, and once a day: start a resolve run on each
+  # of the App's pull requests that now conflicts. It waits five minutes
+  # first and a newer push cancels it, so merging a few in a row sweeps
+  # once.
+  sweep:
+    if: github.event_name == 'push' || github.event_name == 'schedule'
+    concurrency:
+      group: \${{ (github.event_name == 'push' || github.event_name == 'schedule') && 'agent-ready-sweep' || format('agent-ready-sweep-{0}', github.run_id) }}
+      cancel-in-progress: true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+      actions: write
+    steps:
+      - name: Wait for the merges to finish
+        if: github.event_name == 'push'
+        run: sleep 300
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ntodd/github-actions
+          ref: $pin
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - run: node agent-ready/resolve/index.mjs
+        env:
+          GITHUB_TOKEN: \${{ github.token }}
+          AGENT_TRUSTED_USERS: $trusted
+          AGENT_APP_BOT: "${app}[bot]"
 EOF
   (
     cd "$tmp"
@@ -212,7 +317,9 @@ EOF
     git checkout --quiet -b "$branch"
     git add .github/workflows/agent-ready.yml
     git commit --quiet -m "Work agent-ready issues on Crew" -m "Labeling an issue agent-ready starts ntodd/github-actions' agent-ready
-workflow on it, which opens draft PRs and works them until CI is green."
+workflow on it, which opens draft PRs and works them until CI is green.
+It also resolves those PRs' conflicts after $default moves, and any PR's
+on a /resolve comment."
     git push --quiet --force -u origin "$branch"
     existing=$(gh pr list -R "$repo" --head "$branch" --state open --json url --jq '.[0].url // empty')
     if [ -n "$existing" ]; then
@@ -220,6 +327,8 @@ workflow on it, which opens draft PRs and works them until CI is green."
       exit 0
     fi
     gh pr create --head "$branch" --title "Work agent-ready issues on Crew" --body "Adds the agent-ready caller. Label an issue you wrote \`agent-ready\` and an agent works it into draft PRs on Crew: TDD, a headless-browser check, a Codex review, screenshots, and stacks when the fix splits into levels. Then it waits for CI and any review bots and answers them until everything's green.
+
+It also keeps those PRs mergeable: after a push to \`$default\` it merges \`$default\` into any of them that now conflicts and gets CI green again, and a \`/resolve\` comment asks for the same on any PR $trusted wrote.
 
 It runs only on issues $trusted wrote and labeled. The App's key and the Claude token are already set as secrets on this repo." --base "$default"
   )
