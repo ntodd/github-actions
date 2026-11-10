@@ -300,6 +300,11 @@ test("/resolve on a trusted user's own PR dispatches with the comment and no iss
   assert.deepEqual(res, { inputs: { mode: "resolve", pr: "12", head: HEAD, comment: "41" } });
 });
 
+test("/resolve does nothing when a resolve run on the PR is already queued", async () => {
+  const res = await planComment({ ...world().opts, appBot: BOT, event: commentEvent(), active: [9] });
+  assert.deepEqual(res, { reason: "a resolve run on #9 is already queued or going" });
+});
+
 test("/resolve does nothing on a PR that's already fine", async () => {
   const res = await onComment(world({ pulls: [pull({ mergeable: "MERGEABLE" })] }), commentEvent());
   assert.deepEqual(res, { reason: "#9 doesn't conflict with main any more" });

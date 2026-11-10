@@ -51,20 +51,21 @@ main(async () => {
     summary(line);
   };
 
-  if (env.GITHUB_EVENT_NAME === "issue_comment") {
-    const event = JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, "utf8"));
-    const plan = await planComment({ ...opts, event });
-    if (!plan.inputs) return say(`/resolve did nothing: ${plan.reason}.`);
-    await start(plan.inputs);
-    return say(`Started a resolve run on #${plan.inputs.pr}.`);
-  }
-
   let active = [];
   try {
     active = await github.activeResolves(workflow);
   } catch (err) {
     console.log(`Couldn't list the resolve runs already going: ${err.message}`);
   }
+
+  if (env.GITHUB_EVENT_NAME === "issue_comment") {
+    const event = JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, "utf8"));
+    const plan = await planComment({ ...opts, event, active });
+    if (!plan.inputs) return say(`/resolve did nothing: ${plan.reason}.`);
+    await start(plan.inputs);
+    return say(`Started a resolve run on #${plan.inputs.pr}.`);
+  }
+
   const { picked, skipped } = await planSweep({ ...opts, active, timeoutMs: Number(env.AGENT_TIMEOUT_MINUTES || 360) * 60_000 });
   let failed = 0;
   for (const p of picked) {
