@@ -82,3 +82,94 @@ test("every phase that can block asks for a one-line reason", () => {
   for (const phase of ["build", "respond"]) assert.match(render(phase, { repo: "r", issue, round: 1, failed: [], threads: [], waitingFor: [] }), /"status": "blocked", "reason"/);
   for (const round of [0, 1]) assert.match(render("publish", { repo: "r", issue, round }), /"status": "blocked", "reason"/);
 });
+
+test("fill keeps a section when its key is set, drops it when it isn't, and the other way round for ^", () => {
+  const t = "a{{#x}} x:{{v}}{{#y}} y{{/y}}{{/x}}{{^x}} no x{{/x}} b";
+  assert.equal(fill(t, { x: true, y: true, v: 1 }), "a x:1 y b");
+  assert.equal(fill(t, { x: true, v: 1 }), "a x:1 b");
+  assert.equal(fill(t, { v: 1 }), "a no x b");
+});
+
+test("fill doesn't expand sections or placeholders that arrive inside a value", () => {
+  assert.equal(fill("{{body}}", { body: "{{#x}}hi{{/x}} {{owner}}", owner: "ntodd" }), "{{#x}}hi{{/x}} {{owner}}");
+});
+
+const rz = { pr: 9, own: false, headRef: "feature/7-fix", baseRef: "main", headSha: "a".repeat(40) };
+const base = "b".repeat(40);
+
+test("resolve gives the issue, the validated head and base, and the rules for resolving", () => {
+  const p = render("resolve", { repo: "ntodd/sandbox", issue, resolve: rz, round: 0, baseSha: base, headSha: rz.headSha });
+  assert.match(p, /# Resolve pull request #9/);
+  assert.match(p, /closes issue #7: Counter skips 3/);
+  assert.match(p, /It goes 1, 2, 4\./);
+  assert.match(p, new RegExp(`git checkout -B feature/7-fix ${rz.headSha}`));
+  assert.match(p, new RegExp(`git merge ${base}`));
+  assert.match(p, /Merge, don't rebase/);
+  assert.match(p, /Regenerate generated files/);
+  assert.match(p, /fails the same way on `main` isn't this run's to fix/);
+  assert.match(p, /"status": "ready", "files"/);
+  assert.match(p, /"status": "blocked", "reason"/);
+  assert.match(p, /no `nothing-to-do`/);
+  assert.doesNotMatch(p, /\{\{/);
+});
+
+test("resolve on a trusted user's own PR has the PR's description and no issue, and blocks sooner on intent", () => {
+  const pr = { number: 12, title: "Tidy the totals", body: "Splits the total.", author: "ntodd", comments: [], labels: [] };
+  const p = render("resolve", { repo: "r", issue: pr, resolve: { ...rz, pr: 12, own: true }, round: 0, baseSha: base, headSha: rz.headSha });
+  assert.match(p, /ntodd wrote #12 \(Tidy the totals\) and asked for this with a `\/resolve` comment/);
+  assert.match(p, /Splits the total\./);
+  assert.doesNotMatch(p, /closes issue/);
+  assert.match(p, /doesn't make clear what ntodd meant, block and ask/);
+  assert.doesNotMatch(p, /\{\{/);
+});
+
+test("a second resolve says main moved again and doesn't check the branch out afresh", () => {
+  const p = render("resolve", { repo: "r", issue, resolve: rz, round: 1, baseSha: base, headSha: "c".repeat(40) });
+  assert.match(p, /moved again/);
+  assert.doesNotMatch(p, /git checkout -B/);
+});
+
+test("in resolve mode, publish pushes the existing branch without force and opens nothing", () => {
+  for (const round of [0, 1]) {
+    const p = render("publish", { repo: "r", issue, resolve: rz, round });
+    assert.match(p, /git push origin HEAD:feature\/7-fix/);
+    assert.match(p, /never force/);
+    assert.match(p, /Don't open a pull request/);
+    assert.match(p, /GitHub's own message as the reason/);
+    assert.doesNotMatch(p, /as drafts|force-with-lease|gh stack/);
+    assert.doesNotMatch(p, /\{\{/);
+  }
+  assert.match(render("publish", { repo: "r", issue, resolve: rz, round: 0 }), /^## Publish phase\n/);
+  assert.match(render("publish", { repo: "r", issue, resolve: { ...rz, own: true }, round: 1 }), /Leave the review threads/);
+  assert.match(render("publish", { repo: "r", issue, round: 1 }), /force-with-lease/);
+});
+
+test("in resolve mode, respond adds commits, blocks on a check main fails too, and leaves an own PR's threads alone", () => {
+  const v = { repo: "r", issue, round: 1, failed: [], threads: [], waitingFor: [] };
+  const p = render("respond", { ...v, resolve: rz });
+  assert.match(p, /fails the same way on `main`: that isn't a resolve run's to fix/);
+  assert.match(p, /Don't amend, rebase or rewrite/);
+  assert.doesNotMatch(p, /fix it anyway|restack/);
+  assert.match(p, /\*\*Threads:\*\* decide for each one/);
+  assert.match(render("respond", { ...v, resolve: { ...rz, own: true } }), /\*\*Threads:\*\* leave them alone/);
+  const build = render("respond", v);
+  assert.match(build, /fix it anyway/);
+  assert.match(build, /restack the levels above/);
+  assert.doesNotMatch(build, /resolve run/);
+});
+
+test("the system prompt says when the run is a resolve run, and names a PR with no issue as a pull request", () => {
+  const p = render("system", { repo: "ntodd/sandbox", issue, resolve: rz });
+  assert.match(p, /This is a resolve run/);
+  assert.match(p, /working issue #7 in ntodd\/sandbox/);
+  assert.match(render("system", { repo: "r", issue: { number: 12, title: "T", body: "" }, resolve: { ...rz, pr: 12, own: true } }), /working pull request #12 in r/);
+  assert.doesNotMatch(render("system", { repo: "r", issue }), /resolve run/);
+  assert.doesNotMatch(p, /\{\{/);
+});
+
+test("the report is a resolve report in resolve mode", () => {
+  const p = render("report", { repo: "r", issue, resolve: rz, status: "done", rounds: 0, prs: [9] });
+  assert.match(p, /each file you resolved/);
+  assert.doesNotMatch(p, /phase 6/);
+  assert.match(render("report", { repo: "r", issue, status: "done", rounds: 0, prs: [9] }), /phase 6/);
+});

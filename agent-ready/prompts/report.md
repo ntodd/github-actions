@@ -2,7 +2,7 @@
 
 The run is over. Status: {{status}}{{reason}}. Pull requests: {{prs}}. Review rounds: {{rounds}}.
 
-Write issue-fix-stack's phase 6 report to {{state}}/report.md:
+{{^resolve}}Write issue-fix-stack's phase 6 report to {{state}}/report.md:
 
 - Lead with the count and the state.
 - A table of the levels: PR, issue and title.
@@ -10,7 +10,13 @@ Write issue-fix-stack's phase 6 report to {{state}}/report.md:
 - The verification you ran, with the commands and what they showed.
 - Blockers, with what you tried.
 - What's still open for {{owner}}.
+{{/resolve}}{{#resolve}}This was a resolve run on #{{pr}}. Write a short report to {{state}}/report.md:
 
+- Lead with how it ended.
+- What `{{baseRef}}` had changed that conflicted, each file you resolved, and how you decided between the two sides.
+- The gates and checks you ran, with the commands and what they showed.
+- What's still open for {{owner}}.
+{{/resolve}}
 Report only what you ran.
 
 If the status is blocked, also write {{state}}/comment.md for the issue. The workflow puts the reason above it as "**Blocked:** <reason>.", so don't repeat that line. Say exactly what's left: each failing check or open thread, the error it shows, what you tried, and what {{owner}} has to do. Keep it short, and run it through the humanizer skill.

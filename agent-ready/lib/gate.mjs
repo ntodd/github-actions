@@ -1,4 +1,6 @@
-// Who may start a run, and at what effort.
+// Who may start a run, in which mode, and at what effort.
+
+import { clean } from "./status.mjs";
 
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
@@ -52,6 +54,109 @@ export function checkTrigger(event, { label, trustedUsers, eventName = "issues",
   const editor = untrustedEditor(issue, trustedUsers);
   if (editor) return no(`${editor} edited #${issue.number} and isn't trusted`);
   return { run: true };
+}
+
+// What the event asks for. Only a workflow_dispatch can ask for anything
+// but a build: no mode means build, "resolve" means resolve, and anything
+// else is an error, so a mode this version doesn't know never runs as a
+// build. The gate and run/index.mjs both read the mode through here.
+const positive = (v) => (/^[1-9]\d{0,14}$/.test(String(v ?? "")) ? Number(v) : null);
+const given = (v) => v != null && v !== "";
+
+export function parseRequest(eventName, inputs) {
+  if (eventName !== "workflow_dispatch") return { mode: "build" };
+  const i = inputs ?? {};
+  if (!given(i.mode)) return { mode: "build", issue: positive(i.issue) };
+  if (i.mode !== "resolve") return { error: `"${clean(String(i.mode), 40)}" isn't a mode agent-ready knows` };
+  const no = (what) => ({ error: `a resolve run needs ${what}` });
+  const pr = positive(i.pr);
+  if (!pr) return no("the pull request's number");
+  if (!/^[0-9a-f]{40}$/.test(String(i.head ?? ""))) return no("the pull request's head SHA from when it was checked");
+  const issue = positive(i.issue);
+  if (given(i.issue) && !issue) return no("an issue number, if it names an issue");
+  const comment = positive(i.comment);
+  if (given(i.comment) && !comment) return no("a comment ID, if it names a comment");
+  if (issue && comment) return no("an issue or a comment, not both");
+  if (!issue && !comment) return no("the issue the pull request closes, or the /resolve comment that asked for it");
+  return { mode: "resolve", issue, pr, head: i.head, comment };
+}
+
+export const isResolveComment = (body) => String(body ?? "").trim() === "/resolve";
+
+// The last time the label was added. events: github.labelEvents, oldest first.
+export const latestLabeled = (events, label) => events.filter((e) => e.label === label).at(-1) ?? null;
+
+const same = (a, b) => String(a ?? "").toLowerCase() === String(b ?? "").toLowerCase();
+
+// The one issue a PR closes. Anything else is refused: none, several, one
+// in another repo (other/repo#7 is never #7), or a list GitHub only gave
+// part of.
+export function closingIssue(pr, repo) {
+  const c = pr.closes;
+  if (!c || c.more || c.total !== c.issues?.length) return { reason: `couldn't read everything #${pr.number} closes` };
+  if (c.total !== 1) return { reason: `#${pr.number} closes ${c.total} issues, not exactly one` };
+  const [only] = c.issues;
+  if (!same(only.repo, repo)) return { reason: `#${pr.number} closes ${only.repo}#${only.number}, which is in another repo` };
+  return { issue: only.number };
+}
+
+// Who may start a resolve run, and on what. A PR being the App's, or
+// saying it closes an issue, isn't enough: Claude can open and edit PRs in
+// publish phases. So an agent PR needs an issue a trusted user wrote and
+// labeled (the label is gone by now, because every run removes it, so the
+// proof is the issue's timeline, which the App can't forge), and a PR
+// opened after that label that closes that issue and nothing else. A
+// trusted user's own PR needs their /resolve comment on it. appBot is the
+// App's login. Only null skips that check: the gate doesn't know the login
+// and passes null, and run/index.mjs checks it before Claude starts.
+export function checkResolve({ request, sender, pr, issue, labeled, comment, repo, label, trustedUsers, appBot }) {
+  const trusted = new Set(trustedUsers.map((u) => u.toLowerCase()));
+  const no = (reason) => ({ run: false, reason });
+  if (trusted.size === 0) return no("no trusted-users are set");
+  const by = login(sender);
+  // The /resolve job and the sweep dispatch as github-actions[bot].
+  if (!trusted.has(by) && by !== FLAKE_HUNT_BOT) return no(`${sender?.login} started the run and isn't trusted`);
+  if (!pr) return no(`there's no pull request #${request.pr}`);
+  const n = `#${pr.number}`;
+  if (pr.state !== "open") return no(`${n} isn't open`);
+  if (!same(pr.headRepo, repo)) return no(`${n}'s branch is in ${pr.headRepo || "a repo that's gone"}, not ${repo}`);
+  if (!pr.baseRef || pr.baseRef !== pr.defaultBranch) return no(`${n} goes into ${pr.baseRef}, not ${pr.defaultBranch}`);
+  // The branch names go into the commands Claude is given, and git allows
+  // far more in a ref than a shell reads as a plain word.
+  if (![pr.headRef, pr.baseRef].every((ref) => /^[\w][\w./-]*$/.test(ref ?? ""))) return no(`${n}'s branch names have characters a resolve run won't put in a command`);
+
+  if (!request.issue) {
+    if (!trusted.has(String(pr.author ?? "").toLowerCase())) return no(`${pr.author} opened ${n} and isn't trusted`);
+    // The title and description are all Claude has for what the PR means
+    // to do, and the App's token can edit them.
+    const editor = (pr.editors ?? ["(unknown)"]).find((e) => !trusted.has(String(e).toLowerCase()));
+    if (editor) return no(`${editor} edited ${n}'s title or description and isn't trusted`);
+    // The dispatch came from github-actions[bot], which proves nothing
+    // about who asked. The comment does.
+    if (!comment) return no(`there's no /resolve comment ${request.comment}`);
+    if (comment.pr !== pr.number) return no(`comment ${request.comment} isn't on ${n}`);
+    if (!isResolveComment(comment.body)) return no(`comment ${request.comment} doesn't say /resolve`);
+    if (!trusted.has(String(comment.author ?? "").toLowerCase())) return no(`${comment.author} wrote the /resolve comment and isn't trusted`);
+    return { run: true, kind: "own" };
+  }
+
+  if (!issue) return no(`there's no issue #${request.issue}`);
+  const i = `#${issue.number}`;
+  if (issue.pull_request) return no(`${i} is a pull request, not an issue`);
+  if (issue.state !== "open") return no(`${i} isn't open`);
+  const flake = isFlakeHuntIssue(issue);
+  if (!trusted.has(login(issue.user)) && !flake) return no(`${issue.user?.login} wrote the issue and isn't trusted`);
+  const editor = untrustedEditor(issue, trustedUsers);
+  if (editor) return no(`${editor} edited ${i} and isn't trusted`);
+  if (!labeled) return no(`nobody labeled ${i} ${label}`);
+  const labeler = String(labeled.actor ?? "").toLowerCase();
+  if (!trusted.has(labeler) && !(flake && labeler === FLAKE_HUNT_BOT)) return no(`${labeled.actor} last labeled ${i} ${label} and isn't trusted`);
+  if (appBot !== null && !same(pr.author, appBot)) return no(`${pr.author} opened ${n}, not ${appBot}`);
+  if (!(Date.parse(pr.createdAt) > Date.parse(labeled.at))) return no(`${n} was opened before ${i} was last labeled ${label}`);
+  const closing = closingIssue(pr, repo);
+  if (closing.reason) return no(closing.reason);
+  if (closing.issue !== issue.number) return no(`${n} closes #${closing.issue}, not ${i}`);
+  return { run: true, kind: "agent" };
 }
 
 // Who edited the issue's body or title (issue.editors, from the gate),

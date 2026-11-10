@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runAgent } from "../lib/run.mjs";
+import { BACKOFF_MS } from "../lib/resolve.mjs";
 
 // A fake world: a scripted Claude, GitHub read state that changes as the
 // clock moves, and a writer that records what it did.
-function world({ outcomes, prs = {}, threads = {}, bots = [], rerun, author = "ntodd", ...config } = {}) {
+function world({ outcomes, prs = {}, threads = {}, bots = [], rerun, author = "ntodd", resolve = null, issue = null, mergeable = () => "MERGEABLE", base = () => "base1", ...config } = {}) {
   let t = Date.parse("2026-11-07T12:00:00Z");
   const log = { phases: [], tokens: [], writes: [], minted: 0, attached: [], steps: [], finished: null };
   const script = [...outcomes];
@@ -23,6 +24,12 @@ function world({ outcomes, prs = {}, threads = {}, bots = [], rerun, author = "n
     checks: async (sha) => prs.checksFor?.(sha, t) ?? { checkRuns: [], statuses: [] },
     activity: async (n) => prs.activityFor?.(n, t) ?? { reviews: [], comments: [] },
     threads: async (n) => (typeof threads[n] === "function" ? threads[n](t) : threads[n] ?? []),
+    // What a resolve run reads: whether the PR merges, and the base's tip.
+    pull: async (n) => {
+      const p = typeof prs[n] === "function" ? prs[n](t) : prs[n];
+      return { ...p, mergeable: mergeable(p.headSha, t), baseRef: "main" };
+    },
+    branchSha: async (ref) => base(ref, t),
   };
   const fail = config.fail ?? {};
   const writer = (token) => ({
@@ -47,7 +54,8 @@ function world({ outcomes, prs = {}, threads = {}, bots = [], rerun, author = "n
   const run = () =>
     runAgent({
       repo: "ntodd/sandbox",
-      issue: { number: 7, title: "Fix it", body: "Broken", comments: [], author },
+      issue: issue ?? { number: 7, title: "Fix it", body: "Broken", comments: [], author },
+      resolve,
       config: {
         label: "agent-ready",
         trustedUsers: ["ntodd"],
@@ -367,4 +375,211 @@ test("a PR closed or merged during the run ends it as done", async () => {
     prs: { 5: pr("a1", { state: "merged" }), checksFor: () => running },
   });
   assert.equal((await w.run()).status, "done");
+});
+
+// Resolve runs: the PR exists and conflicts with main.
+
+const HEAD = "a".repeat(40);
+const theirs = { pr: 5, own: false, stack: false, headRef: "feature/7-fix", baseRef: "main", headSha: HEAD };
+const labels = (w) => w.log.writes.filter(([op]) => op === "addLabels" || op === "removeLabel").map(([op, , n, l]) => `${op === "addLabels" ? "+" : "-"}${[l].flat().join()}@${n}`);
+const comments = (w, n) => w.log.writes.filter(([op, , on]) => op === "comment" && on === n).map(([, , , body]) => body);
+
+// A resolve world: the publish after each resolve moves the PR's head.
+function resolving({ outcomes, checks = () => green, ...rest }) {
+  let sha = HEAD;
+  let pushes = 0;
+  const scripted = outcomes.map((o) => (o.status === "published" && o.push !== false ? { ...o, onRun: () => (sha = `pushed${++pushes}`) } : o));
+  return world({ resolve: theirs, outcomes: scripted, prs: { 5: () => pr(sha, { draft: false }), checksFor: checks }, ...rest });
+}
+
+test("a resolve run merges, pushes the PR's branch, waits for green, checks it's mergeable and hands the PR back", async () => {
+  const prompts = [];
+  const w = resolving({
+    outcomes: [
+      { status: "ready", files: ["lib/tip.ex", "mix.lock"], onRun: ({ prompt }) => prompts.push(prompt) },
+      { status: "published", prs: [99] },
+      { status: "done", report: "Resolved." },
+    ],
+  });
+  const res = await w.run();
+  assert.equal(res.status, "done");
+  assert.deepEqual(res.prs, [5], "a PR number Claude reports is ignored");
+  assert.deepEqual(w.log.phases, ["resolve", "publish", "report"]);
+  assert.deepEqual(w.log.tokens, ["read", "app-2", "read"], "Claude writes only in the publish phase");
+  assert.deepEqual(labels(w), ["-agent-done@7", "-agent-blocked@7", "-agent-conflict@5", "+agent-working@7", "-agent-working@7", "+agent-done@7"]);
+  assert.ok(!labels(w).includes("-agent-ready@7"), "the label that starts builds is left alone");
+  assert.deepEqual(comments(w, 5), ["Merged `main` (base1) into this branch, because `main` had moved and the two conflicted. Conflicts resolved in `lib/tip.ex`, `mix.lock`."]);
+  assert.deepEqual(w.log.writes.filter(([op]) => op === "requestReviewers"), [["requestReviewers", "app-4", 5, ["ntodd"]]]);
+  assert.match(prompts[0], /"baseSha":"base1"/);
+  assert.match(prompts[0], new RegExp(`"headSha":"${HEAD}"`));
+  assert.deepEqual(w.log.steps, ["Merge main into #5 and resolve the conflicts", "Push the merge to #5", "Wait for CI on #5", "Write the report"]);
+  assert.equal(w.log.finished, "**agent-ready is done.** #5 is ready for review.");
+});
+
+test("a resolve run blocked on a real conflict says why on the issue and marks the PR agent-conflict", async () => {
+  const w = resolving({ outcomes: [{ status: "blocked", reason: "main rewrote Tip.split/2, which this PR also changes", comment: "lib/tip.ex: which behaviour do you want?" }] });
+  const res = await w.run();
+  assert.equal(res.status, "blocked");
+  assert.deepEqual(w.log.phases, ["resolve"]);
+  assert.deepEqual(comments(w, 7), ["**Blocked:** Main rewrote Tip.split/2, which this PR also changes.\n\nlib/tip.ex: which behaviour do you want?\n\nPull requests: #5. [Run log](https://run)"]);
+  assert.deepEqual(labels(w).slice(4), ["-agent-working@7", "+agent-blocked@7", "+agent-conflict@5"]);
+  assert.ok(!w.log.writes.some(([op]) => op === "markReady" || op === "requestReviewers"));
+});
+
+test("a resolve run where main already does what the PR does ends blocked, never done", async () => {
+  const asked = resolving({ outcomes: [{ status: "blocked", reason: "main already has this change (#31), so #5 can be closed" }] });
+  assert.equal((await asked.run()).status, "blocked");
+  assert.match(asked.log.finished, /^\*\*agent-ready is blocked\.\*\* Main already has this change/);
+
+  const w = resolving({ outcomes: [{ status: "nothing-to-do", comment: "main already has it" }] });
+  const res = await w.run();
+  assert.equal(res.status, "blocked");
+  assert.equal(res.reason, 'the resolve phase ended with status "nothing-to-do"');
+  assert.ok(labels(w).includes("+agent-conflict@5"));
+  assert.ok(!w.log.writes.some(([op]) => op === "requestReviewers"), "a PR that should be closed isn't handed over for review");
+});
+
+test("a refused push ends blocked with GitHub's message, and the PR stays agent-conflict", async () => {
+  const refusal = "refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yml` without `workflows` permission";
+  const w = resolving({ outcomes: [{ status: "ready", files: ["a.ex"] }, { status: "blocked", reason: refusal, push: false }] });
+  const res = await w.run();
+  assert.equal(res.status, "blocked");
+  assert.equal(res.reason, refusal);
+  assert.deepEqual(comments(w, 5), [], "nothing was merged, so nothing says it was");
+  assert.ok(labels(w).includes("+agent-conflict@5"));
+});
+
+test("a publish that reports a push the PR never got ends blocked", async () => {
+  const w = resolving({ outcomes: [{ status: "ready", files: ["a.ex"] }, { status: "published", push: false }] });
+  const res = await w.run();
+  assert.equal(res.status, "blocked");
+  assert.match(res.reason, /#5's head is still aaaaaaa/);
+  assert.deepEqual(comments(w, 5), []);
+});
+
+test("a PR that conflicts again at the end is resolved again, as a round", async () => {
+  const prompts = [];
+  const w = resolving({
+    outcomes: [
+      { status: "ready", files: ["a.ex"] },
+      { status: "published" },
+      { status: "ready", files: ["b.ex"], onRun: ({ prompt }) => prompts.push(prompt) },
+      { status: "published" },
+      { status: "done", report: "Twice." },
+    ],
+    mergeable: (sha) => (sha === "pushed1" ? "CONFLICTING" : "MERGEABLE"),
+    base: () => (w.log.phases.length > 1 ? "base2" : "base1"),
+  });
+  const res = await w.run();
+  assert.equal(res.status, "done");
+  assert.equal(res.rounds, 1);
+  assert.deepEqual(w.log.phases, ["resolve", "publish", "resolve", "publish", "report"]);
+  assert.match(prompts[0], /"round":1/);
+  assert.match(prompts[0], /"headSha":"pushed1"/);
+  assert.match(prompts[0], /"baseSha":"base2"/);
+  assert.equal(comments(w, 5).length, 2);
+  assert.match(comments(w, 5)[1], /\(base2\).*`b\.ex`/);
+  assert.ok(w.log.steps.includes("Resolve #5 again: main moved (round 1)"));
+});
+
+test("a PR that keeps conflicting runs out of rounds and ends blocked, agent-conflict", async () => {
+  const w = resolving({
+    maxRounds: 1,
+    outcomes: [{ status: "ready" }, { status: "published" }, { status: "ready" }, { status: "published" }, { status: "done", report: "Still conflicting." }],
+    mergeable: () => "CONFLICTING",
+  });
+  const res = await w.run();
+  assert.equal(res.status, "blocked");
+  assert.equal(res.reason, "#5 conflicts with main again, and the run is out of rounds (1)");
+  assert.deepEqual(labels(w).slice(4), ["-agent-working@7", "+agent-blocked@7", "+agent-conflict@5"]);
+});
+
+test("UNKNOWN at the end is retried for a few minutes, then ends blocked without calling it a conflict", async () => {
+  const w = resolving({ outcomes: [{ status: "ready" }, { status: "published" }, { status: "done", report: "?" }], mergeable: () => "UNKNOWN" });
+  const t0 = w.now();
+  const res = await w.run();
+  assert.equal(res.status, "blocked");
+  assert.equal(res.reason, "GitHub never worked out whether #5 can be merged");
+  assert.ok(w.now() - t0 >= BACKOFF_MS.reduce((a, b) => a + b));
+  assert.ok(!labels(w).includes("+agent-conflict@5"), "the merge was pushed, so the sweep may look again");
+
+  let asked = 0;
+  const later = resolving({ outcomes: [{ status: "ready" }, { status: "published" }, { status: "done", report: "ok" }], mergeable: () => (++asked < 3 ? "UNKNOWN" : "MERGEABLE") });
+  assert.equal((await later.run()).status, "done");
+});
+
+test("a resolve run still gets respond rounds for what the merge broke in CI", async () => {
+  const w = resolving({
+    outcomes: [{ status: "ready" }, { status: "published" }, { status: "ready" }, { status: "published" }, { status: "done", report: "ok" }],
+    checks: (sha) => (sha === "pushed1" ? red : green),
+  });
+  const res = await w.run();
+  assert.equal(res.status, "done");
+  assert.deepEqual(w.log.phases, ["resolve", "publish", "respond", "publish", "report"]);
+  assert.equal(comments(w, 5).length, 1, "only a merge gets the merge comment");
+  assert.ok(w.log.steps.includes("Push round 1's changes to #5"));
+});
+
+test("a resolve run on a stack's PR ends blocked without starting Claude", async () => {
+  const w = resolving({ resolve: { ...theirs, stack: true }, outcomes: [] });
+  const res = await w.run();
+  assert.equal(res.status, "blocked");
+  assert.match(res.reason, /#5 is part of a stack/);
+  assert.deepEqual(w.log.phases, []);
+  assert.ok(labels(w).includes("+agent-conflict@5"));
+});
+
+const mineIssue = { number: 12, title: "Tidy the totals", body: "Splits the total.", comments: [], author: "ntodd" };
+const mine = { pr: 12, own: true, stack: false, headRef: "feature/mine", baseRef: "main", headSha: HEAD };
+
+function resolvingMine({ outcomes, draft = true, checks = () => green, ...rest }) {
+  let sha = HEAD;
+  let pushes = 0;
+  const scripted = outcomes.map((o) => (o.status === "published" ? { ...o, onRun: () => (sha = `pushed${++pushes}`) } : o));
+  return world({
+    resolve: mine,
+    issue: mineIssue,
+    outcomes: scripted,
+    prs: { 12: () => pr(sha, { number: 12, nodeId: "PR_12", draft }), checksFor: checks },
+    ...rest,
+  });
+}
+
+test("/resolve on a trusted user's own PR resolves it and reports on the PR, with no handover", async () => {
+  const w = resolvingMine({
+    readyForBots: true,
+    bots: ["coderabbitai[bot]"],
+    outcomes: [{ status: "ready", files: ["lib/total.ex"] }, { status: "published" }, { status: "done", report: "ok" }],
+    // An open thread of the owner's, and a bot that never reviews.
+    threads: { 12: [{ id: "T1", isResolved: false, comments: { nodes: [{ author: { login: "ntodd" }, body: "Rename this?" }] } }] },
+  });
+  const res = await w.run();
+  assert.equal(res.status, "done");
+  assert.deepEqual(w.log.phases, ["resolve", "publish", "report"], "the review threads go unanswered");
+  assert.deepEqual(labels(w), ["-agent-done@12", "-agent-blocked@12", "-agent-conflict@12", "+agent-working@12", "-agent-working@12", "+agent-done@12"]);
+  assert.deepEqual(comments(w, 12), [
+    "Merged `main` (base1) into this branch, because `main` had moved and the two conflicted. Conflicts resolved in `lib/total.ex`. The merge commit is on `feature/mine` now, so pull before you push again.",
+  ]);
+  assert.ok(!w.log.writes.some(([op]) => op === "markReady" || op === "requestReviewers"), "the draft state and the reviewers are unchanged");
+  assert.deepEqual(w.log.attached, [], "the description isn't touched");
+  assert.equal(w.log.finished, "**agent-ready is done.** #12 merges into `main` again, and CI is green.");
+  assert.ok(w.log.steps.includes("Wait for CI on #12"), "it doesn't wait for review bots");
+});
+
+test("a blocked resolve on an own PR labels the PR agent-conflict while it still conflicts, and agent-blocked once the merge is pushed", async () => {
+  const stuck = resolvingMine({ outcomes: [{ status: "blocked", reason: "which of the two totals did you mean?" }] });
+  await stuck.run();
+  assert.deepEqual(labels(stuck).slice(4), ["-agent-working@12", "+agent-conflict@12"]);
+  assert.deepEqual(comments(stuck, 12), ["**Blocked:** Which of the two totals did you mean?\n\n[Run log](https://run)"]);
+
+  const pushed = resolvingMine({ maxRounds: 0, checks: () => red, outcomes: [{ status: "ready" }, { status: "published" }, { status: "done", report: "red" }] });
+  const res = await pushed.run();
+  assert.equal(res.status, "blocked");
+  assert.deepEqual(labels(pushed).slice(4), ["-agent-working@12", "+agent-blocked@12"]);
+});
+
+test("a run that blocks after pushing the merge still marks the PR agent-conflict if main has moved again", async () => {
+  const w = resolving({ maxRounds: 0, checks: () => red, mergeable: () => "CONFLICTING", outcomes: [{ status: "ready" }, { status: "published" }, { status: "done", report: "red" }] });
+  assert.equal((await w.run()).status, "blocked");
+  assert.deepEqual(labels(w).slice(4), ["-agent-working@7", "+agent-blocked@7", "+agent-conflict@5"]);
 });
