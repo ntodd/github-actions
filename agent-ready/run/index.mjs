@@ -156,6 +156,7 @@ main(async () => {
       reviewTimeoutMs: Number(env.AGENT_REVIEW_TIMEOUT_MINUTES) * 60_000,
       pollMs: 30_000,
       reviewers: parseList(env.AGENT_REVIEWERS),
+      appBot: bot,
       runUrl,
     },
     readToken: env.GITHUB_TOKEN,
@@ -194,5 +195,5 @@ main(async () => {
   );
   setOutput("status", res.status);
   setOutput("prs", res.prs.join(" "));
-  if (res.status !== "done") process.exitCode = 1;
+  if (res.status !== "done" && res.status !== "covered") process.exitCode = 1;
 });

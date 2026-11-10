@@ -76,6 +76,24 @@ Codex.
   token doesn't start workflows, so flake-hunt dispatches the caller
   instead, and `github-actions[bot]` may dispatch only on those issues.
   The owner (the first trusted user) is asked to review.
+- **One fix per cause:** flake-hunt starts one run for a group of flakes
+  that fail the same way, on the group's first issue, whose body lists
+  the rest. The run checks each one's failing seeds against the fix, and
+  the PR closes the ones it covers. Before it builds, a run on a
+  flake-hunt issue checks out each of the App's open PRs that could fix
+  the same cause and runs the issue's failing seeds. If one passes them
+  all, it opens nothing: it comments on the issue with the PR and the
+  seeds, comments on the PR, and labels the issue `agent-covered`. The
+  issue stays open: close it by hand when that PR merges. Adding
+  `Fixes #N` to the PR instead would fail the resolve checks, since the
+  issue isn't in the PR's group.
+- **Taking turns:** runs flake-hunt starts from one hunt don't all build
+  at once, or none could see another's PR. A build on a flake-hunt issue
+  waits in the gate while a flake-hunt issue with a lower number is still
+  queued (labeled `agent-ready`), or a run on one is working and hasn't
+  opened its PR yet. It looks every five minutes, waits two hours at
+  most, then goes ahead. The wait holds the runner and counts toward
+  `timeout-minutes`, so keep that well above two hours.
 - **Effort:** medium unless the issue has an `effort:<level>` label (`low`,
   `medium`, `high`, `xhigh`, `max`) or a trusted comment with
   `/effort <level>`.
@@ -155,7 +173,9 @@ starts, check that:
   the issue's timeline, which the App can't forge
 - the PR is open, the App opened it after that label, its branch is in the
   same repo, it goes into the default branch, and it closes that issue and
-  no other
+  no other. A flake-hunt group's PR may also close the others its first
+  issue lists, as long as flake-hunt wrote each one and nobody untrusted
+  edited it. The resolve run is for the group's first issue
 - the head is still the commit that was checked, and the PR still
   conflicts. If not, the run stops without touching the issue
 

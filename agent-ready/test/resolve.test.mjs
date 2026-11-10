@@ -333,3 +333,52 @@ test("/resolve on the App's PR still needs the issue to pass: an unlabeled issue
   const two = pull({ closes: { total: 2, more: false, issues: [{ number: 7, repo: "ntodd/sandbox" }, { number: 8, repo: "ntodd/sandbox" }] } });
   assert.match((await onComment(world({ pulls: [two] }), commentEvent())).reason, /closes 2 issues/);
 });
+
+// A flake-hunt group: #7 is the first issue and lists #8 and #10, and the
+// App's PR closes all three.
+
+const flaky = (number, extra = "") => ({
+  number,
+  state: "open",
+  user: { login: "github-actions[bot]" },
+  labels: [{ name: "flaky-test" }],
+  body: `Failed **2 of 96** runs.\n\n${extra}<!-- flake-hunt:%3A%3ADemo.Test%3A%3Atest%20${number} -->\n`,
+});
+const grouped = (over = {}) => ({
+  pulls: [pull({ body: "Fixes #7\nFixes #8\nFixes #10", closes: { total: 3, more: false, issues: [7, 8, 10].map((number) => ({ number, repo: "ntodd/sandbox" })) } })],
+  issues: { 7: flaky(7, "<!-- flake-hunt-group:8,10 -->\n\n"), 8: flaky(8), 10: flaky(10), 11: flaky(11) },
+  events: { 7: [labeled("agent-ready", "github-actions[bot]", "2026-11-07T12:00:00Z")] },
+  ...over,
+});
+
+test("prepareResolve takes the App's PR for a whole flake-hunt group", async () => {
+  const w = world(grouped());
+  const res = await prepareResolve({ ...w.opts, request: request(), sender: actions, appBot: BOT });
+  assert.equal(res.go, true);
+  assert.equal(res.issue.number, 7);
+});
+
+test("prepareResolve refuses a group's PR that also closes an issue nobody labeled", async () => {
+  const w = world(grouped({ pulls: [pull({ closes: { total: 4, more: false, issues: [7, 8, 10, 11].map((number) => ({ number, repo: "ntodd/sandbox" })) } })] }));
+  const res = await prepareResolve({ ...w.opts, request: request(), sender: actions, appBot: BOT });
+  assert.equal(res.refused, true);
+  assert.match(res.reason, /#9 also closes #11, which isn't in #7's group/);
+});
+
+test("the sweep resolves a group's PR for its first issue, whichever order GitHub lists them in", async () => {
+  const g = grouped();
+  g.pulls[0].closes.issues.reverse();
+  assert.deepEqual((await sweep(world(g))).picked, [{ issue: 7, pr: 9, head: HEAD }]);
+});
+
+test("the sweep skips a PR that closes several issues none of which lists the rest", async () => {
+  const g = grouped({ issues: { 7: flaky(7), 8: flaky(8), 10: flaky(10) } });
+  const res = await sweep(world(g));
+  assert.deepEqual(res.picked, []);
+  assert.match(res.skipped[0].reason, /#9 closes 3 issues, and none of them is a flake-hunt group's first issue listing the rest/);
+});
+
+test("/resolve on a group's PR dispatches for the group's first issue", async () => {
+  const res = await onComment(world(grouped()), commentEvent());
+  assert.deepEqual(res, { inputs: { issue: "7", mode: "resolve", pr: "9", head: HEAD } });
+});

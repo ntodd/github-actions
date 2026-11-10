@@ -315,3 +315,11 @@ test("dispatch starts a workflow on a ref with string inputs", async () => {
   await c.dispatch("agent-ready.yml", "main", { issue: "7", mode: "resolve", pr: "9", head: "abc" });
   assert.deepEqual(calls[0].body, { ref: "main", inputs: { issue: "7", mode: "resolve", pr: "9", head: "abc" } });
 });
+
+test("labeledIssues lists the open issues with a label, without pull requests", async () => {
+  const { gh: c, calls } = gh([["GET /issues?", () => Response.json([{ number: 7 }, { number: 8, pull_request: {} }])]]);
+  assert.deepEqual((await c.labeledIssues("agent-working")).map((i) => i.number), [7]);
+  const url = new URL(calls[0].url);
+  assert.equal(url.searchParams.get("labels"), "agent-working");
+  assert.equal(url.searchParams.get("state"), "open");
+});

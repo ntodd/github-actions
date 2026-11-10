@@ -173,3 +173,38 @@ test("the report is a resolve report in resolve mode", () => {
   assert.doesNotMatch(p, /phase 6/);
   assert.match(render("report", { repo: "r", issue, status: "done", rounds: 0, prs: [9] }), /phase 6/);
 });
+
+const flakeIssue = (extra = "") => ({
+  number: 9,
+  title: 'Flaky test: Demo.Test "flaky"',
+  body: `Failed **2 of 96** runs. Failing seeds: 11, 22.\n\n${extra}<!-- flake-hunt:%3A%3ADemo.Test%3A%3Atest%20flaky -->\n`,
+  labels: ["flaky-test", "agent-ready"],
+  comments: [],
+  subIssues: [],
+  author: "github-actions[bot]",
+});
+
+test("build on a flake-hunt issue checks the App's open PRs before building, and can end covered", () => {
+  const p = render("build", { repo: "ntodd/sandbox", issue: flakeIssue() });
+  const check = p.indexOf("Before you build");
+  assert.ok(check > 0 && check < p.indexOf("Do phases 0 to 3"), "the check comes before the build steps");
+  assert.match(p, /gh pr list --author "app\/ntodd-agent" --state open/);
+  assert.match(p, /failing seeds/);
+  assert.match(p, /\{"status": "covered", "pr": <number>\}/);
+  assert.doesNotMatch(p, /flake-hunt group|\{\{/);
+});
+
+test("build on any other issue has no open-PR check and no covered outcome", () => {
+  const p = render("build", { repo: "ntodd/sandbox", issue });
+  assert.doesNotMatch(p, /Before you build|covered/);
+  // flake-hunt's marker in an issue someone else wrote doesn't count.
+  assert.doesNotMatch(render("build", { repo: "r", issue: { ...flakeIssue(), author: "ntodd" } }), /Before you build/);
+});
+
+test("build on a flake-hunt group's first issue lists the others and closes only the ones the fix covers", () => {
+  const p = render("build", { repo: "ntodd/sandbox", issue: flakeIssue("<!-- flake-hunt-group:12,14 -->\n\n") });
+  assert.match(p, /#12 and #14/);
+  assert.match(p, /gh issue view <number>/);
+  assert.match(p, /`Fixes #9`, and a `Fixes #<number>` for each one the fix covers/);
+  assert.match(p, /stays open/);
+});

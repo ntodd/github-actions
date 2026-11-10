@@ -2,7 +2,7 @@
 // what the two jobs that start one (the sweep after a push to the default
 // branch, and a /resolve comment) decide to dispatch.
 
-import { checkResolve, closingIssue, latestLabeled, isResolveComment, FLAKE_HUNT_BOT } from "./gate.mjs";
+import { checkResolve, closingIssues, flakeGroup, latestLabeled, isResolveComment, FLAKE_HUNT_BOT } from "./gate.mjs";
 
 // GitHub works out mergeable in the background, so a PR can be UNKNOWN for
 // a while after a push. These are the waits between looks: about five
@@ -44,6 +44,30 @@ async function issueFacts(github, n, label) {
   return { issue: { ...raw, editors: await github.editors(n) }, labeled: latestLabeled(events, label), events };
 }
 
+// The issue a resolve is for: the one the PR closes, or for a flake-hunt
+// group's PR, the group's first issue, whose body lists the rest.
+export async function closingIssue(github, pr, repo) {
+  const closing = closingIssues(pr, repo);
+  if (closing.reason) return closing;
+  const all = closing.issues;
+  if (all.length === 1) return { issue: all[0] };
+  for (const n of all) {
+    const group = flakeGroup(await notFound(github.issue(n)));
+    if (all.every((m) => m === n || group.includes(m))) return { issue: n };
+  }
+  return { reason: `#${pr.number} closes ${all.length} issues, and none of them is a flake-hunt group's first issue listing the rest` };
+}
+
+// The other issues a PR closes, for checkResolve. Only the same repo's:
+// checkResolve refuses the rest without reading them.
+async function othersFacts(github, pr, n, repo, label) {
+  const others = {};
+  for (const i of pr?.closes?.issues ?? []) {
+    if (i.number !== n && lower(i.repo) === lower(repo)) others[i.number] = await issueFacts(github, i.number, label);
+  }
+  return others;
+}
+
 // Reads the PR a resolve was asked for (and its issue or its /resolve
 // comment), runs the resolve checks, and makes sure there's still
 // something to do: the head is the one that was checked, and the PR still
@@ -57,10 +81,13 @@ export async function prepareResolve({ request, sender, github, repo, label, tru
   let pr = await github.pull(request.pr);
   let facts = { issue: null, labeled: null };
   let comment = null;
-  if (request.issue) facts = await issueFacts(github, request.issue, label);
-  else if (request.comment) comment = await github.commentById(request.comment);
+  let others = {};
+  if (request.issue) {
+    facts = await issueFacts(github, request.issue, label);
+    others = await othersFacts(github, pr, request.issue, repo, label);
+  } else if (request.comment) comment = await github.commentById(request.comment);
 
-  const checked = () => checkResolve({ request, sender, pr, issue: facts.issue, labeled: facts.labeled, comment, repo, label, trustedUsers, appBot });
+  const checked = () => checkResolve({ request, sender, pr, issue: facts.issue, labeled: facts.labeled, others, comment, repo, label, trustedUsers, appBot });
   let check = checked();
   if (!check.run) return stop(check.reason, true);
 
@@ -106,7 +133,7 @@ export async function planSweep({ github, repo, label, trustedUsers, appBot, clo
     else if (pr.labels.includes("agent-conflict")) skip("it's labeled agent-conflict: a resolve run blocked on it, and it waits for you");
     else if (isStack(pr, open)) skip("it's part of a stack, and resolve runs don't handle stacks yet");
     else {
-      const closing = closingIssue(pr, repo);
+      const closing = await closingIssue(github, pr, repo);
       if (closing.reason) skip(closing.reason);
       else if (taken.has(closing.issue)) skip(`another pull request for #${closing.issue} is being resolved first`);
       else if (picked.length >= cap) skip(`a sweep starts ${cap} at a time, and the rest wait for the next one`);
@@ -128,7 +155,8 @@ export async function planSweep({ github, repo, label, trustedUsers, appBot, clo
           continue;
         }
         const request = { mode: "resolve", issue: closing.issue, pr: pr.number, head: pr.headSha, comment: null };
-        const check = checkResolve({ request, sender: { login: FLAKE_HUNT_BOT }, pr, issue, labeled, repo, label, trustedUsers, appBot });
+        const others = await othersFacts(github, pr, closing.issue, repo, label);
+        const check = checkResolve({ request, sender: { login: FLAKE_HUNT_BOT }, pr, issue, labeled, others, repo, label, trustedUsers, appBot });
         if (!check.run) skip(check.reason);
         else {
           taken.add(closing.issue);
@@ -166,7 +194,7 @@ export async function planComment({ event, github, repo, label, trustedUsers, ap
   if (!pr) return no(`there's no pull request #${number}`);
   let request = { mode: "resolve", issue: null, pr: number, head: pr.headSha, comment: event.comment.id };
   if (lower(pr.author) === lower(appBot)) {
-    const closing = closingIssue(pr, repo);
+    const closing = await closingIssue(github, pr, repo);
     if (closing.reason) return no(closing.reason);
     request = { ...request, issue: closing.issue, comment: null };
   }

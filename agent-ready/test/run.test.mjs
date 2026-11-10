@@ -35,7 +35,10 @@ function world({ outcomes, prs = {}, threads = {}, bots = [], rerun, author = "n
   const writer = (token) => ({
     removeLabel: async (n, name) => log.writes.push(["removeLabel", token, n, name]),
     addLabels: async (n, names) => log.writes.push(["addLabels", token, n, names]),
-    comment: async (n, body) => log.writes.push(["comment", token, n, body]),
+    comment: async (n, body) => {
+      if (fail.commentOn === n) throw new Error("locked");
+      log.writes.push(["comment", token, n, body]);
+    },
     markReady: async (nodeId) => {
       if (fail.markReady) throw new Error(fail.markReady);
       log.writes.push(["markReady", token, nodeId]);
@@ -100,11 +103,14 @@ test("a clean run builds, publishes, waits for green CI, writes the report and l
   assert.equal(res.report, "All good.");
   assert.deepEqual(w.log.phases, ["build", "publish", "report"]);
   assert.deepEqual(w.log.tokens, ["read", "app-2", "read"]);
+  // agent-working goes on before agent-ready comes off, so a run on
+  // another flake-hunt issue that's waiting its turn never sees neither.
   assert.deepEqual(w.log.writes, [
+    ["addLabels", "app-1", 7, ["agent-working"]],
     ["removeLabel", "app-1", 7, "agent-ready"],
     ["removeLabel", "app-1", 7, "agent-done"],
     ["removeLabel", "app-1", 7, "agent-blocked"],
-    ["addLabels", "app-1", 7, ["agent-working"]],
+    ["removeLabel", "app-1", 7, "agent-covered"],
     ["markReady", "app-3", "PR_5"],
     ["requestReviewers", "app-3", 5, ["ntodd"]],
     ["removeLabel", "app-3", 7, "agent-working"],
@@ -144,7 +150,7 @@ test("a run that needs a decision comments on the issue and labels it blocked", 
   const res = await w.run();
   assert.equal(res.status, "blocked");
   assert.deepEqual(w.log.phases, ["build"]);
-  assert.deepEqual(w.log.writes.slice(4), [
+  assert.deepEqual(w.log.writes.slice(5), [
     ["comment", "app-2", 7, "**Blocked:** The build stopped before opening a pull request.\n\nWhich default do you want?\n\n[Run log](https://run)"],
     ["removeLabel", "app-2", 7, "agent-working"],
     ["addLabels", "app-2", 7, ["agent-blocked"]],
@@ -582,4 +588,50 @@ test("a run that blocks after pushing the merge still marks the PR agent-conflic
   const w = resolving({ maxRounds: 0, checks: () => red, mergeable: () => "CONFLICTING", outcomes: [{ status: "ready" }, { status: "published" }, { status: "done", report: "red" }] });
   assert.equal((await w.run()).status, "blocked");
   assert.deepEqual(labels(w).slice(4), ["-agent-working@7", "+agent-blocked@7", "+agent-conflict@5"]);
+});
+
+// A flake-hunt issue another run's open PR already fixes.
+
+const flake = { number: 7, title: "Flaky test", body: "Failed 2 of 96 runs.\n\n<!-- flake-hunt:%3A%3ADemo.Test%3A%3Atest%20flaky -->\n", comments: [], author: "github-actions[bot]" };
+const coveringPr = (extra = {}) => pr("c1", { number: 6, nodeId: "PR_6", author: "ntodd-agent[bot]", ...extra });
+
+test("a flake an open PR of the App's already fixes ends covered: left open, labeled agent-covered, and the PR hears about it", async () => {
+  const w = world({ issue: flake, appBot: "ntodd-agent[bot]", outcomes: [{ status: "covered", pr: 6, comment: "#6 fixes it: seeds 11 and 22 pass on c1." }], prs: { 6: coveringPr() } });
+  const res = await w.run();
+  assert.equal(res.status, "covered");
+  assert.deepEqual(res.prs, []);
+  assert.deepEqual(w.log.phases, ["build"]);
+  const after = w.log.writes.slice(5);
+  assert.deepEqual(after.slice(0, 3), [
+    ["comment", "app-2", 7, "#6 fixes it: seeds 11 and 22 pass on c1."],
+    ["removeLabel", "app-2", 7, "agent-working"],
+    ["addLabels", "app-2", 7, ["agent-covered"]],
+  ]);
+  assert.equal(after[3][0], "comment");
+  assert.equal(after[3][2], 6);
+  assert.match(after[3][3], /#7.*passes its failing seeds with this branch/s);
+  assert.match(after[3][3], /Close #7 by hand when this merges/);
+  assert.ok(!w.log.writes.some(([op, , , names]) => op === "addLabels" && names.includes("agent-done")), "not done: the fix is someone else's to review");
+  assert.match(w.log.finished, /#6 already fixes this/);
+});
+
+test("a covering PR that won't take the comment still leaves the issue labeled agent-covered", async () => {
+  const w = world({ issue: flake, appBot: "ntodd-agent[bot]", fail: { commentOn: 6 }, outcomes: [{ status: "covered", pr: 6, comment: "ok" }], prs: { 6: coveringPr() } });
+  const res = await w.run();
+  assert.equal(res.status, "covered");
+  assert.deepEqual(w.log.writes.filter(([op]) => op === "addLabels").at(-1)[3], ["agent-covered"]);
+});
+
+test("covered ends blocked when the PR isn't an open one of the App's, isn't named, or the issue isn't flake-hunt's", async () => {
+  const reason = async (over, outcome = { status: "covered", pr: 6 }) => {
+    const w = world({ issue: flake, appBot: "ntodd-agent[bot]", outcomes: [outcome], prs: { 6: coveringPr() }, ...over });
+    const res = await w.run();
+    assert.equal(res.status, "blocked");
+    assert.equal(w.log.writes.at(-1)[3][0], "agent-blocked");
+    return res.reason;
+  };
+  assert.match(await reason({ prs: { 6: coveringPr({ author: "stranger" }) } }), /#6 isn't an open pull request of ntodd-agent\[bot\]'s/);
+  assert.match(await reason({ prs: { 6: coveringPr({ state: "closed" }) } }), /#6 isn't an open pull request/);
+  assert.match(await reason({}, { status: "covered", pr: "6" }), /didn't say which pull request/);
+  assert.match(await reason({ issue: { ...flake, author: "ntodd" } }), /only a flake-hunt issue/);
 });

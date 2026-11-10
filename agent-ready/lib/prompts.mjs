@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { flakeGroup, isFlakeHuntIssue, numberList } from "./gate.mjs";
 
 const dir = join(dirname(fileURLToPath(import.meta.url)), "..", "prompts");
 
@@ -34,9 +35,14 @@ export function renderer({ owner, state, bot }) {
     // A resolve run's PR (run.mjs's resolve), or nothing for a build.
     const rz = v.resolve ?? null;
     const round = v.round ?? 0;
+    // The run's issue carries its author's login, not a user.
+    const filed = { user: { login: issue.author }, body: issue.body };
     const vars = {
       resolve: Boolean(rz),
       own: Boolean(rz?.own),
+      // flake-hunt's issue, and the others in its group if it's the first.
+      flake: !rz && isFlakeHuntIssue(filed),
+      group: rz ? "" : numberList(flakeGroup(filed)),
       again: Boolean(rz) && round > 0,
       pr: rz?.pr ?? "",
       headRef: rz?.headRef ?? "",
@@ -50,6 +56,7 @@ export function renderer({ owner, state, bot }) {
       owner,
       state,
       bot,
+      appSlug: bot.replace(/\[bot\]$/, ""),
       repo: v.repo,
       number: issue.number,
       title: issue.title,
