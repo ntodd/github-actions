@@ -47,7 +47,7 @@ const pull = (p) => ({
   },
 });
 
-export function client({ token, repo, apiUrl = "https://api.github.com", fetch = globalThis.fetch }) {
+export function client({ token, repo, apiUrl = "https://api.github.com", fetch = globalThis.fetch, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) }) {
   const [owner, name] = repo.split("/");
   const headers = {
     authorization: `Bearer ${token}`,
@@ -176,7 +176,18 @@ export function client({ token, repo, apiUrl = "https://api.github.com", fetch =
     },
     // inputs are strings. From the job's GITHUB_TOKEN this does start a
     // workflow, unlike most events that token causes.
-    dispatch: async (workflow, ref, inputs) => void (await call("POST", `${r}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`, { ref, inputs })),
+    // GitHub now and then answers a dispatch with a 500 ("Failed to run
+    // workflow dispatch"), so a 5xx gets two more tries.
+    dispatch: async (workflow, ref, inputs) => {
+      for (const wait of [2000, 5000, null]) {
+        try {
+          return void (await call("POST", `${r}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`, { ref, inputs }));
+        } catch (err) {
+          if (wait === null || !/: 5\d\d /.test(err.message)) throw err;
+          await sleep(wait);
+        }
+      }
+    },
     prBody: async (n) => ({ body: (await call("GET", `${r}/pulls/${n}`)).data.body ?? "" }),
     setPrBody: async (n, body) => void (await call("PATCH", `${r}/pulls/${n}`, { body })),
     // Each check run gets the workflow, event and branch it ran for, so

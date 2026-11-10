@@ -152,7 +152,9 @@ export const dispatchInputs = ({ issue, pr, head, comment }) => ({
 // A comment on a PR: is it a trusted /resolve, and on what? The App's PR
 // resolves for its issue. A trusted user's own PR resolves on the strength
 // of the comment. Everything is read fresh from the API, not the payload.
-export async function planComment({ event, github, repo, label, trustedUsers, appBot, clock }) {
+//
+// active: PRs with a resolve run already queued or going.
+export async function planComment({ event, github, repo, label, trustedUsers, appBot, clock, active = [] }) {
   const trusted = new Set(trustedUsers.map(lower));
   const no = (reason) => ({ reason });
   if (event.action !== "created") return no("this isn't a new comment");
@@ -162,6 +164,7 @@ export async function planComment({ event, github, repo, label, trustedUsers, ap
   if (!trusted.has(lower(event.comment?.user?.login))) return no(`${event.comment?.user?.login} wrote the comment and isn't trusted`);
 
   const number = event.issue.number;
+  if (active.includes(number)) return no(`a resolve run on #${number} is already queued or going`);
   const pr = await github.pull(number);
   if (!pr) return no(`there's no pull request #${number}`);
   let request = { mode: "resolve", issue: null, pr: number, head: pr.headSha, comment: event.comment.id };

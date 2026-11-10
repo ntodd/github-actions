@@ -310,6 +310,24 @@ test("activeResolves reads the PRs of dispatched resolve runs that haven't finis
   assert.match(calls[0].url, /event=workflow_dispatch/);
 });
 
+test("dispatch tries again when GitHub answers 5xx, and gives up after three", async () => {
+  let n = 0;
+  const waits = [];
+  const routes = [["POST /actions/workflows/agent-ready.yml/dispatches", () => (++n < 3 ? new Response('{"message":"Failed to run workflow dispatch"}', { status: 500 }) : new Response(null, { status: 204 }))]];
+  const f = fake(routes);
+  const c = client({ token: "tok", repo: "ntodd/sandbox", fetch: f.fetch, sleep: async (ms) => void waits.push(ms) });
+  await c.dispatch("agent-ready.yml", "main", { pr: "9" });
+  assert.equal(n, 3);
+  assert.deepEqual(waits, [2000, 5000]);
+
+  n = -10;
+  await assert.rejects(c.dispatch("agent-ready.yml", "main", { pr: "9" }), /dispatches: 500/);
+  assert.equal(n, -7, "three tries");
+
+  const refused = client({ token: "tok", repo: "ntodd/sandbox", fetch: fake([["POST /dispatches", () => new Response("no", { status: 422 })]]).fetch, sleep: async () => assert.fail("a 4xx isn't retried") });
+  await assert.rejects(refused.dispatch("agent-ready.yml", "main", {}), /422/);
+});
+
 test("dispatch starts a workflow on a ref with string inputs", async () => {
   const { gh: c, calls } = gh([["POST /actions/workflows/agent-ready.yml/dispatches", () => new Response(null, { status: 204 })]]);
   await c.dispatch("agent-ready.yml", "main", { issue: "7", mode: "resolve", pr: "9", head: "abc" });
