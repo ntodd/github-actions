@@ -262,7 +262,9 @@ test("a stop mention is routed while a worker is live, then fences and cancels t
   assert.equal(routed, 1);
   assert.equal(cancelled, 1);
   assert.equal(f.state.items["issue:7"].paused, true);
-  await f.pass({ route: async () => { throw new Error("A duplicate event must not reroute"); } });
+  const duplicate = await f.pass({ route: async () => { routed++; throw new Error("A duplicate event must not reroute"); } });
+  assert.equal(routed, 1);
+  assert.equal(duplicate.outcomes.some((o) => o.action === "route" && o.status === "interrupted"), false);
   assert.equal(f.effects.filter((e) => e[0] === "dispatch").length, 1);
 });
 
@@ -285,7 +287,10 @@ test("routing API failures back off, exhaust three requests, and become one dura
 test("exact commands never call the mention router", async () => {
   const f = fixture(); await f.pass();
   f.api.comments = async () => [{ id: 999, body: "/agent stop", user: { login: "ntodd" }, created_at: at, updated_at: at }];
-  await f.pass({ route: async () => { throw new Error("Exact command called the model"); } });
+  let routed = 0;
+  const result = await f.pass({ route: async () => { routed++; throw new Error("Exact command called the model"); } });
+  assert.equal(routed, 0);
+  assert.equal(result.outcomes.some((o) => o.action === "route" && o.status === "interrupted"), false);
   assert.equal(f.state.items["issue:7"].paused, true);
 });
 
