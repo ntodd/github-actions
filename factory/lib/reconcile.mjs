@@ -301,11 +301,11 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
   };
   const explicitPr = open.find((p) => p.number === command?.target) ?? open[0];
   if (command) {
-    if (item.evidence.own && ["build", "restart", "respond"].includes(command.action)) return ask("Your own PR supports explicitly requested update/resolve maintenance; it cannot be restarted or enrolled in the issue workflow");
+    if (item.evidence.own && ["build", "restart", "respond"].includes(command.action)) return ask("Your own PR supports explicitly requested update/resolve maintenance; it cannot be restarted or enrolled in the issue workflow", "agent-needs-you", { consumeCommand: command.id });
     if (command.action === "restart") return finish({ type: "restart", commandId: command.id }, "agent-working", "Close the recorded PRs before admitting replacement work");
     if (command.action === "retry" || command.action === "answer") return reserve(op?.mode ?? (open.length ? "respond" : "build"), explicitPr, command);
     const mode = command.action === "build" && open.length ? "respond" : command.action;
-    if (["respond", "resolve", "update"].includes(mode) && !explicitPr) return ask("This action needs an existing open PR");
+    if (["respond", "resolve", "update"].includes(mode) && !explicitPr) return ask("This action needs an existing open PR", "agent-needs-you", { consumeCommand: command.id });
     return reserve(mode, explicitPr, command);
   }
   if (item.evidence.own && item.maintenanceComplete) return wait("agent-review", "The requested maintenance is finished; ongoing work is not authorized", "work-command", key);

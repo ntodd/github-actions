@@ -296,6 +296,27 @@ test("own PRs cannot be restarted or enrolled by an unsupported command", () => 
   assert.match(plan.status.reason, /cannot be restarted/);
 });
 
+test("unsupported own-PR and missing-PR commands ask once and allow a later update", () => {
+  for (const own of [true, false]) {
+    let state = initial(); state.items["issue:7"].evidence.own = own;
+    state = ingestCommands(state, "issue:7", [{ authority: "instruction", sourceId: "issue-comment:995", revision: "e".repeat(64),
+      author: "ntodd", createdAt: at, target: 9, command: { action: "respond", text: "" } }]);
+    const observed = own ? facts() : facts({ prs: [] });
+    state = apply(state, decide(state, observed));
+    assert.equal(Object.values(state.items["issue:7"].commands)[0].status, "applied");
+    const questionId = state.items["issue:7"].question.id;
+    const again = decide(state, observed);
+    assert.equal(again.events.some((e) => e.type === "ask"), false);
+    state = apply(state, again);
+    assert.equal(state.items["issue:7"].question.id, questionId);
+    state = ingestCommands(state, "issue:7", [{ authority: "instruction", sourceId: "issue-comment:996", revision: "f".repeat(64),
+      author: "ntodd", createdAt: "2026-11-12T12:01:00Z", target: 9, command: { action: "update", text: "" } }]);
+    const update = decide(state, facts());
+    assert.equal(update.action.type, "reserve");
+    assert.equal(update.action.mode, "update");
+  }
+});
+
 test("edited changes-requested review text becomes an explicit question rather than silent handover", () => {
   const plan = decide(initial(), facts({ prs: [pr({ feedback: [{ sourceId: "review:5", trustedAuthor: true, edited: true, requiresResponse: true, authority: "data" }] })] }));
   assert.equal(plan.action.type, "ask");
