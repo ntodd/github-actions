@@ -1,12 +1,13 @@
 // A worker exports data only: a proposal and optionally an incremental bundle.
 // These files contain no credentials, session home directories or executable
 // publisher instructions. The clean job revalidates every field and Git object.
-import { openSync, closeSync, readFileSync, writeFileSync, fstatSync, lstatSync, constants, mkdirSync } from "node:fs";
+import { openSync, closeSync, readFileSync, writeFileSync, fstatSync, lstatSync, constants, mkdirSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 import { pullRequestText } from "./effects.mjs";
 import { replyProposal } from "./threads.mjs";
 import { gitCommand, exportRef, verifyAncestry } from "./git.mjs";
+import { exportAttachments, attachmentManifest, readAttachments } from "./attachments.mjs";
 const SHA = /^[a-f0-9]{40}$/;
 export const bundleDigest = (bytes) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 function plainFile(path, limit) {
@@ -21,7 +22,7 @@ function plainFile(path, limit) {
 }
 const text = (result) => result.stdout.toString("utf8").trim();
 
-export function exportProposal({ cwd, directory, operation: op, run, outcome, secrets = [] }) {
+export function exportProposal({ cwd, directory, stateDir, operation: op, run, outcome, secrets = [] }) {
   if (!op || !SHA.test(op.base?.sha) || (op.target?.head !== null && !SHA.test(op.target?.head))) throw new Error("Invalid worker assignment");
   if (!run || typeof run.id !== "string" || !/^[1-9]\d*$/.test(run.id) || !Number.isSafeInteger(run.attempt) || run.attempt < 1) throw new Error("Invalid worker run identity");
   if (!outcome || !["ready", "needs-you", "no-change", "failed"].includes(outcome.status)) throw new Error("Invalid worker outcome");
@@ -64,6 +65,9 @@ export function exportProposal({ cwd, directory, operation: op, run, outcome, se
       && (!["respond", "resolve"].includes(op.mode) || !["ready", "no-change"].includes(proposal.outcome))) throw new Error("Replies exceed the worker assignment");
     proposal.replies = outcome.replies.map(replyProposal);
   }
+  const attachments = exportAttachments({ stateDir, directory, secrets,
+    text: [proposal.report, proposal.pullRequest?.body, ...(proposal.replies ?? []).map((r) => r.body)].filter(Boolean).join("\n") });
+  if (attachments.length) proposal.attachments = attachments;
   writeFileSync(join(directory, "proposal.json"), JSON.stringify(proposal, null, 2) + "\n", { mode: 0o600, flag: "wx" });
   return proposal;
 }
@@ -83,5 +87,8 @@ export function readProposal(directory, { operation: op, run, maxBundleBytes = 5
     bundleFile = join(directory, "proposal.bundle");
     if (bundleDigest(plainFile(bundleFile, maxBundleBytes)) !== b.digest) throw new Error("Bundle digest does not match the proposal");
   } else if (proposal.bundle) throw new Error("Unexpected bundle without a code proposal");
-  return { proposal, bundleFile };
+  const attachments = attachmentManifest(proposal.attachments);
+  const expected = new Set(["proposal.json", ...(bundleFile ? ["proposal.bundle"] : []), ...(attachments.length ? ["screenshots.json"] : [])]);
+  if (readdirSync(directory).some((file) => !expected.has(file))) throw new Error("Unexpected proposal artifact file");
+  return { proposal, bundleFile, attachmentFiles: readAttachments(directory, attachments) };
 }

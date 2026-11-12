@@ -8,6 +8,7 @@ import { inflateRawSync } from "node:zlib";
 import { GitHubError } from "./store.mjs";
 import { readProposal } from "./artifact.mjs";
 import { validExecution } from "./usage.mjs";
+import { MAX_ATTACHMENT_PACK } from "./attachments.mjs";
 const digest = (bytes) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 const positive = (n) => /^[1-9]\d*$/.test(String(n));
 export class InvalidResult extends Error {
@@ -39,9 +40,9 @@ function crc32(bytes) {
 // Accept only the named flat result files, with sizes bounded before inflate.
 export function resultFiles(zip, { maxBundleBytes = 50 * 1024 * 1024, inspection = false } = {}) {
   const limits = inspection ? { "factory-app-inspection.json": 64 * 1024 }
-    : { "proposal.json": 1024 * 1024, "proposal.bundle": maxBundleBytes };
+    : { "proposal.json": 1024 * 1024, "proposal.bundle": maxBundleBytes, "screenshots.json": MAX_ATTACHMENT_PACK };
   const required = inspection ? "factory-app-inspection.json" : "proposal.json";
-  if (!Buffer.isBuffer(zip) || zip.length < 22 || zip.length > (inspection ? 128 * 1024 : maxBundleBytes + 2 * 1024 * 1024)) throw new Error("Invalid artifact archive size");
+  if (!Buffer.isBuffer(zip) || zip.length < 22 || zip.length > (inspection ? 128 * 1024 : maxBundleBytes + MAX_ATTACHMENT_PACK + 2 * 1024 * 1024)) throw new Error("Invalid artifact archive size");
   let end = -1;
   for (let i = zip.length - 22; i >= Math.max(0, zip.length - 65557); i--) {
     if (zip.readUInt32LE(i) === 0x06054b50 && i + 22 + zip.readUInt16LE(i + 20) === zip.length) { end = i; break; }
@@ -125,14 +126,14 @@ export function actionsClient({ token, repo, apiUrl = "https://api.github.com", 
     if (String(a.workflow_run?.id) !== op.owner.id || String(a.workflow_run.repository_id) !== repositoryId
       || String(a.workflow_run.head_repository_id) !== repositoryId || a.workflow_run.head_sha !== op.worker.entrySha
       || a.workflow_run.head_branch !== defaultBranch || !positive(a.id) || !/^sha256:[a-f0-9]{64}$/.test(a.digest)
-      || !Number.isSafeInteger(a.size_in_bytes) || a.size_in_bytes < 0 || a.size_in_bytes > maxBundleBytes + 2 * 1024 * 1024) throw new Error("Artifact metadata does not match its owner");
+      || !Number.isSafeInteger(a.size_in_bytes) || a.size_in_bytes < 0 || a.size_in_bytes > maxBundleBytes + MAX_ATTACHMENT_PACK + 2 * 1024 * 1024) throw new Error("Artifact metadata does not match its owner");
     return { owner, inspected: true, available: !a.expired, expired: a.expired === true,
       artifact: { id: String(a.id), digest: a.digest, run: { id: owner.id, attempt: owner.attempt }, repositoryId,
         workflowPath: op.worker.workflowPath, headSha: op.worker.entrySha, expired: a.expired === true } };
   }
-  async function downloadArchive(artifact, maxBytes = maxBundleBytes + 2 * 1024 * 1024) {
+  async function downloadArchive(artifact, maxBytes = maxBundleBytes + MAX_ATTACHMENT_PACK + 2 * 1024 * 1024) {
     if (!positive(artifact?.id) || !/^sha256:[a-f0-9]{64}$/.test(artifact.digest)
-      || !Number.isSafeInteger(maxBytes) || maxBytes < 22 || maxBytes > maxBundleBytes + 2 * 1024 * 1024) throw new Error("Invalid artifact download identity or limit");
+      || !Number.isSafeInteger(maxBytes) || maxBytes < 22 || maxBytes > maxBundleBytes + MAX_ATTACHMENT_PACK + 2 * 1024 * 1024) throw new Error("Invalid artifact download identity or limit");
     const res = await response(`/actions/artifacts/${artifact.id}/zip`);
     if (res.status !== 302) throw new Error("Artifact service did not return a signed download");
     const location = new URL(res.headers.get("location"));

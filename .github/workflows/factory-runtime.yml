@@ -185,6 +185,7 @@ jobs:
           path: |
             ${{ runner.temp }}/factory/result/proposal.json
             ${{ runner.temp }}/factory/result/proposal.bundle
+            ${{ runner.temp }}/factory/result/screenshots.json
           if-no-files-found: ignore
           retention-days: 7
       - name: Remove selected project secrets

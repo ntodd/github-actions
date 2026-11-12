@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gitCommand } from "../lib/git.mjs";
 import { parseConfig } from "../lib/config.mjs";
 import { runWorker, workerEnvironment } from "../lib/worker.mjs";
+import { readProposal } from "../lib/artifact.mjs";
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), "factory-worker-test-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -40,6 +41,21 @@ test("workers reread feedback between phases and export only committed code", as
   assert.equal(proposal.effects[0].type, "push");
   assert.equal(proposal.metrics.turns, 6);
   assert.equal(proposal.consultedFeedback.length, 1);
+});
+
+test("worker screenshot evidence crosses the artifact boundary as digest-bound raster data", async (t) => {
+  const f = fixture(t), png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jE9sAAAAASUVORK5CYII=", "base64");
+  f.args.invoke = async () => {
+    mkdirSync(join(f.args.stateDir, "screenshots"), { recursive: true });
+    writeFileSync(join(f.args.stateDir, "screenshots", "phone.png"), png);
+    return { outcome: { status: "no-change", report: "![Phone](./screenshots/phone.png)" } };
+  };
+  const proposal = await runWorker(f.args);
+  assert.equal(proposal.attachments.length, 1);
+  assert.deepEqual(proposal.attachments[0].paths, ["./screenshots/phone.png"]);
+  const accepted = readProposal(f.args.resultDir, { operation: f.args.assignment.operation, run: f.run });
+  assert.deepEqual(accepted.proposal.attachments, proposal.attachments);
+  assert.deepEqual(accepted.attachmentFiles.get(proposal.attachments[0].file), png);
 });
 
 test("workers describe available project variable names without putting secret values in prompts or results", async (t) => {

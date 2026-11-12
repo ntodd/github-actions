@@ -103,6 +103,24 @@ test("a replaced artifact or archive digest mismatch prevents use", async () => 
   await assert.rejects(() => fixture({ artifact: { digest: `sha256:${"e".repeat(64)}` } }).client.download(op, context), /digest/);
 });
 
+test("screenshot archives require manifest, content and digest agreement after provenance checks", async () => {
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jE9sAAAAASUVORK5CYII=", "base64");
+  const hash = createHash("sha256").update(png).digest("hex"), file = `screenshot-${hash}.png`;
+  const manifest = [{ file, paths: ["./screenshots/phone.png"], digest: `sha256:${hash}`, size: png.length, contentType: "image/png" }];
+  const document = { ...proposal, outcome: "no-change", effects: [], attachments: manifest };
+  const pack = JSON.stringify([{ file, base64: png.toString("base64") }]);
+  const good = fixture({ data: zip([["proposal.json", JSON.stringify(document)], ["screenshots.json", pack]]) });
+  const result = await good.client.download(op, context);
+  try { assert.deepEqual(result.proposal.attachments, manifest); assert.deepEqual(result.attachmentFiles.get(file), png); }
+  finally { result.dispose(); }
+  for (const entries of [
+    [["proposal.json", JSON.stringify(document)]],
+    [["proposal.json", JSON.stringify(document)], ["screenshots.json", JSON.stringify([{ file, base64: Buffer.concat([png, Buffer.from("changed")]).toString("base64") }])]],
+    [["proposal.json", JSON.stringify({ ...document, attachments: [] })], ["screenshots.json", pack]],
+    [["proposal.json", JSON.stringify(document)], ["screenshots.json", pack, 0o120777]],
+  ]) await assert.rejects(fixture({ data: zip(entries) }).client.download(op, context), (e) => e.code === "invalid-result");
+});
+
 test("ZIP handling accepts flat streamed results and rejects traversal, symlinks, duplicates and oversized inflate", () => {
   const good = zip([["proposal.json", "{}"], ["proposal.bundle", "bundle"]], { descriptor: true });
   assert.equal(resultFiles(good).get("proposal.bundle").toString(), "bundle");
