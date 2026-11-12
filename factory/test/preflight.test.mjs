@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { preflightRead, preflightId } from "../lib/recovery.mjs";
 import { validateLedger, evolve } from "../lib/protocol.mjs";
-import { initial, claimed, at } from "./fixtures.mjs";
+import { initial, claimed, ready, at } from "./fixtures.mjs";
 
 function fixture(state = initial()) {
   let clock = at, writes = 0;
@@ -77,7 +77,8 @@ test("failed notification reads have backoff and cannot generate attention notic
 
 test("preflight identities, guards and historical alert references are validated", async () => {
   const f = fixture(); let reads = 0;
-  for (const extra of [{ target: 99 }, { kind: "arbitrary" }, { stage: "write" }, { runId: "123" }, { guard: { generation: -1 } }]) {
+  for (const extra of [{ target: 99 }, { kind: "arbitrary" }, { stage: "write" }, { stage: "submit" }, { runId: "123" },
+    { operation: "op-1" }, { kind: "publish", operation: "op-missing" }, { guard: { generation: -1 } }]) {
     await assert.rejects(f.observe(async () => { reads++; }, extra));
   }
   assert.equal(reads, 0); assert.equal(f.writes, 0);
@@ -88,4 +89,19 @@ test("preflight identities, guards and historical alert references are validated
     (s) => { Object.values(s.items["issue:7"].preflights)[0].failures = -1; },
     (s) => { Object.values(s.items["issue:7"].apiAlerts)[0].read = "invented-request"; },
   ]) { const state = structuredClone(f.state); change(state); assert.throws(() => validateLedger(state), (e) => e.code === "corrupt"); }
+});
+
+test("publication preflight identities and guards must reference the accepted operation and its exact target", async () => {
+  const f = fixture(ready()), op = f.state.operations["op-1"];
+  await assert.rejects(f.observe(async () => { throw new Error("unavailable"); }, { kind: "publish", operation: op.id,
+    guard: { generation: op.generation, revision: op.revision } }));
+  const record = Object.values(f.state.items["issue:7"].preflights)[0];
+  assert.equal(record.operation, op.id);
+  for (const patch of [{ operation: "op-missing" }, { operation: undefined }, { operation: null }, { target: 7 }, { guard: { generation: 99, revision: op.revision } }]) {
+    const state = structuredClone(f.state), item = state.items["issue:7"], changed = { ...record, ...patch };
+    changed.id = preflightId(changed.kind, changed.target, changed.stage, changed.runId, changed.operation);
+    item.preflights = { [changed.id]: changed };
+    assert.throws(() => validateLedger(state), (error) => error.code === "corrupt");
+  }
+  assert.notEqual(preflightId("publish", 9, "plan", undefined, "op-1"), preflightId("publish", 9, "plan", undefined, "op-2"));
 });

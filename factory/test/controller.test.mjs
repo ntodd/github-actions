@@ -4,6 +4,7 @@ import { runController, claimOperation, parseRequest } from "../lib/controller.m
 import { emptyLedger, validateLedger, recordFactoryApp } from "../lib/protocol.mjs";
 import { publishOperation } from "../lib/publish.mjs";
 import { actionsClient } from "../lib/actions.mjs";
+import { publishObservation } from "../lib/observe.mjs";
 import { mentionRouter } from "../lib/router.mjs";
 import { itemUsage } from "../lib/usage.mjs";
 import { preparationOutcome } from "../lib/project-setup.mjs";
@@ -249,6 +250,30 @@ test("controller publication retains costs and later events do not recount the s
   assert.equal(itemUsage(f.state, "issue:7").workerReportedUsd, 0.12);
   assert.equal(itemUsage(f.state, "issue:7").crewMinutes, 2);
   assert.equal(measurements, 1);
+});
+
+test("broad observation failures still journal publication read recovery without losing an accepted result", async () => {
+  const f = fixture(); await f.pass();
+  await claimOperation({ api: f.api, store: f.store, repo: "ntodd/project", itemKey: "issue:7", operationId: "op-1", run,
+    context: { sha: A, defaultBranch: "main" } });
+  f.finish(); await f.pass({ maxPasses: 1 });
+  assert.equal(f.state.operations["op-1"].phase, "result-ready");
+  let reads = 0, writes = 0;
+  f.api.editors = async () => { reads++; throw Object.assign(new Error("private read detail"), { status: 503 }); };
+  const publish = async ({ key, operationId, run: publisherRun }) => publishOperation({ store: f.store, itemKey: key, operationId, publisherRun,
+    observe: (item, op) => publishObservation(f.api, item, op, "ntodd/project"), now: () => at,
+    writer: { validate: async () => { writes++; assert.fail(); }, inspect: async () => { writes++; assert.fail(); }, apply: async () => { writes++; assert.fail(); } } });
+  const first = await f.pass({ publish, maxPasses: 1 });
+  assert.ok(first.outcomes.some((o) => o.action === "publish" && o.status === "interrupted"));
+  const read = Object.values(f.state.items["issue:7"].preflights)[0];
+  assert.equal(read.operation, "op-1"); assert.equal(read.stage, "plan"); assert.equal(read.code, "http:503");
+  const second = await f.pass({ publish, maxPasses: 1 });
+  assert.ok(second.outcomes.some((o) => o.action === "publish" && o.status === "waiting"));
+  assert.equal(reads, 3); assert.equal(writes, 0);
+  assert.equal(f.state.operations["op-1"].phase, "result-ready");
+  assert.equal(f.state.items["issue:7"].question, null);
+  assert.equal(f.state.items["issue:7"].attempts.length, 1);
+  assert.equal(JSON.stringify(f.state).includes("private read detail"), false);
 });
 
 test("controller withholds secret-enabled worker prose from durable state", async () => {

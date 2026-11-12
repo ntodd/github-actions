@@ -239,10 +239,15 @@ export async function runController({ api, write, store, actions, repo, toolingS
           await save(key, { type: "result-unavailable", operationId: op.id, confirmed: true });
           break;
         }
-        case "publish":
+        case "publish": {
           if (!publish) throw new Error("The clean publisher adapter is required");
-          await publish({ key, operationId: op.id, context, run });
+          const result = await publish({ key, operationId: op.id, context, run });
+          if (result?.status === "waiting") {
+            outcomes.push({ key, action: action.type, status: "waiting", reason: result.reason });
+            continue;
+          }
           break;
+        }
         case "handover": {
           const pr = await api.pull(action.pr);
           const handed = !surfaces || (await surfaces.handover({ key, number: action.pr, head: pr.head.sha, context })).status === "applied";

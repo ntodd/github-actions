@@ -116,12 +116,13 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
     if (item.question?.kind === "publish-outcome" && item.question.recovery.operation === op.id
       && op.effects.some((e) => e.id === item.question.recovery.effect && ["applied", "rejected"].includes(e.status))) observe({ type: "resolve-publish-question", operationId: op.id });
     const pending = op.effects.find((e) => e.status === "pending"), incomplete = op.effects.find((e) => e.status !== "applied");
+    const unread = incomplete?.requests.length === 0 && Object.values(item.preflights ?? {}).some((r) => r.kind === "publish" && r.operation === op.id && r.status === "failed");
     const since = pending?.requests.at(-1)?.at ?? incomplete?.requests.at(-1)?.at ?? op.publishStartedAt;
     const deadline = since ? new Date(Date.parse(since) + (config.timeouts.publishMinutes ?? 15) * minute).toISOString() : null;
     if (!item.question && pending && deadline && instant >= Date.parse(deadline)) observe({ type: "ask", kind: "publish-outcome",
       recovery: { operation: op.id, effect: pending.id, request: pending.requests.at(-1).id },
       reason: `The outcome of ${op.id}/${pending.id} is still unknown after its publish deadline. Inspect the recorded request; it will not be resent or replaced while uncertain. Recovery continues to read its outcome.` });
-    if (!item.question && incomplete && !pending && (incomplete.requests.length >= 3 || deadline && instant >= Date.parse(deadline))) observe({ type: "ask",
+    if (!item.question && incomplete && !pending && !unread && (incomplete.requests.length >= 3 || deadline && instant >= Date.parse(deadline))) observe({ type: "ask",
       reason: `Publication ${op.id}/${incomplete.id} could not finish ${incomplete.requests.length >= 3 ? "within its request budget" : "before its deadline"}.${incomplete.lastRejection ? ` The last request was rejected (${incomplete.lastRejection.status ?? incomplete.lastRejection.kind}).` : ""}${op.publishError?.effect === incomplete.id ? ` ${op.publishError.reason}` : ""} Inspect validation, permissions and the recorded receipts, then request work again.` });
     return finish({ type: "publish", operationId: op.id }, item.paused ? "agent-stopped" : item.question ? "agent-needs-you" : "agent-working",
       item.question?.reason ?? "Reconcile the publish operation and any unresolved requests", pending && deadline ? { kind: "publish-outcome", target: pending.requests.at(-1).id, deadline } : null);
@@ -243,7 +244,9 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
   }
   if (item.paused) return wait("agent-stopped", "Automatic work is paused", "work-command", key);
   if (item.question) return wait(item.status?.state === "agent-failed" ? "agent-failed" : "agent-needs-you", item.question.reason, "answer", key);
-  if (facts.observationError) return wait("agent-waiting", "GitHub facts could not be read completely", "observation", key);
+  if (facts.observationError) return op?.phase === "result-ready"
+    ? finish({ type: "publish", operationId: op.id }, "agent-waiting", "Reobserve the accepted result's publication preconditions")
+    : wait("agent-waiting", "GitHub facts could not be read completely", "observation", key);
   if (facts.authorization?.valid === false) return ask(facts.authorization.reason ?? "Current work authorization is no longer valid");
   if (!facts.authorization || facts.authorization.valid !== true) return wait("agent-waiting", "Authorization could not be observed", "authorization", key);
   if (facts.issueState === "closed") return item.evidence.own

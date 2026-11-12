@@ -322,8 +322,9 @@ module factory {
     s' = { ...s, complete: true }
   }
 
-  // Delay, lost wake-ups, repeated status reads and API read failures leave
-  // durable state intact. Fair delivery is a separate liveness assumption.
+  // Delay, lost wake-ups and API read failures leave lifecycle state intact.
+  // Read backoff/attention metadata is outside this ownership projection.
+  // Fair delivery is a separate liveness assumption.
   action idle = s' = s
 
   action step = any {
@@ -591,4 +592,11 @@ module factory {
     .then(authorizePublish).then(push).then(crashPublisher).then(defaultBranchChanges)
     .then(applyPush).then(recoverPublished)
     .expect(s.receipts == Set(1) and s.requests.length() == 1 and s.main == 0 and safety)
+
+  run publishObservationOutageTest = init.then(resultFor(1)).then(idle).then(idle).then(idle)
+    .expect(s.phase == "result-ready" and s.attempts == 1 and s.requests.length() == 0 and safety)
+
+  run publishGuardOutageRecoveryTest = init.then(resultFor(1)).then(authorizePublish)
+    .then(idle).then(idle).then(idle).then(push).then(applyPush).then(persistReceipt)
+    .expect(s.receipts == Set(1) and s.requests.length() == 1 and s.attempts == 1 and safety)
 }

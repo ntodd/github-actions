@@ -33,6 +33,103 @@ test("publisher commits intent before code and completion after its receipt", as
   assert.deepEqual(c.calls, [["validate", "push"], ["apply", "push"]]);
 });
 
+test("publication observation failures back off and recover the accepted result without a replacement worker", async () => {
+  const c = context(), original = operation((await c.store.load()).state); let time = at, reads = 0;
+  c.now = () => time;
+  c.observe = async () => { reads++; throw Object.assign(new Error("private upstream detail"), { status: 503 }); };
+  await assert.rejects(publishOperation(c), /private upstream detail/);
+  assert.equal((await publishOperation(c)).status, "waiting"); assert.equal(reads, 1);
+  time = "2026-11-12T12:16:00Z";
+  await c.store.transact((s) => step(s, { type: "sync-api-alerts", timeoutMinutes: 15, at: time }));
+  let state = (await c.store.load()).state;
+  const alert = Object.values(state.items["issue:7"].apiAlerts)[0];
+  assert.equal(alert.source, "preflight"); assert.equal(alert.kind, "publish"); assert.equal(alert.request, undefined);
+  assert.match(alert.reason, /op-1/); assert.equal(JSON.stringify(state).includes("private upstream detail"), false);
+  assert.deepEqual(operation(state), original); assert.equal(state.items["issue:7"].question, null);
+  c.observe = async () => observation;
+  assert.equal((await publishOperation(c)).status, "done");
+  await c.store.transact((s) => step(s, { type: "sync-api-alerts", timeoutMinutes: 15, at: time }));
+  state = (await c.store.load()).state;
+  assert.equal(state.items["issue:7"].apiAlerts[alert.id].resolution, "observed");
+  assert.equal(state.items["issue:7"].attempts.length, 1);
+  assert.equal(c.calls.filter(([kind]) => kind === "apply").length, 1);
+});
+
+test("incomplete publication observations are recoverable reads rather than evidence that accepted work is stale", async () => {
+  for (const patch of [{ head: undefined }, { baseSha: undefined }, { authorization: { valid: true } }]) {
+    const c = context(); c.observe = async () => ({ ...observation, ...patch });
+    await assert.rejects(publishOperation(c), /could not be observed completely/);
+    const state = (await c.store.load()).state;
+    assert.equal(operation(state).phase, "result-ready");
+    assert.equal(operation(state).effects[0].requests.length, 0);
+    assert.equal(Object.values(state.items["issue:7"].preflights)[0].code, "unavailable");
+    assert.deepEqual(c.calls, []);
+  }
+});
+
+test("a failing last observation has its own backoff and cannot turn a read deadline into discarded code", async () => {
+  const c = context(); let time = at, afterValidation = false, failures = 0;
+  c.now = () => time;
+  c.writer.validate = async () => { afterValidation = true; };
+  c.observe = async () => {
+    if (afterValidation) { failures++; throw Object.assign(new Error("read unavailable"), { status: 503 }); }
+    return observation;
+  };
+  for (const stamp of [at, "2026-11-12T12:01:00Z", "2026-11-12T12:03:00Z"]) {
+    time = stamp; afterValidation = false; await assert.rejects(publishOperation(c), /read unavailable/);
+  }
+  afterValidation = false;
+  assert.equal((await publishOperation(c)).status, "waiting"); assert.equal(failures, 3);
+  time = "2026-11-12T12:16:00Z";
+  await c.store.transact((state) => {
+    const plan = decideItem(state, "issue:7", { authorization: observation.authorization, prs: [], feedback: [] },
+      parseConfig("trusted-users: [ntodd]"), { now: time });
+    return plan.events.reduce((s, event) => step(s, event), state);
+  });
+  let state = (await c.store.load()).state;
+  assert.equal(state.items["issue:7"].question, null);
+  assert.equal(Object.values(state.items["issue:7"].apiAlerts).filter((a) => a.status === "active").length, 1);
+  assert.equal(operation(state).effects[0].requests.length, 0);
+  c.observe = async () => observation;
+  assert.equal((await publishOperation(c)).status, "done");
+  state = (await c.store.load()).state;
+  assert.equal(operation(state).effects[0].requests.length, 1);
+  assert.equal(state.items["issue:7"].attempts.length, 1);
+});
+
+test("a recorded stop retires unsent publication despite read backoff and an unavailable API", async () => {
+  for (const publishing of [false, true]) {
+    const c = context(); let reads = 0, time = at;
+    c.now = () => time;
+    c.observe = async () => { if (++reads >= (publishing ? 2 : 1)) throw new Error("unavailable"); return observation; };
+    await assert.rejects(publishOperation(c)); time = "2026-11-12T12:16:00Z";
+    await c.store.transact((s) => step(s, { type: "sync-api-alerts", timeoutMinutes: 15, at: time }));
+    const alert = Object.values((await c.store.load()).state.items["issue:7"].apiAlerts)[0];
+    await c.store.transact((s) => step(s, { type: "stop", at: time }));
+    assert.equal((await publishOperation(c)).status, "superseded");
+    assert.equal(reads, publishing ? 2 : 1); assert.deepEqual(c.calls, []);
+    await c.store.transact((s) => step(s, { type: "sync-api-alerts", timeoutMinutes: 15, at: time }));
+    const state = (await c.store.load()).state;
+    assert.equal(state.items["issue:7"].paused, true);
+    assert.equal(state.items["issue:7"].apiAlerts[alert.id].resolution, "superseded");
+  }
+});
+
+test("a failed preflight record cannot delay receipt recovery for an actually sent request", async () => {
+  const c = context(); let reads = 0;
+  c.observe = async () => { if (++reads > 1) throw new Error("unavailable"); return observation; };
+  await assert.rejects(publishOperation(c));
+  await c.store.transact((s) => step(s, { type: "request-effect", effectId: "push", observation }));
+  let inspected = 0;
+  c.writer.inspect = async () => { inspected++; return { outcome: "applied", evidence: { kind: "branch-head", commit: C } }; };
+  assert.equal((await publishOperation(c)).status, "done");
+  assert.equal(inspected, 1); assert.equal(reads, 2); assert.deepEqual(c.calls, []);
+  await c.store.transact((s) => step(s, { type: "sync-api-alerts", timeoutMinutes: 15 }));
+  const state = (await c.store.load()).state;
+  assert.equal(operation(state).effects[0].requests.length, 1);
+  assert.equal(Object.values(state.items["issue:7"].preflights)[0].status, "superseded");
+});
+
 test("an applied write with a lost response is inspected and never submitted again", async () => {
   const c = context();
   c.writer.apply = async () => { c.calls.push(["apply", "push"]); throw new Error("lost response after commit"); };

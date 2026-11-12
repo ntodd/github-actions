@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 const hash = (value) => createHash("sha256").update(value).digest("hex");
-const readKinds = new Set(["status", "labels", "notification", "comment-create", "comment-edit", "reaction", "label-add", "label-remove", "ready", "review-request", "pr-close", "issue-close", "issue-reopen", "ci-rerun"]);
-const readStages = new Set(["plan", "inspect", "guard"]);
-export const preflightId = (kind, target, stage, runId) => hash(`${kind}:${target}:${stage}${runId ? `:${runId}` : ""}`);
+const readKinds = new Set(["status", "labels", "notification", "comment-create", "comment-edit", "reaction", "label-add", "label-remove", "ready", "review-request", "pr-close", "issue-close", "issue-reopen", "ci-rerun", "publish"]);
+const readStages = new Set(["plan", "inspect", "guard", "submit"]);
+export const preflightId = (kind, target, stage, runId, operation) => hash(`${kind}:${target}:${stage}${runId ? `:${runId}` : ""}${operation ? `:${operation}` : ""}`);
 const sameGuard = (a, b) => a?.generation === b?.generation && a?.revision === b?.revision;
 const targetKnown = (item, target) => target === Number(item.key.split(":")[1]) || item.prs.some((p) => p.number === target);
-const obsoleteRead = (item, read) => read.guard && (item.paused || !sameGuard(item, read.guard)
+const obsoleteRead = (item, read, operations) => read.operation && (read.operation !== item.activeOperation || ["done", "failed", "superseded"].includes(operations[read.operation]?.phase))
+  || read.guard && (item.paused || !sameGuard(item, read.guard)
   || ["ready", "review-request", "pr-close", "ci-rerun"].includes(read.kind) && item.prs.some((p) => p.number === read.target && p.state !== "open"))
   || read.effect && item.apiEffects?.[read.effect]?.status === "superseded";
 export class PreflightWait extends Error {
@@ -14,9 +15,10 @@ export class PreflightWait extends Error {
 
 // Only failed read/guard attempts create records. Healthy observations add no
 // ledger writes. These records grant no authority and never represent a write.
-export async function preflightRead({ store, key, item, kind, target, stage, guard, runId, effect, read, now = () => new Date().toISOString() }) {
-  const at = now(), instant = Date.parse(at), id = preflightId(kind, target, stage, runId);
+export async function preflightRead({ store, key, item, kind, target, stage, guard, runId, effect, operation, read, now = () => new Date().toISOString() }) {
+  const at = now(), instant = Date.parse(at), id = preflightId(kind, target, stage, runId, operation);
   if (!item || item.key !== key || !readKinds.has(kind) || !readStages.has(stage) || !targetKnown(item, target)
+    || (kind === "publish" ? typeof operation !== "string" || operation !== item.activeOperation || !guard || effect !== undefined : operation !== undefined || stage === "submit")
     || runId !== undefined && (kind !== "ci-rerun" || typeof runId !== "string" || !/^[1-9]\d*$/.test(runId))
     || guard !== undefined && (!guard || !Number.isSafeInteger(guard.generation) || guard.generation < 0 || !/^[a-f\d]{64}$/.test(guard.revision))
     || effect !== undefined && item.apiEffects?.[effect]?.definition.target !== target
@@ -31,7 +33,7 @@ export async function preflightRead({ store, key, item, kind, target, stage, gua
     await store.transact((s) => {
       const current = s.items[key], before = current.preflights?.[id], repeated = before?.status === "failed" && sameGuard(before.guard, guard);
       const failures = repeated ? Math.min(1000000, before.failures + 1) : 1;
-      (current.preflights ??= {})[id] = { id, kind, target, stage, ...(effect ? { effect } : {}), ...(runId ? { runId } : {}), ...(guard ? { guard: { generation: guard.generation, revision: guard.revision } } : {}),
+      (current.preflights ??= {})[id] = { id, kind, target, stage, ...(effect ? { effect } : {}), ...(operation ? { operation } : {}), ...(runId ? { runId } : {}), ...(guard ? { guard: { generation: guard.generation, revision: guard.revision } } : {}),
         incident: repeated ? before.incident : (before?.incident ?? 0) + 1, failures, status: "failed", code,
         firstAt: repeated ? before.firstAt : at, lastAt: at, nextAt: new Date(instant + Math.min(3600000, 60000 * 2 ** Math.min(6, failures - 1))).toISOString() };
       return s;
@@ -48,11 +50,15 @@ export async function preflightRead({ store, key, item, kind, target, stage, gua
   return value;
 }
 
-export function validPreflights(item) {
+export function validPreflights(item, operations = {}) {
   if (item.preflights === undefined) return true;
   return item.preflights && typeof item.preflights === "object" && !Array.isArray(item.preflights)
-    && Object.entries(item.preflights).every(([id, r]) => r && r.id === id && readKinds.has(r.kind) && readStages.has(r.stage)
-      && Number.isSafeInteger(r.target) && r.target > 0 && targetKnown(item, r.target) && id === preflightId(r.kind, r.target, r.stage, r.runId)
+    && Object.entries(item.preflights).every(([id, r]) => {
+      const op = operations[r?.operation];
+      return r && r.id === id && readKinds.has(r.kind) && readStages.has(r.stage)
+      && Number.isSafeInteger(r.target) && r.target > 0 && targetKnown(item, r.target) && id === preflightId(r.kind, r.target, r.stage, r.runId, r.operation)
+      && (r.kind === "publish" ? typeof r.operation === "string" && op?.item === item.key && op.result && r.target === (op.target?.number ?? Number(item.key.split(":")[1]))
+        && sameGuard(r.guard, op) && r.effect === undefined : r.operation === undefined && r.stage !== "submit")
       && (r.runId === undefined || r.kind === "ci-rerun" && typeof r.runId === "string" && /^[1-9]\d*$/.test(r.runId))
       && (r.effect === undefined || item.apiEffects?.[r.effect]?.definition.target === r.target
         && (r.kind === "notification" || item.apiEffects[r.effect].definition.kind === r.kind))
@@ -61,7 +67,8 @@ export function validPreflights(item) {
       && Number.isFinite(Date.parse(r.firstAt)) && Number.isFinite(Date.parse(r.lastAt))
       && (r.guard === undefined || r.guard && Number.isSafeInteger(r.guard.generation) && r.guard.generation >= 0 && /^[a-f\d]{64}$/.test(r.guard.revision))
       && (r.status === "failed" ? r.failures > 0 && Number.isFinite(Date.parse(r.nextAt))
-        : r.nextAt === null && Number.isFinite(Date.parse(r.resolvedAt))));
+        : r.nextAt === null && Number.isFinite(Date.parse(r.resolvedAt)));
+    });
 }
 
 // Public request identities for status and stop acknowledgements. A pending
@@ -106,13 +113,13 @@ export function apiRecoveryProblems(item, at, timeoutMinutes) {
   return problems;
 }
 
-export function syncApiAlerts(item, at, timeoutMinutes) {
+export function syncApiAlerts(item, at, timeoutMinutes, operations = {}) {
   const problems = apiRecoveryProblems(item, at, timeoutMinutes);
   for (const read of Object.values(item.preflights ?? {})) {
-    if (read.status === "failed" && obsoleteRead(item, read)) { read.status = "superseded"; read.nextAt = null; read.resolvedAt = at; }
+    if (read.status === "failed" && obsoleteRead(item, read, operations)) { read.status = "superseded"; read.nextAt = null; read.resolvedAt = at; }
     if (read.kind === "notification" || read.status !== "failed" || read.failures < 3 && Date.parse(at) < Date.parse(read.firstAt) + timeoutMinutes * 60000) continue;
     problems.push({ source: "preflight", preflight: read.id, incident: read.incident, read: `${read.id}/${read.incident}/${read.failures}`,
-      kind: read.kind, target: read.target, reason: `${read.kind} on #${read.target} cannot establish its ${read.stage} preconditions (${read.code}). No request is submitted on the strength of that failed observation; check API access and runtime preconditions.` });
+      kind: read.kind, target: read.target, reason: `${read.operation ? `Publication ${read.operation}` : read.kind} on #${read.target} cannot establish its ${read.stage} preconditions (${read.code}). No request is submitted on the strength of that failed observation; check API access and runtime preconditions.` });
   }
   const identity = (a) => a.source === "preflight" ? `preflight:${a.preflight}/${a.incident}` : a.effect;
   const active = new Set(problems.map(identity));

@@ -3,6 +3,7 @@
 // never executes project code and never gives write credentials to a worker.
 import { evolve, ProtocolError } from "./protocol.mjs";
 import { expectedEffectHead } from "./effects.mjs";
+import { preflightRead } from "./recovery.mjs";
 const sameRun = (a, b) => a?.id === b?.id && a?.attempt === b?.attempt;
 
 export async function publishOperation({ store, itemKey, operationId, publisherRun,
@@ -22,9 +23,31 @@ export async function publishOperation({ store, itemKey, operationId, publisherR
 
   let { state } = await store.load();
   let op = opFrom(state);
+  const observeFresh = async (stage) => {
+    const item = state.items[itemKey];
+    // Known local fences can retire unsent work even if the API is unavailable.
+    // Pending requests are inspected before this path and retain their receipts.
+    if (item.authorizationRevoked || item.paused || item.complete || item.question || item.continuation?.phase === "requested"
+      || op.generation !== item.generation || op.revision !== item.revision) return {};
+    if (Object.values(item.preflights ?? {}).some((r) => r.kind === "publish" && r.operation === op.id
+      && r.status === "failed" && Date.parse(now()) < Date.parse(r.nextAt))) return null;
+    try {
+      return await preflightRead({ store, key: itemKey, item, kind: "publish", target: op.target.number ?? Number(itemKey.split(":")[1]),
+        stage, operation: op.id, guard: { generation: op.generation, revision: op.revision }, now, read: async () => {
+          const value = await observe(item, op);
+          if (!value || typeof value.open !== "boolean" || typeof value.authorization?.valid !== "boolean"
+            || value.open && value.authorization.valid && (value.head !== null && !/^[a-f\d]{40}$/.test(value.head)
+              || !/^[a-f\d]{40}$/.test(value.baseSha) || !/^[a-f\d]{64}$/.test(value.authorization.revision))) {
+            throw new Error("Publication preconditions could not be observed completely");
+          }
+          return value;
+        } });
+    } catch (error) { if (error?.code === "preflight-wait") return null; throw error; }
+  };
   if (["done", "failed", "superseded"].includes(op.phase)) return { status: op.phase, operationId };
   if (op.phase === "result-ready") {
-    const observation = await observe(state.items[itemKey], op);
+    const observation = await observeFresh("plan");
+    if (!observation) return { status: "waiting", operationId, reason: "Waiting before rechecking publication preconditions" };
     ({ state } = await save({ type: "authorize-publish", observation }));
     op = opFrom(state);
   }
@@ -55,7 +78,8 @@ export async function publishOperation({ store, itemKey, operationId, publisherR
       if (effect.status === "applied") continue;
     }
 
-    const observation = await observe(state.items[itemKey], op);
+    const observation = await observeFresh("guard");
+    if (!observation) return { status: "waiting", operationId, reason: "Waiting before rechecking publication preconditions" };
     const expectedHead = expectedEffectHead(op, effect);
     const item = state.items[itemKey];
     const current = !item.authorizationRevoked && !item.paused && !item.complete && !item.question && op.generation === item.generation && op.revision === item.revision
@@ -77,7 +101,8 @@ export async function publishOperation({ store, itemKey, operationId, publisherR
       await save({ type: "publish-blocked", effectId: effect.id, reason: String(error.message || "Publisher validation failed").slice(0, 2000) });
       throw error;
     }
-    const fresh = await observe(state.items[itemKey], op);
+    const fresh = await observeFresh("submit");
+    if (!fresh) return { status: "waiting", operationId, reason: "Waiting before rechecking publication preconditions" };
     const previousCount = effect.requests.length;
     ({ state } = await save({ type: "request-effect", effectId: effect.id, observation: fresh }));
     op = opFrom(state);

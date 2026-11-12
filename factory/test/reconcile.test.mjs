@@ -37,6 +37,14 @@ test("pending publishes are reconciled while paused or after authority is lost",
   assert.equal(decide(s, facts({ authorization: { valid: false } })).action.type, "publish");
 });
 
+test("an accepted result can reobserve publication preconditions independently of a broad facts outage", () => {
+  const state = ready(), plan = decide(state, facts({ authorization: null, observationError: "CI API unavailable" }));
+  assert.equal(plan.action.type, "publish");
+  assert.equal(apply(state, plan).items["issue:7"].question, null);
+  assert.equal(operation(apply(state, plan)).phase, "result-ready");
+  assert.equal(state.items["issue:7"].attempts.length, 1);
+});
+
 test("known admission revocation fences a live owner, while an observation outage cannot revoke admission", () => {
   const owner = { ...run, status: "in_progress", conclusion: null }, state = claimed();
   const invalid = facts({ authorization: { valid: false, reason: "The issue author is not trusted" }, owner });
