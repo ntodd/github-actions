@@ -386,6 +386,7 @@ test("unsupported stack commands ask once and cannot block a later request after
   const stack = facts({ prs: [pr(), pr({ number: 10 })] });
   const first = decide(state, stack);
   assert.equal(first.action.type, "ask"); assert.match(first.action.reason, /stack maintenance/);
+  assert.match(first.action.reason, /#9.*#10/);
   state = apply(state, first);
   assert.equal(Object.values(state.items["issue:7"].commands)[0].status, "applied");
   const question = state.items["issue:7"].question.id, again = decide(state, stack);

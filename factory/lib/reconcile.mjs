@@ -311,7 +311,7 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
   const formerDefault = open.find((p) => facts.main?.ref && p.baseRef && p.baseRef !== facts.main.ref);
   if (formerDefault) return ask(`PR #${formerDefault.number} no longer targets the repository's default branch (${facts.main.ref}). Retarget it or restore the default branch before requesting work.`,
     "agent-needs-you", command ? { consumeCommand: command.id } : {});
-  if (open.length > 1 || facts.unsupportedStack) return ask("This work has several dependent PRs; stack maintenance is not enabled yet",
+  if (open.length > 1 || facts.unsupportedStack) return ask(`Unsupported work on ${open.map((p) => `#${p.number}`).join(", ") || "the affected PRs"}; stack maintenance is not enabled yet`,
     "agent-needs-you", command ? { consumeCommand: command.id } : {});
 
   const reserve = (mode, pr = null, request = null, feedback = []) => {
