@@ -11,6 +11,17 @@ const facts = (extra = {}) => ({ authorization: observation.authorization, issue
 function decide(s = initial(), f = facts(), now = at, options = {}) { return decideItem(s, "issue:7", f, config, { now, ...options }); }
 const apply = (s, plan) => plan.events.reduce((x, e) => step(x, e), s);
 
+test("explicit respond cannot exceed the response-round limit", () => {
+  const state = ready();
+  operation(state).phase = "failed";
+  const requested = ingestCommands(state, "issue:7", [{ authority: "instruction", sourceId: "issue-comment:999", revision: "e".repeat(64),
+    author: "ntodd", createdAt: at, target: 9, command: { action: "respond", text: "" } }]);
+  const plan = decideItem(requested, "issue:7", facts(), { ...config, maxRounds: 1 }, { now: at });
+  assert.equal(plan.action.type, "ask");
+  assert.equal(plan.action.reason, "The response-round limit was reached");
+  assert.equal(plan.events.some((e) => e.type === "reserve"), false);
+});
+
 test("terminal PR facts are recorded before deciding and a lower merge cannot hide unfinished work", () => {
   const plan = decide(initial(), facts({ prs: [pr({ state: "merged", mergedSha: C }), pr({ number: 10 })] }));
   assert.equal(plan.action.type, "handover");

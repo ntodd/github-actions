@@ -287,11 +287,11 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
         repeated++;
       }
       if (repeated >= config.budget.repeatedFailureLimit) return ask("The same failure repeated without progress", "agent-failed");
-      const responses = Object.values(state.operations).filter((o) => o.item === key && o.mode === "respond");
-      const rounds = item.respondBaseline === undefined ? responses.filter((o) => Date.parse(o.createdAt) >= Date.parse(item.handoverAt ?? "1970-01-01T00:00:00Z")).length
-        : responses.length - item.respondBaseline;
-      if (mode === "respond" && rounds >= config.maxRounds) return ask("The response-round limit was reached", "agent-failed");
     }
+    const responses = Object.values(state.operations).filter((o) => o.item === key && o.mode === "respond");
+    const rounds = item.respondBaseline === undefined ? responses.filter((o) => Date.parse(o.createdAt) >= Date.parse(item.handoverAt ?? "1970-01-01T00:00:00Z")).length
+      : responses.length - item.respondBaseline;
+    if (mode === "respond" && rounds >= config.maxRounds) return ask("The response-round limit was reached", "agent-failed");
     return finish({ type: "reserve", mode, pr: pr?.number ?? null, automatic: !request, commandIds: request ? [request.id] : [], feedbackInputs: feedback.map((f) => ({ sourceId: f.sourceId, revision: f.revision })) }, "agent-ready", `Start ${mode} on the existing work item`);
   };
   const explicitPr = open.find((p) => p.number === command?.target) ?? open[0];
