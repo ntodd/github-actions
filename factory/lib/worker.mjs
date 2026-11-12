@@ -110,7 +110,7 @@ export async function runWorker({ assignment, cwd, stateDir, resultDir, readToke
     if (["needs-you", "failed"].includes(outcome.status)) break;
   }
   if (outcome.replies) outcome = { ...outcome, replies: outcome.replies.map((reply) => ({ ...reply, revision: threadContexts.get(reply.thread) })) };
-  const proposal = exportProposal({ cwd, directory: resultDir, operation: op, run, outcome });
+  const proposal = exportProposal({ cwd, directory: resultDir, operation: op, run, outcome, secrets: Object.values(projectSecrets) });
   // These are untrusted evidence for diagnosis, not authority for state changes.
   proposal.metrics = { ...meter.snapshot(), cliVersion, ...(invoke ? { costScope: "phase" } : {}) };
   proposal.consultedFeedback = [...consulted].map(([sourceId, revision]) => ({ sourceId, revision }));

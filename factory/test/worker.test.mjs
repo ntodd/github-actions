@@ -53,6 +53,41 @@ test("workers describe available project variable names without putting secret v
   assert.equal(JSON.stringify([proposal, prompts, system]).includes(secret), false);
 });
 
+test("worker result prose redacts selected project secrets before export", async (t) => {
+  const f = fixture(t), secret = "private-test-database-password";
+  f.args.assignment.config = parseConfig("trusted-users: [ntodd]\nenvironment: {worker-secrets: [DATABASE_PASSWORD]}");
+  f.args.projectSecrets = { DATABASE_PASSWORD: secret };
+  f.args.invoke = async () => ({ outcome: { status: "needs-you", reason: `Cannot connect: ${secret}`, report: `Used ${secret}`, tests: [`Failed with ${secret}`, { evidence: secret }] } });
+  const proposal = await runWorker(f.args);
+  const bytes = readFileSync(join(f.args.resultDir, "proposal.json"), "utf8");
+  assert.equal(bytes.includes(secret), false);
+  assert.match(proposal.reason, /\[REDACTED\]/);
+  assert.match(proposal.report, /\[REDACTED\]/);
+  assert.match(JSON.stringify(proposal.tests), /\[REDACTED\]/);
+});
+
+test("worker PR prose and thread replies redact selected project secrets", async (t) => {
+  for (const mode of ["build", "respond"]) {
+    const f = fixture(t), secret = "private-test-database-password", op = f.args.assignment.operation;
+    f.args.assignment.config = parseConfig("trusted-users: [ntodd]\nenvironment: {worker-secrets: [DATABASE_PASSWORD]}");
+    f.args.projectSecrets = { DATABASE_PASSWORD: secret };
+    op.mode = mode;
+    if (mode === "build") { op.target.head = null; op.target.number = null; f.fresh.head = null; }
+    else op.threadTargets = [{ id: "T1", revision: "f".repeat(64) }];
+    f.args.invoke = async ({ phase }) => {
+      if (phase === "work") {
+        writeFileSync(join(f.root, "code.txt"), "fixed"); f.git(["add", "."]); f.git(["commit", "--quiet", "-m", "Fix"]);
+      }
+      return { outcome: { status: "ready", title: `Fix ${secret}`, body: `Issue: #7\n${secret}`,
+        ...(mode === "respond" ? { replies: [{ thread: "T1", body: `Fixed ${secret}`, resolve: false }] } : {}) } };
+    };
+    const proposal = await runWorker(f.args);
+    const bytes = readFileSync(join(f.args.resultDir, "proposal.json"), "utf8");
+    assert.equal(bytes.includes(secret), false);
+    assert.match(mode === "build" ? JSON.stringify(proposal.pullRequest) : proposal.replies[0].body, /\[REDACTED\]/);
+  }
+});
+
 test("a stop between phases prevents further model work or a code proposal", async (t) => {
   const f = fixture(t); let calls = 0;
   f.args.readFresh = async () => ({ ...f.fresh, paused: calls > 0 });

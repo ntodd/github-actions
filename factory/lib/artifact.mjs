@@ -21,10 +21,17 @@ function plainFile(path, limit) {
 }
 const text = (result) => result.stdout.toString("utf8").trim();
 
-export function exportProposal({ cwd, directory, operation: op, run, outcome }) {
+export function exportProposal({ cwd, directory, operation: op, run, outcome, secrets = [] }) {
   if (!op || !SHA.test(op.base?.sha) || (op.target?.head !== null && !SHA.test(op.target?.head))) throw new Error("Invalid worker assignment");
   if (!run || typeof run.id !== "string" || !/^[1-9]\d*$/.test(run.id) || !Number.isSafeInteger(run.attempt) || run.attempt < 1) throw new Error("Invalid worker run identity");
   if (!outcome || !["ready", "needs-you", "no-change", "failed"].includes(outcome.status)) throw new Error("Invalid worker outcome");
+  const values = [...new Set(secrets)].filter((s) => typeof s === "string" && s.length).sort((a, b) => b.length - a.length);
+  const redact = (value) => typeof value === "string" ? values.reduce((text, secret) => text.split(secret).join("[REDACTED]"), value)
+    : Array.isArray(value) ? value.map(redact) : value && typeof value === "object"
+      ? Object.fromEntries(Object.entries(value).map(([key, text]) => [redact(key), redact(text)])) : value;
+  outcome = { ...outcome, reason: redact(outcome.reason), report: redact(outcome.report), tests: redact(outcome.tests),
+    title: redact(outcome.title), body: redact(outcome.body),
+    ...(Array.isArray(outcome.replies) ? { replies: outcome.replies.map((r) => ({ ...r, body: redact(r.body) })) } : {}) };
   directory = resolve(directory);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   if (!lstatSync(directory).isDirectory() || lstatSync(directory).isSymbolicLink()) throw new Error("Artifact directory must be a real directory");

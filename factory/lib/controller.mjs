@@ -5,7 +5,7 @@ import { admit, evolve, validateLedger } from "./protocol.mjs";
 import { inspectIssue, inspectOwnPr, classifyText, readFeedback } from "./admission.mjs";
 import { threadTargets } from "./threads.mjs";
 import { ingestCommands, revalidateCommands, applyControls, resolveRoute, requestRoute } from "./commands.mjs";
-import { loadConfig, withFactoryApp } from "./config.mjs";
+import { loadConfig, withFactoryApp, parseConfig } from "./config.mjs";
 import { factoryReadApi } from "./identity.mjs";
 import { observeItem, observeAuthorization, publishObservation } from "./observe.mjs";
 import { decideRepository } from "./reconcile.mjs";
@@ -204,6 +204,11 @@ export async function runController({ api, write, store, actions, repo, toolingS
           let result;
           try {
             result = await actions.download(op, context);
+            const assigned = parseConfig((await api.fileAt(".github/factory.yml", op.configSha)).content);
+            // This job never receives project secret values. Keep free-form
+            // worker questions in the redacted artifact rather than the ledger.
+            if (assigned.environment.workerSecrets.length) result.proposal = { ...result.proposal,
+              reason: `Worker outcome: ${["ready", "needs-you", "no-change", "failed"].includes(result.proposal.outcome) ? result.proposal.outcome : "invalid"}. Read the redacted result report from worker run ${op.owner.id}.` };
             const feedback = result.proposal.replies?.length ? await readFeedback(api, { issue: null, prs: [op.target.number] }, (await loadConfig(api)).config) : [];
             await save(key, { type: "collect-result", operationId: op.id, artifact: result.artifact, proposal: result.proposal, feedback });
           } catch (error) {
