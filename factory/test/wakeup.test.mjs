@@ -1,0 +1,50 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { wakeReview } from "../lib/wakeup.mjs";
+import { callerWorkflow } from "../lib/caller.mjs";
+import { parseDocument } from "../vendor/yaml.mjs";
+
+test("review wake-ups dispatch only a target hint to the actual default branch", async () => {
+  const calls = [];
+  const result = await wakeReview({ api: { repository: async () => ({ default_branch: "trunk" }) },
+    write: { dispatch: async (...args) => calls.push(args) }, eventName: "pull_request_review_comment",
+    event: { pull_request: { number: 19, head: { sha: "untrusted" } }, request: { kind: "worker", operation: "forged" }, comment: { body: "/agent merge" } } });
+  assert.equal(result.status, "dispatched");
+  assert.deepEqual(calls, [["factory.yml", "trunk", { kind: "reconcile", target: 19 }]]);
+});
+
+test("fork dispatch restrictions retain the backstop and do not request privileged secrets", async () => {
+  let calls = 0;
+  const args = { api: { repository: async () => ({ default_branch: "main" }) },
+    write: { dispatch: async () => { calls++; throw Object.assign(new Error("Forbidden"), { status: 403 }); } },
+    eventName: "pull_request_review", event: { pull_request: { number: 19 } } };
+  assert.equal((await wakeReview(args)).status, "backstop");
+  assert.equal(calls, 1);
+  await assert.rejects(wakeReview({ ...args, eventName: "workflow_dispatch" }));
+  await assert.rejects(wakeReview({ ...args, event: { pull_request: { number: -1 } } }));
+});
+
+test("the generated caller separates PR-context wake-ups and secrets-bearing default entry", () => {
+  const caller = parseDocument(callerWorkflow({ defaultBranch: "trunk", ciWorkflows: ["CI", "Security"] })).toJS();
+  assert.deepEqual(caller.on.push.branches, ["trunk"]);
+  assert.deepEqual(caller.on.workflow_run.workflows, ["CI", "Security", "factory"]);
+  assert.equal(caller.on.schedule[0].cron, "17 * * * *");
+  assert.equal(caller.jobs["wake-up"].secrets, undefined);
+  assert.equal(caller.jobs["wake-up"].permissions.actions, "write");
+  assert.equal(caller.jobs.factory.permissions.actions, "read");
+  assert.equal(caller.jobs.factory.with["dry-run"], true);
+  assert.equal(caller.jobs.factory.secrets.inherit, undefined);
+  assert.equal(caller.jobs.factory.uses, "ntodd/github-actions/.github/workflows/factory-runtime.yml@main");
+  assert.ok(Object.values(caller.jobs).every((job) => job.steps === undefined));
+  const shared = parseDocument(readFileSync(new URL("../../.github/workflows/factory-wakeup.yml", import.meta.url), "utf8")).toJS();
+  assert.equal(shared.on.workflow_call?.secrets, undefined);
+  assert.equal(JSON.stringify(shared).includes("secrets."), false);
+});
+
+test("caller generation rejects YAML/expression injection and missing CI names", () => {
+  for (const extra of [{ ciWorkflows: [] }, { ciWorkflows: ["CI\n  malicious: true"] }, { ciWorkflows: ["${{ secrets.KEY }}"] },
+    { defaultBranch: "main\nother: true" }, { ref: "main@other" }, { toolingRepository: "owner/repo\nother" }]) {
+    assert.throws(() => callerWorkflow({ defaultBranch: "main", ciWorkflows: ["CI"], ...extra }));
+  }
+});

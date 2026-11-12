@@ -93,6 +93,16 @@ test("a resumed session reports its running cost, so each phase gets only its ow
   assert.equal((await s.run({ phase: "publish", token: "t", prompt: "p" })).cost, 0.25);
 });
 
+test("invocation measurements include missing-outcome retries and unsuccessful outcomes", async () => {
+  const measurements = [];
+  const s = setup([{ cost: 1 }, { cost: 1.25, outcome: { status: "failed" }, exit: 1 }], { onInvocation: (m) => measurements.push(m) });
+  assert.equal((await s.run({ phase: "work", token: "t", prompt: "p" })).outcome.status, "failed");
+  assert.equal(measurements.length, 2);
+  assert.equal(measurements[0].result.total_cost_usd, 1);
+  assert.equal(measurements[1].result.total_cost_usd, 1.25);
+  assert.equal(measurements[1].completed, true);
+});
+
 test("comment.md and report.md ride along on the outcome, and stale files are cleared first", async () => {
   const s = setup([{ outcome: { status: "blocked" }, comment: "Which one?" }, { outcome: { status: "done" }, report: "# Report" }]);
   assert.deepEqual((await s.run({ phase: "build", token: "t", prompt: "p" })).outcome, { status: "blocked", comment: "Which one?" });

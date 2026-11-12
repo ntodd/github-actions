@@ -1,0 +1,219 @@
+name: factory runtime
+
+on:
+  workflow_call:
+    inputs:
+      request:
+        type: string
+        default: ''
+      app-id:
+        type: string
+        required: true
+      dry-run:
+        type: boolean
+        default: true
+    secrets:
+      AGENT_APP_PRIVATE_KEY:
+        required: false
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
+      ANTHROPIC_API_KEY:
+        required: false
+      OPENAI_API_KEY:
+        required: false
+      SETUP_SECRETS:
+        required: false
+
+permissions: {}
+
+jobs:
+  control:
+    name: factory-control
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    concurrency:
+      group: factory-control
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+      actions: read
+      checks: read
+      statuses: read
+    outputs:
+      worker: ${{ steps.control.outputs.worker }}
+      item: ${{ steps.control.outputs.item }}
+      operation: ${{ steps.control.outputs.operation }}
+      mode: ${{ steps.control.outputs.mode }}
+      head: ${{ steps.control.outputs.head }}
+      tooling: ${{ steps.control.outputs.tooling }}
+      runner: ${{ steps.control.outputs.runner }}
+      timeout: ${{ steps.control.outputs.timeout }}
+      model: ${{ steps.control.outputs.model }}
+      effort: ${{ steps.control.outputs.effort }}
+      config_repository: ${{ steps.control.outputs.config_repository }}
+      config_ref: ${{ steps.control.outputs.config_ref }}
+      config_path: ${{ steps.control.outputs.config_path }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - id: control
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          FACTORY_REQUEST: ${{ inputs.request }}
+          FACTORY_DRY_RUN: ${{ inputs.dry-run }}
+          FACTORY_TOOLING_SHA: ${{ job.workflow_sha }}
+          FACTORY_APP_ID: ${{ inputs.app-id }}
+          FACTORY_APP_PRIVATE_KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: node factory/control/index.mjs
+
+  worker:
+    name: factory-worker
+    needs: control
+    if: needs.control.outputs.worker == 'true' && needs.control.outputs.mode != 'update'
+    runs-on: ${{ needs.control.outputs.runner }}
+    timeout-minutes: ${{ fromJSON(needs.control.outputs.timeout) }}
+    concurrency:
+      group: factory-item-${{ needs.control.outputs.item }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+      actions: read
+      checks: read
+      statuses: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ needs.control.outputs.tooling }}
+          path: .factory-tools
+          persist-credentials: false
+      - name: Place trusted tools outside the project
+        run: |
+          mkdir -p "$RUNNER_TEMP/factory"
+          mv .factory-tools "$RUNNER_TEMP/factory/tools"
+          {
+            echo "FACTORY_TOOLS=$RUNNER_TEMP/factory/tools"
+            echo "FACTORY_STATE_DIR=$RUNNER_TEMP/factory/state"
+            echo "FACTORY_RESULT_DIR=$RUNNER_TEMP/factory/result"
+            echo "FACTORY_MCP_CONFIG=$RUNNER_TEMP/factory/mcp.json"
+          } >> "$GITHUB_ENV"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - name: Recheck ownership and select project secrets before checkout
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          FACTORY_ITEM: ${{ needs.control.outputs.item }}
+          FACTORY_OPERATION: ${{ needs.control.outputs.operation }}
+          FACTORY_PROJECT_SECRETS: ${{ secrets.SETUP_SECRETS }}
+        run: node "$FACTORY_TOOLS/factory/worker/check.mjs"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.control.outputs.head }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ needs.control.outputs.config_repository }}
+          ref: ${{ needs.control.outputs.config_ref }}
+          path: .factory-config
+          persist-credentials: false
+      - name: Place Claude configuration outside the project
+        run: mv .factory-config "$RUNNER_TEMP/factory/config"
+      - name: Project setup
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          FACTORY_ITEM: ${{ needs.control.outputs.item }}
+          FACTORY_OPERATION: ${{ needs.control.outputs.operation }}
+        run: node "$FACTORY_TOOLS/factory/worker/setup.mjs"
+      - name: Install model and browser tools
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AGENT_GH_VERSION: '2.102.0'
+          AGENT_GH_STACK_VERSION: v0.1.1
+          AGENT_CLAUDE_VERSION: stable
+          AGENT_CODEX_VERSION: '0.167.0'
+          AGENT_PLAYWRIGHT_MCP_VERSION: '0.0.84'
+          AGENT_STATE: ${{ runner.temp }}/factory/state
+          AGENT_MCP_CONFIG: ${{ runner.temp }}/factory/mcp.json
+        run: bash "$FACTORY_TOOLS/agent-ready/run/install.sh"
+      - name: Configure model tools
+        env:
+          AGENT_MODEL: ${{ needs.control.outputs.model }}
+          AGENT_EFFORT: ${{ needs.control.outputs.effort }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CONFIG_PATH: ${{ needs.control.outputs.config_path }}
+        run: bash "$FACTORY_TOOLS/agent-ready/run/configure.sh" "$RUNNER_TEMP/factory/config/$CONFIG_PATH"
+      - name: Prepare the proposal on Crew
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          FACTORY_ITEM: ${{ needs.control.outputs.item }}
+          FACTORY_OPERATION: ${{ needs.control.outputs.operation }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: node "$FACTORY_TOOLS/factory/worker/index.mjs"
+      - name: Upload the proposal and release Crew
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: factory-${{ needs.control.outputs.operation }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/factory/result/proposal.json
+            ${{ runner.temp }}/factory/result/proposal.bundle
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Remove selected project secrets
+        if: always()
+        run: rm -f -- "$RUNNER_TEMP/factory/project-environment.json"
+
+  update:
+    name: factory-update
+    needs: control
+    if: needs.control.outputs.worker == 'true' && needs.control.outputs.mode == 'update'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    concurrency:
+      group: factory-item-${{ needs.control.outputs.item }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ needs.control.outputs.tooling }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - name: Prepare a clean integration without project execution
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          FACTORY_ITEM: ${{ needs.control.outputs.item }}
+          FACTORY_OPERATION: ${{ needs.control.outputs.operation }}
+          FACTORY_RESULT_DIR: ${{ runner.temp }}/factory/result
+        run: node factory/update/index.mjs
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: factory-${{ needs.control.outputs.operation }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/factory/result/proposal.json
+            ${{ runner.temp }}/factory/result/proposal.bundle
+          if-no-files-found: ignore
+          retention-days: 7

@@ -6,6 +6,18 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "model:check": "quint typecheck spec/factory.qnt && quint test spec/factory.qnt --backend=rust --max-samples=1",
+    "model:simulate": "npm run model:chaos && npm run model:recovery",
+    "model:chaos": "quint run spec/factory.qnt --backend=rust --invariant=safety --max-samples=10000 --max-steps=100 --n-threads=1 --seed=20261111 --verbosity=1 --witnesses duplicateDelivery recoveredPush staleRejected stoppedWithLiveWorker budgetExhausted partialCompletion fullCompletion artifactExpired latePushAfterStop baseMovedBeforePush",
+    "model:recovery": "quint run spec/factory.qnt --backend=rust --invariant=safety --max-samples=10000 --max-steps=100 --n-threads=1 --seed=20261111 --verbosity=1 --step=recoveryStep --witnesses recoveredPush partialCompletion fullCompletion",
+    "model:replay": "node spec/replay.mjs",
+    "vendor:build": "node factory/build/vendor.mjs",
+    "vendor:check": "node factory/build/vendor.mjs --check"
+  },
+  "devDependencies": {
+    "@informalsystems/quint": "0.33.1",
+    "esbuild": "0.28.2",
+    "yaml": "2.9.1"
   }
 }
