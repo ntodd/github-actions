@@ -13,11 +13,13 @@ import { runProvenance } from "./actions.mjs";
 import { failureContext } from "./failure-report.mjs";
 import { mainRepairRole } from "./main-repair.mjs";
 import { collectUsage } from "./accounting.mjs";
+import { validateMigrationRequest } from "./migration.mjs";
 
 export function parseRequest(value) {
   if (!value) return { kind: "reconcile" };
   if (typeof value !== "string" || value.length > 4096) throw new Error("Invalid dispatch request");
   const request = JSON.parse(value);
+  if (request?.kind === "migrate") return validateMigrationRequest(request);
   if (!request || !["reconcile", "worker", "inspect"].includes(request.kind) || Object.keys(request).some((k) => !["kind", "target", "item", "operation"].includes(k))
     || request.kind === "inspect" && Object.keys(request).length !== 1
     || request.target !== undefined && (!Number.isSafeInteger(request.target) || request.target < 1)

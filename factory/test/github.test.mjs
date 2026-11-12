@@ -11,6 +11,23 @@ function api(handler) {
   } }) };
 }
 
+test("migration closing references paginate completely and retain the exact PR identity and head", async () => {
+  const head = "a".repeat(40), calls = [];
+  const client = readClient({ token: "secret", repo: "ntodd/repo", fetch: async (_url, init) => {
+    const body = JSON.parse(init.body); calls.push(body.variables.cursor);
+    assert.match(body.query, /^query\(/); assert.equal(body.variables.number, 9);
+    return Response.json({ data: { repository: { pullRequest: { number: 9, headRefOid: head,
+      closingIssuesReferences: body.variables.cursor ? conn([{ number: 8, repository: { nameWithOwner: "ntodd/repo" } }])
+        : conn([{ number: 7, repository: { nameWithOwner: "ntodd/repo" } }], "next") } } } });
+  } });
+  assert.deepEqual(await client.closingIssues(9, head), [{ number: 7, repository: "ntodd/repo" }, { number: 8, repository: "ntodd/repo" }]);
+  assert.deepEqual(calls, [null, "next"]);
+  for (const patch of [{ number: 10 }, { headRefOid: "b".repeat(40) }, { closingIssuesReferences: conn([{ number: 7, repository: null }]) }]) {
+    const wrong = api(() => Response.json({ data: { repository: { pullRequest: { number: 9, headRefOid: head, closingIssuesReferences: conn([]), ...patch } } } }));
+    await assert.rejects(wrong.client.closingIssues(9, head));
+  }
+});
+
 test("REST comment pagination reads all pages and refuses to forward credentials across origins", async () => {
   const { client, calls } = api((url) => url.endsWith("/graphql") ? Response.json({ data: { node: { lastEditedAt: null, userContentEdits: conn([]) } } })
     : url.includes("page=2") ? Response.json([{ id: 2, node_id: "IC_2" }])

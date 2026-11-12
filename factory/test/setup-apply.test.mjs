@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setupPlan } from "../lib/setup.mjs";
 import { applySetupPlan } from "../lib/setup-apply.mjs";
-import { emptyLedger, validateLedger, recordFactoryApp } from "../lib/protocol.mjs";
+import { emptyLedger, validateLedger, recordFactoryApp, admit } from "../lib/protocol.mjs";
 import { bootstrapPlan, applyBootstrap } from "../lib/bootstrap.mjs";
 import { A, B, C, D } from "./fixtures.mjs";
 
@@ -33,7 +33,7 @@ function fixture({ active = false } = {}) {
       calls.push(["pr"]); const p = { number: 19, html_url: "https://github.com/ntodd/project/pull/19", state: "open", body: data.body,
         head: { ref: data.head, sha: C }, base: { ref: data.base } }; pulls.push(p); return p;
     },
-    workflows: async () => [], liveWorkflowRuns: async () => [], openPulls: async () => [],
+    workflows: async () => [], liveWorkflowRuns: async () => [], openPulls: async () => [], openIssues: async () => [],
     branchRules: async () => rules.filter((r) => r.name.startsWith("factory-state-")).flatMap((r) => r.rules.map((rule) => ({ ...rule, ruleset_id: r.id }))),
   };
   const store = { load: async () => ({ state: structuredClone(state) }), initialize: async () => { calls.push(["state-read"]); return { state }; },
@@ -208,6 +208,22 @@ test("activation rejects legacy owners and unrecorded App PRs before any mutatio
     const f = fixture({ active: true }); configure(f);
     await assert.rejects(f.apply()); assert.deepEqual(f.calls, []);
   }
+});
+
+test("activation also requires legacy issues whose old PR already closed to have explicit records", async () => {
+  const f = fixture({ active: true });
+  f.api.openIssues = async () => [{ number: 7, labels: [{ name: "agent-done" }] }];
+  await assert.rejects(f.apply({ preview: true }), /Migrate legacy issue records.*#7/);
+  assert.deepEqual(f.calls, []);
+  f.state = recordFactoryApp(admit(emptyLedger("42"), { key: "issue:7", revision: "e".repeat(64), evidence: { sourceId: "label:1" } }), { id: "123", login: "factory-app[bot]" });
+  await assert.rejects(f.apply({ preview: true }), /Migrate legacy issue records/);
+  f.state = recordFactoryApp(admit(emptyLedger("42"), { key: "issue:7", revision: "e".repeat(64), evidence: { sourceId: "label:1" },
+    prs: [{ number: 9, state: "merged", required: true, mergedSha: C, acceptedClosure: false }] }), { id: "123", login: "factory-app[bot]" });
+  assert.equal((await f.apply({ preview: true })).status, "preview");
+  assert.deepEqual(f.calls, []);
+  f.api.openIssues = async () => [{ number: 8 }];
+  await assert.rejects(f.apply({ preview: true }), /inventory is incomplete/);
+  assert.deepEqual(f.calls, []);
 });
 
 test("credentials go only to the secret adapter, never the public plan, result or recovery records", async () => {

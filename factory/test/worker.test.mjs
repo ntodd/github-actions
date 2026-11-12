@@ -43,6 +43,27 @@ test("workers reread feedback between phases and export only committed code", as
   assert.equal(proposal.consultedFeedback.length, 1);
 });
 
+test("migration retains old commands as explicit history while fresh requests remain new worker instructions", async (t) => {
+  const f = fixture(t), plan = "f".repeat(64), revision = "a".repeat(64), current = "b".repeat(64);
+  f.args.assignment.item.migration = { plan, admission: { sourceId: "label:123", revision } };
+  f.args.assignment.item.commands = { old: { sourceId: "issue-comment:50", revision, status: "superseded", legacyMigration: plan },
+    current: { id: current, sourceId: "issue-comment:51", revision, status: "reserved" } };
+  f.args.assignment.operation.inputs = [current];
+  f.fresh.feedback = ["label:123", "issue-comment:50", "issue-comment:51"].map((sourceId) => ({ sourceId, revision,
+    authority: "instruction", body: "Trusted command", createdAt: "2026-11-12T12:00:00Z" }));
+  const contexts = [];
+  f.args.invoke = async ({ prompt }) => {
+    const context = JSON.parse(prompt.split("Current API context (roles are authenticated by the controller):\n")[1].split("\n\nWrite ")[0]);
+    contexts.push(context);
+    return { outcome: { status: "no-change" } };
+  };
+  const proposal = await runWorker(f.args); assert.equal(proposal.outcome, "no-change"); assert.equal(contexts.length, 3);
+  for (const context of contexts) {
+    assert.deepEqual(context.humanInstructions.map((fact) => fact.new), [false, false, true]);
+    assert.deepEqual(context.humanInstructions.map((fact) => fact.legacyHistory ?? false), [true, true, false]);
+  }
+});
+
 test("worker screenshot evidence crosses the artifact boundary as digest-bound raster data", async (t) => {
   const f = fixture(t), png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jE9sAAAAASUVORK5CYII=", "base64");
   f.args.invoke = async () => {

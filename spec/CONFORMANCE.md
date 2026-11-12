@@ -246,6 +246,11 @@ exercises exact commit, ancestry and tree proofs, malformed API identities,
 bounded reads/backoff, missing-evidence escalation, stale answers, restarted
 work, own-PR maintenance and the external issue-close guard. Live merge
 methods and API consistency remain sandbox assumptions, not replay evidence.
+An additional terminal-state audit reproduced an unresolved adapter gap: a
+PR merged into `feature` is normalized without its base identity, allowing
+the reconciler to choose close-out. The modeled merge action assumes the
+supported destination. Completion after retargeting away from the default
+branch still needs an implementation fix and regression before activation.
 Temporary weakened copies were checked with seed `20261111`: removing the
 publication-coverage guard made `latePushCannotCompleteTest` fail, and
 allowing verification without actual landing made
@@ -392,3 +397,24 @@ to the pinned read-only caller/config and recover a lost PR response. The
 shared job filters controller completion wake-ups before allocating a runner;
 unit/workflow-shape checks cover that filter, not real event delivery. Live
 inspection and authenticated artifact consumption still require validation.
+
+Legacy migration is also outside the fixed-admission, fixed-PR model. The
+manual default-branch request produces a read-only inventory, then requires
+explicit mappings and the reviewed plan digest for import. Original admission,
+PR ownership/head identity, closing references, configuration, conversation
+and protected state are reobserved. A trusted operator's explicit cutover
+retains legacy commands as history, preserves merged outcomes and records
+pauses or questions without allocating an operation. Existing factory history
+is preserved; uncertain legacy ownership is not reconstructed from PR prose.
+Migration and entry-process scenarios cover stale facts, state conflicts,
+response loss, legacy isolation, human PR maintenance, provenance and the
+absence of worker outputs. The entry process requests only contents write
+access for import. Worker scenarios distinguish retained legacy commands from
+new instructions, and status reports keep legacy usage unmeasured. These are
+local adapter checks; actual state permissions, cutover and subsequent work
+still require sandbox validation. See [migration usage](../factory/MIGRATION.md).
+Activation also checks open legacy-labeled issues whose PR may already be
+closed; a missing record or incomplete inventory withholds activation.
+The closing-reference reader has complete-pagination and exact-head scenarios.
+Its live sandbox probe could not authenticate: local `gh` credentials were
+rejected with HTTP 401. This supplies no positive live evidence for that reader.

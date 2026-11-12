@@ -134,6 +134,17 @@ export function readClient({ token, repo, apiUrl = "https://api.github.com", fet
     stepLog,
     issue: async (number) => (await request(`${root}/issues/${Number(number)}`)).data,
     pull: async (number) => (await request(`${root}/pulls/${Number(number)}`)).data,
+    closingIssues: async (number, head) => {
+      if (!positive(number) || !sha(head)) throw new Error("Closing references require a PR number and exact head");
+      const rows = await pages(`query($owner:String!,$name:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){number headRefOid closingIssuesReferences(first:100,after:$cursor){nodes{number repository{nameWithOwner}} pageInfo{hasNextPage endCursor}}}}}`,
+        { number: Number(number) }, (data) => {
+          const pr = data.repository?.pullRequest;
+          if (pr?.number !== Number(number) || pr.headRefOid !== head) throw new Error("Closing references changed PR identity or head");
+          return pr.closingIssuesReferences;
+        });
+      if (rows.some((i) => !positive(i.number) || !/^[\w.-]+\/[\w.-]+$/.test(i.repository?.nameWithOwner ?? ""))) throw new Error("Closing issue references are incomplete");
+      return rows.map((i) => ({ number: i.number, repository: i.repository.nameWithOwner }));
+    },
     openIssues: async () => (await list("/issues?state=open")).filter((i) => !i.pull_request),
     openPulls: () => list("/pulls?state=open"),
     branchRules: (branch) => list(`/rules/branches/${encodeURIComponent(branch)}`),

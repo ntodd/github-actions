@@ -8,6 +8,7 @@ import { loadConfig, withFactoryApp } from "../lib/config.mjs";
 import { recordFactoryApp } from "../lib/protocol.mjs";
 import { verifyEntry, controllerWakeup } from "../lib/entry.mjs";
 import { inspectFactoryApp } from "../lib/app-inspection.mjs";
+import { runMigration, verifyMigrationEntry } from "../lib/migration.mjs";
 import { parseRequest, claimOperation, runController } from "../lib/controller.mjs";
 import { cleanPublisher } from "../lib/publisher.mjs";
 import { surfaceService } from "../lib/surfaces.mjs";
@@ -56,13 +57,19 @@ main(async () => {
     summary("Factory controller completion: no worker operation to collect."); return;
   }
   const assertRuntime = () => assertRuntimeIsolation(api);
-  if (!dryRun) await assertRuntime(); // Before minting an App write token.
+  // Migration is a separate manual cutover; its default plan never mints write
+  // access. Explicit application changes records only, including on the
+  // read-only caller installed before activation.
+  if (request.kind === "migrate") await verifyMigrationEntry({ api, env, context });
+  const mutating = request.kind === "migrate" ? request.apply === true : !dryRun;
+  if (mutating) await assertRuntime(); // Before minting an App write token.
   let token = env.GITHUB_TOKEN, appLogin;
-  if (!dryRun) {
+  if (mutating) {
     const key = env.FACTORY_APP_PRIVATE_KEY;
     if (!key) throw new Error("The clean controller requires its App credential");
     const app = { appId: env.FACTORY_APP_ID, privateKey: key, repo, apiUrl };
-    const installation = await installationToken({ ...app, permissions: { contents: "write", issues: "write", pull_requests: "write", actions: "write" } });
+    const installation = await installationToken({ ...app, permissions: request.kind === "migrate" ? { contents: "write" }
+      : { contents: "write", issues: "write", pull_requests: "write", actions: "write" } });
     token = installation.token; mask(token);
     appLogin = `${await appSlug(app)}[bot]`;
     delete env.FACTORY_APP_PRIVATE_KEY;
@@ -70,9 +77,16 @@ main(async () => {
   const store = stateStore({ repositoryId: context.repositoryId, git: githubData({ token, repo, apiUrl }) });
   const { state } = await store.load();
   if (!state.factoryApp) throw new Error("Factory App identity is missing from protected state; rerun factory setup before enabling work");
-  if (!dryRun) recordFactoryApp(state, { id: String(env.FACTORY_APP_ID), login: appLogin.toLowerCase() });
+  if (mutating) recordFactoryApp(state, { id: String(env.FACTORY_APP_ID), login: appLogin.toLowerCase() });
   api.factoryAppLogin = state.factoryApp.login;
   context.config = withFactoryApp(context.config, state.factoryApp.login);
+  if (request.kind === "migrate") {
+    delete env.FACTORY_APP_PRIVATE_KEY;
+    const result = await runMigration({ api, store, env, context, request, assertRuntime,
+      ...(mutating ? { activeApp: { id: String(env.FACTORY_APP_ID), login: appLogin.toLowerCase() } } : {}) });
+    summary(`Factory migration\n\n${JSON.stringify(result, null, 2)}`);
+    return;
+  }
   if (request.kind === "worker") {
     if (dryRun) throw new Error("A read-only controller cannot claim a worker");
     const claimed = await claimOperation({ api, store, repo, itemKey: request.item, operationId: request.operation, run, context });

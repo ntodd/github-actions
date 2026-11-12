@@ -62,7 +62,7 @@ export function projectItem(ledger, key) {
       return `Published \`${r.commit}\` on #${r.number}; recorded merge \`${r.pr.mergedSha}\`. ${!gap ? "Landing is verified." : gap.accepted
         ? "The merged outcome was explicitly accepted." : "Landing is not verified; completion waits for evidence or a decision."}`;
     }));
-    if (item.attempts.length || usage.routingRequests) lines.push("", usageText(usage));
+    if (item.attempts.length || usage.routingRequests || usage.legacyUnknown) lines.push("", usageText(usage));
     const marker = `<!-- factory:status=${key}/${target} -->`;
     lines.push("", marker, `<!-- agent-ready:state ${hidden(data)} -->`);
     return { target, status, body: lines.join("\n"), marker };

@@ -65,6 +65,14 @@ export async function applySetupPlan({ plan, api, store, journal, secrets = {}, 
     const known = new Set(Object.values(before?.state.items ?? {}).flatMap((item) => item.prs.map((pr) => pr.number)));
     const unknown = (await api.openPulls()).filter((pr) => pr.user?.login?.toLowerCase() === plan.appLogin && !known.has(pr.number));
     if (unknown.length) throw new Error(`Migrate App PR membership before activation: ${unknown.map((p) => `#${p.number}`).join(", ")}`);
+    const issues = await api.openIssues();
+    if (!Array.isArray(issues) || issues.some((i) => !Number.isSafeInteger(i.number) || i.number < 1 || !Array.isArray(i.labels))) throw new Error("Legacy issue inventory is incomplete; activation is withheld");
+    const legacy = issues.filter((i) => {
+      const recorded = before?.state.items[`issue:${i.number}`];
+      return !(recorded?.migration || recorded?.prs.length || recorded?.attempts.length)
+        && i.labels.some((l) => ["agent-working", "agent-blocked", "agent-done", "agent-covered", "agent-conflict"].includes(l.name ?? l));
+    });
+    if (legacy.length) throw new Error(`Migrate legacy issue records before activation: ${legacy.map((i) => `#${i.number}`).join(", ")}`);
   }
   const baseSha = await api.branchSha(plan.defaultBranch);
   if (!sha(baseSha)) throw new Error("The default branch returned an invalid commit");

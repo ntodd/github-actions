@@ -98,6 +98,7 @@ export function setupClient({ token, repo, fetchImpl = fetch, gh = runGh }) {
       return rows.flat();
     },
     openPulls: () => list("/pulls?state=open&per_page=100"),
+    openIssues: async () => (await list("/issues?state=open&per_page=100")).filter((i) => !i.pull_request),
     branchSha: async (branch) => (await api("GET", `/git/ref/heads/${ref(branch)}`)).object.sha,
     resolveRef: async (value) => (await api("GET", `/commits/${encodeURIComponent(value)}`)).sha,
     commit: (sha) => api("GET", `/git/commits/${sha}`),

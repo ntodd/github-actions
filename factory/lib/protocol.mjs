@@ -105,6 +105,22 @@ export function validateLedger(s) {
       && typeof item.evidence.sourceId === "string" && item.evidence.sourceId.length > 0
       && Array.isArray(item.attempts) && object(item.commands) && Array.isArray(item.prs), "corrupt", `Malformed item ${key}`);
     requireThat(item.requestOnly === undefined || typeof item.requestOnly === "boolean", "corrupt", `Malformed admission state for ${key}`);
+    if (item.migration !== undefined) {
+      const m = item.migration;
+      requireThat(object(m) && !item.requestOnly && typeof m.actor === "string" && /^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/.test(m.actor)
+        && object(m.run) && typeof m.run.id === "string" && /^[1-9]\d*$/.test(m.run.id) && Number.isSafeInteger(m.run.attempt) && m.run.attempt > 0
+        && ["toolingSha", "configSha"].every((k) => typeof m[k] === "string" && SHA.test(m[k]))
+        && ["plan", "selection", "conversation"].every((k) => typeof m[k] === "string" && /^[a-f\d]{64}$/.test(m[k]))
+        && object(m.admission) && typeof m.admission.sourceId === "string" && /^(label|issue-comment|review-comment):[1-9]\d*$/.test(m.admission.sourceId)
+        && typeof m.admission.revision === "string" && /^[a-f\d]{64}$/.test(m.admission.revision)
+        && typeof m.at === "string" && Number.isFinite(Date.parse(m.at)) && ["continue", "question", "stop"].includes(m.disposition)
+        && Array.isArray(m.prs) && m.prs.length <= 25 && new Set(m.prs.map((p) => p?.number)).size === m.prs.length
+        && m.prs.every((p) => object(p) && item.prs.some((r) => r.number === p.number)
+          && ["head", "baseSha"].every((k) => typeof p[k] === "string" && SHA.test(p[k]))
+          && validBranch(p.branch) && validBranch(p.base) && ["open", "merged", "closed"].includes(p.state)
+          && typeof p.contentRevision === "string" && /^[a-f\d]{64}$/.test(p.contentRevision)
+          && (p.state === "merged" ? SHA.test(p.mergedSha) : p.mergedSha === null)), "corrupt", `Malformed migration provenance for ${key}`);
+    }
     requireThat(item.authorizationRevoked === undefined || item.authorizationRevoked === true && !item.requestOnly,
       "corrupt", `Malformed revoked admission for ${key}`);
     requireThat(!item.requestOnly || item.evidence.kind === "request" && !item.activeOperation && !item.attempts.length && !item.restart && !item.continuation && !item.complete
@@ -123,6 +139,8 @@ export function validateLedger(s) {
         && ["pending", "done"].includes(command.acknowledgement) && Number.isFinite(Date.parse(command.at)),
         "corrupt", `Malformed command for ${key}`);
       requireThat(command.routed === undefined || typeof command.routed === "boolean", "corrupt", `Malformed routing decision for ${key}`);
+      requireThat(command.legacyMigration === undefined || typeof command.legacyMigration === "string" && command.legacyMigration === item.migration?.plan
+        && command.status === "superseded" && command.acknowledgement === "done", "corrupt", `Malformed legacy command history for ${key}`);
       requireThat(command.routedHandle === undefined || command.routed === true && command.action === "answer"
         && typeof command.routedHandle === "string" && /^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/.test(command.routedHandle),
         "corrupt", `Malformed routed answer handle for ${key}`);

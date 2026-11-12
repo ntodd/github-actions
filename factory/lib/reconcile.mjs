@@ -342,7 +342,9 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
     if (["respond", "resolve", "update"].includes(mode) && !explicitPr) return ask("This action needs an existing open PR", "agent-needs-you", { consumeCommand: command.id });
     return reserve(mode, explicitPr, command);
   }
-  if (item.evidence.own && item.maintenanceComplete) return wait("agent-review", "The requested maintenance is finished; ongoing work is not authorized", "work-command", key);
+  if (item.evidence.own && item.maintenanceComplete) return wait("agent-review", item.migration && !item.attempts.length
+    ? "Legacy maintenance is recorded; request fresh update/resolve work if needed"
+    : "The requested maintenance is finished; ongoing work is not authorized", "work-command", key);
   if (!item.evidence.own && item.revisionPending && open.length) return reserve("respond", open[0]);
   if (!open.length && !item.evidence.own && facts.main?.checks && !facts.main.repairWork) {
     if (facts.main.checks.state === "pending") return wait("agent-waiting", "Wait for current default-branch CI before building on it", "main-ci", facts.main.sha);

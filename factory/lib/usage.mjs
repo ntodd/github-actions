@@ -113,7 +113,8 @@ export function validOperationUsage(v, op) {
 }
 
 export function usageText(usage) {
-  const lines = [`Usage: Claude reports $${usage.workerReportedUsd.toFixed(4)}; Crew execution ${usage.crewMinutes.toFixed(2)} min.`];
+  const lines = [`${usage.legacyUnknown ? "Factory usage since migration" : "Usage"}: Claude reports $${usage.workerReportedUsd.toFixed(4)}; Crew execution ${usage.crewMinutes.toFixed(2)} min.`];
+  if (usage.legacyUnknown) lines.push("Legacy model cost and Crew minutes were not measured.");
   if (usage.workerUnknown || usage.crewUnknown) lines.push(`Missing or partial measurements: ${usage.workerUnknown} Claude attempt(s), ${usage.crewUnknown} Crew job(s).`);
   if (usage.routingRequests) lines.push(`Mention routing: ${usage.routingTokens.total} reported tokens; ${usage.routingUnknown} request(s) with unknown usage; dollar cost unavailable for ${usage.routingUnpriced} response(s).`);
   return lines.join(" ");
@@ -125,6 +126,7 @@ export function itemUsage(ledger, key) {
   const routing = Object.values(ledger.items[key].commands).flatMap((c) => (c.routingAttempts ?? []).map((_, n) => c.routingUsage?.[n]));
   const knownTokens = routing.filter((u) => u?.status === "reported");
   return {
+    legacyUnknown: ledger.items[key].migration !== undefined,
     workerReportedUsd: modelOps.reduce((s, o) => s + (o.usage?.model?.reportedUsd ?? 0), 0),
     workerTurns: modelOps.reduce((s, o) => s + (o.usage?.model?.turns ?? 0), 0),
     workerUnknown: modelOps.filter((o) => o.usage?.model?.complete !== true && o.usage?.execution?.ran !== false).length,
