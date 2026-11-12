@@ -345,3 +345,13 @@ The GitHub reader uses all five nonterminal status filters and authoritative
 zero counts, avoiding a scan of completed history. These checks do not make
 administrator workflow changes atomic with a publish request, establish sole
 use of the App credential, or replace live migration validation.
+
+Bootstrap and App inspection are outside the model. JavaScript scenarios and
+an actual controller subprocess validate manual owner/default-branch/run
+identity, GET-only App inspection, public-field selection and the absence of
+token minting, state access or worker output. Bootstrap CLI preview runs
+without local App credentials or mutations; publishing scenarios restrict it
+to the pinned read-only caller/config and recover a lost PR response. The
+shared job filters controller completion wake-ups before allocating a runner;
+unit/workflow-shape checks cover that filter, not real event delivery. Live
+inspection and authenticated artifact consumption still require validation.

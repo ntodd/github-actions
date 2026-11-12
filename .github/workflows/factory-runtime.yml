@@ -29,6 +29,9 @@ permissions: {}
 jobs:
   control:
     name: factory-control
+    # Only dispatched worker completions need collection. Controller/CI-event
+    # completions must not allocate another controller in a wake-up chain.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.path != '.github/workflows/factory.yml' || github.event.workflow_run.event == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     concurrency:
@@ -43,6 +46,7 @@ jobs:
       statuses: read
     outputs:
       worker: ${{ steps.control.outputs.worker }}
+      inspection: ${{ steps.control.outputs.inspection }}
       item: ${{ steps.control.outputs.item }}
       operation: ${{ steps.control.outputs.operation }}
       mode: ${{ steps.control.outputs.mode }}
@@ -70,10 +74,19 @@ jobs:
           FACTORY_REQUEST: ${{ inputs.request }}
           FACTORY_DRY_RUN: ${{ inputs.dry-run }}
           FACTORY_TOOLING_SHA: ${{ job.workflow_sha }}
+          FACTORY_TOOLING_REPOSITORY: ${{ job.workflow_repository }}
           FACTORY_APP_ID: ${{ inputs.app-id }}
           FACTORY_APP_PRIVATE_KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: node factory/control/index.mjs
+      - name: Upload public App inspection metadata
+        if: steps.control.outputs.inspection == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: factory-inspection-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/factory-app-inspection.json
+          if-no-files-found: error
+          retention-days: 1
 
   worker:
     name: factory-worker

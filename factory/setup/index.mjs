@@ -9,11 +9,10 @@ import { parseSetupOptions, setupUsage, validateSetupCi, resolveSetupChecks, val
 import { applySetupPlan } from "../lib/setup-apply.mjs";
 import { setupJournal } from "../lib/setup-journal.mjs";
 import { stateStore, githubData } from "../lib/store.mjs";
+import { bootstrap } from "./bootstrap.mjs";
 
 let release = () => {};
-try {
-  const options = parseSetupOptions(process.argv.slice(2));
-  if (options.help) { process.stdout.write(setupUsage); process.exit(0); }
+async function configureRepository(options) {
   const appDir = options.appDir ? resolve(options.appDir) : join(homedir(), ".config", "agent-ready", options.app);
   let appFile, privateKey;
   try {
@@ -71,6 +70,13 @@ try {
   }
   const result = await applySetupPlan({ plan, api, store, journal, secrets, preview: options.preview });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+}
+
+try {
+  const options = parseSetupOptions(process.argv.slice(2));
+  if (options.help) process.stdout.write(setupUsage);
+  else if (options.bootstrap) process.stdout.write(`${JSON.stringify(await bootstrap(options), null, 2)}\n`);
+  else await configureRepository(options);
 } catch (error) {
   process.stderr.write(`Factory setup: ${error.message}\n`); process.exitCode = 1;
 } finally { release(); }

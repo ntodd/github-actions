@@ -185,6 +185,28 @@ after that snapshot leave resolution for another operation.
 
 ## Repository setup
 
+For an existing App whose key is held only in GitHub, bootstrap its read-only
+caller/config first, using the shared runtime's full commit SHA:
+
+```sh
+factory/enable.sh --bootstrap --preview --ref <sha> owner/repo
+```
+
+Run without `--preview` to open the draft caller/config PR. Bootstrap uses the
+administrator's `gh` login, existing `AGENT_APP_ID` variable and private-key
+secret name. The plan explicitly leaves the App unverified. After the caller
+is reviewed and merged, the personal repository owner can manually dispatch
+`factory.yml` on the default branch with request `{"kind":"inspect"}`. This
+performs App/installation GETs in the clean controller job and uploads a
+one-day public-metadata artifact. It does not create an installation token,
+initialize state or start Crew. The key remains in GitHub. The existing legacy
+runtime can remain active during this inspection step.
+
+Consuming that report in administrator setup still needs artifact-provenance
+validation; a downloaded JSON file alone is not authority for App identity.
+Until that adapter is complete, the normal setup path below requires local
+App credentials.
+
 The shared workflows must first exist at the selected remote ref. With `gh`
 logged in as a repository administrator and the App credentials saved by
 `agent-ready/app/create-app.mjs`, inspect the plan:
@@ -264,6 +286,9 @@ command instead. Exact commands never call the router. Coding still uses
 the configured Claude worker on Crew.
 
 ## Remaining work
+
+- Complete verified consumption of App-inspection reports for administrator
+  setup without a local key, then exercise the owner-only inspection in the sandbox.
 
 - Add attachments. Verify restart, stop/continue, close/reopen evidence, thread replies/resolution, status,
   acknowledgements, notifications and review effects with the App in the

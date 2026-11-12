@@ -387,6 +387,14 @@ are never the durable source of ownership or approval.
 It takes one thin caller, one config file and one setup script run. The
 state branch is initialized by setup, not committed to the default branch.
 
+An existing GitHub-held App key can be inspected through an owner-only manual
+request `{"kind":"inspect"}` after the reviewed read-only caller/config is
+installed. This reads App and installation metadata in the clean job without
+creating an installation token or accessing the ledger. Bootstrap pins the
+shared commit and records the App ID as an unverified candidate. Administrator
+setup must verify the report's workflow/artifact provenance before using its
+public metadata as App identity; a downloaded JSON file alone is insufficient.
+
 The caller, `.github/workflows/factory.yml`, declares GitHub's required
 triggers and permission ceilings. It routes two kinds of job:
 

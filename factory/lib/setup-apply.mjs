@@ -186,8 +186,12 @@ export async function setupPullRequest({ plan, api, journal, baseSha, now }) {
   const receipt = await setupEffect({ journal, slot: `pr:${branch}`, definition: { kind: "pull-request", branch, base: plan.defaultBranch, marker }, now,
     inspect: async () => { const found = await matches(); return found ? { applied: true, receipt: { number: found.number, url: found.html_url } } : null; },
     submit: async () => {
-      const pr = await api.createPull({ title: "Configure factory issue handling", head: branch, base: plan.defaultBranch,
-        body: `Add the shared factory caller and repository configuration. The caller starts in ${plan.mode} mode.\n\nRepository protections and the state branch were configured separately by the administrator. Review these files before merging.\n\n${marker}` });
+      const bootstrap = plan.mode === "bootstrap-read-only";
+      const body = bootstrap
+        ? `Install the factory caller/config in read-only mode, pinned to shared commit ${plan.toolingSha}. After review and merge, the repository owner can manually dispatch request {"kind":"inspect"} to verify the existing App secret through public metadata.\n\nAdministrator setup, protected-state initialization and migration follow inspection. The legacy runtime can remain active during this read-only step.`
+        : `Add the shared factory caller and repository configuration. The caller starts in ${plan.mode} mode.\n\nRepository protections and the state branch were configured separately by the administrator. Review these files before merging.`;
+      const pr = await api.createPull({ title: bootstrap ? "Prepare read-only factory App inspection" : "Configure factory issue handling", head: branch, base: plan.defaultBranch,
+        draft: bootstrap, body: `${body}\n\n${marker}` });
       if (!positive(pr.number)) throw new Error("Invalid setup PR receipt"); return { number: pr.number, url: pr.html_url };
     } });
   return { pr: receipt.number, url: receipt.url, branch };

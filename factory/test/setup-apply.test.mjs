@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { setupPlan } from "../lib/setup.mjs";
 import { applySetupPlan } from "../lib/setup-apply.mjs";
 import { emptyLedger, validateLedger, recordFactoryApp } from "../lib/protocol.mjs";
+import { bootstrapPlan, applyBootstrap } from "../lib/bootstrap.mjs";
 import { A, B, C, D } from "./fixtures.mjs";
 
 function fixture({ active = false } = {}) {
@@ -56,6 +57,48 @@ test("setup verifies protections and opens one two-file PR; repeating it sends n
   await f.apply();
   assert.equal(mutations().length, before);
   assert.equal(f.calls.filter(([kind]) => kind === "pr").length, 1);
+});
+
+test("bootstrap publishes only a pinned read-only caller/config, recovers a lost PR response and leaves App identity unverified", async () => {
+  const f = fixture();
+  f.api.variable = async () => ({ name: "AGENT_APP_ID", value: "123" });
+  const plan = bootstrapPlan({ repository: f.repository, configText: "trusted-users: [ntodd]", baseSha: A, appIdCandidate: "123", ciWorkflows: ["CI"], ref: B });
+  const apply = (extra = {}) => applyBootstrap({ plan, api: f.api, journal: f.journal, ...extra });
+  const preview = await apply({ preview: true });
+  assert.equal(preview.plan.mode, "bootstrap-read-only"); assert.deepEqual(f.calls, []); assert.equal(f.rows.size, 0);
+  const create = f.api.createPull; let submitted;
+  f.api.createPull = async (data) => { submitted = data; await create(data); throw new Error("Response lost"); };
+  await assert.rejects(apply(), /Response lost/);
+  f.api.createPull = create;
+  const result = await apply();
+  assert.equal(result.status, "pending-merge"); assert.equal(result.appVerified, false); assert.deepEqual(result.request, { kind: "inspect" });
+  assert.equal(submitted.draft, true); assert.match(submitted.body, /Administrator setup.*follow inspection/);
+  assert.equal(f.calls.filter(([kind]) => kind === "pr").length, 1);
+  assert.ok(f.calls.every(([kind]) => ["tree", "commit", "branch", "pr"].includes(kind)));
+  assert.equal(f.rules.length, 0); assert.equal(f.repository.allow_auto_merge, false);
+  assert.equal((await f.store.load()).state.factoryApp, undefined);
+  assert.match(plan.files[0].content, new RegExp(`factory-runtime.yml@${B}`));
+  const before = f.calls.length;
+  f.api.fileAt = async (path) => plan.files.find((file) => file.path === path)?.content;
+  assert.equal((await apply()).status, "inspection-ready");
+  assert.equal(f.calls.length, before);
+});
+
+test("bootstrap rejects active callers, changed bases/IDs and altered publication scope before mutation", async () => {
+  for (const configure of [
+    (f) => { f.api.variable = async () => ({ value: "999" }); },
+    (f) => { f.refs.set("main", B); },
+    (f) => { f.secretNames.delete("AGENT_APP_PRIVATE_KEY"); },
+    (f) => { f.api.fileAt = async () => "jobs:\n  factory:\n    with: {dry-run: false}\n"; },
+    (_f, plan) => { plan.files[0].content = plan.files[0].content.replace("dry-run: true", "dry-run: false"); },
+    (_f, plan) => { plan.files[1].path = ".github/workflows/other.yml"; },
+  ]) {
+    const f = fixture(); f.api.variable = async () => ({ value: "123" });
+    const plan = bootstrapPlan({ repository: f.repository, configText: "trusted-users: [ntodd]", baseSha: A, appIdCandidate: "123", ciWorkflows: ["CI"], ref: B });
+    configure(f, plan);
+    await assert.rejects(applyBootstrap({ plan, api: f.api, journal: f.journal }));
+    assert.deepEqual(f.calls, []);
+  }
 });
 
 test("setup cannot silently switch the App recorded in protected state, including in preview", async () => {

@@ -10,6 +10,14 @@ test("setup options keep preview and activation explicit and reject ambiguous in
     ["--check", "test", "--checks", "checks.json", "ntodd/project"], ["../../etc/passwd"]]) assert.throws(() => parseSetupOptions(args));
 });
 
+test("bootstrap requires an immutable runtime ref and does not imply App credentials, checks or activation", () => {
+  const ref = "a".repeat(40);
+  const options = parseSetupOptions(["--bootstrap", "--preview", "--ref", ref, "ntodd/project"]);
+  assert.equal(options.bootstrap, true); assert.equal(options.activate, false); assert.equal(options.appDir, undefined);
+  for (const args of [[], ["--ref", "main"], ["--ref", ref, "--activate"], ["--ref", ref, "--app-dir", "/tmp/key"],
+    ["--ref", ref, "--check", "test"]]) assert.throws(() => parseSetupOptions(["--bootstrap", ...args, "ntodd/project"]), /Bootstrap needs/);
+});
+
 test("setup CI validation requires PR and default-branch push entry points", () => {
   validateSetupCi("name: CI\non:\n  pull_request:\n  push:\njobs: {}", "CI");
   validateSetupCi("on: [pull_request, push]", "CI");

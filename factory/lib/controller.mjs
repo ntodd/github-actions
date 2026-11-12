@@ -18,7 +18,8 @@ export function parseRequest(value) {
   if (!value) return { kind: "reconcile" };
   if (typeof value !== "string" || value.length > 4096) throw new Error("Invalid dispatch request");
   const request = JSON.parse(value);
-  if (!request || !["reconcile", "worker"].includes(request.kind) || Object.keys(request).some((k) => !["kind", "target", "item", "operation"].includes(k))
+  if (!request || !["reconcile", "worker", "inspect"].includes(request.kind) || Object.keys(request).some((k) => !["kind", "target", "item", "operation"].includes(k))
+    || request.kind === "inspect" && Object.keys(request).length !== 1
     || request.target !== undefined && (!Number.isSafeInteger(request.target) || request.target < 1)
     || request.kind === "worker" && (!/^(issue|pr):[1-9]\d*$/.test(request.item) || !/^[a-z0-9][a-z0-9-]{0,79}$/.test(request.operation))) throw new Error("Invalid dispatch request");
   return request;

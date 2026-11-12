@@ -12,6 +12,7 @@ export const setupUsage = `Usage: factory/enable.sh [options] owner/repo
   --ref <ref>        Shared workflow ref (default main)
   --preview         Read and print the plan; make no repository/local writes
   --activate        Propose an active caller after migration/legacy guards
+  --bootstrap       Propose only a read-only caller/config to inspect an existing GitHub-held App key
   --journal <path>  Administrator recovery journal (default user state dir)
 
 The default caller is read-only. Setup opens a PR; it never merges it.
@@ -27,6 +28,7 @@ export function parseSetupOptions(args) {
     if (["--help", "-h"].includes(arg)) return { help: true };
     if (arg === "--preview" || arg === "--dry-run") options.preview = true;
     else if (arg === "--activate") options.activate = true;
+    else if (arg === "--bootstrap") options.bootstrap = true;
     else if (values.has(arg)) {
       const value = args[++i], key = values.get(arg);
       if (!value || value.startsWith("--")) throw new Error(`${arg} needs a value`);
@@ -39,6 +41,9 @@ export function parseSetupOptions(args) {
   if (!/^[\w.-]+\/[\w.-]+$/.test(options.repo ?? "") || !/^[a-z\d][a-z\d-]*$/i.test(options.app)) throw new Error("Provide a valid repository and App slug");
   if (options.checks && options.check.length) throw new Error("Use --check or --checks, not both");
   if (options.config && options.trusted) throw new Error("Put trusted-users in --config, or use --trusted for a new default config");
+  if (options.bootstrap && (options.activate || options.appDir || options.checks || options.check.length || !/^[a-f0-9]{40}$/.test(options.ref))) {
+    throw new Error("Bootstrap needs --ref <commit SHA>; activation, local App keys and check changes belong to administrator setup");
+  }
   return options;
 }
 

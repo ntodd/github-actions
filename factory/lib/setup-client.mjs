@@ -92,7 +92,7 @@ export function setupClient({ token, repo, fetchImpl = fetch, gh = runGh }) {
       return bytes.toString("utf8");
     },
     pullsFor: (branch, baseBranch) => list(`/pulls?${new URLSearchParams({ state: "all", head: `${repo.split("/")[0]}:${branch}`, base: baseBranch, per_page: "100" })}`),
-    createPull: (data) => api("POST", "/pulls", { ...data, draft: false, maintainer_can_modify: false }),
+    createPull: (data) => api("POST", "/pulls", { ...data, draft: data.draft === true, maintainer_can_modify: false }),
     checks: async (sha) => ({ check_runs: await list(`/commits/${sha}/check-runs?per_page=100`, "check_runs") }),
     statuses: (sha) => list(`/commits/${sha}/statuses?per_page=100`),
   };

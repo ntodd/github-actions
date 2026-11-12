@@ -1,5 +1,10 @@
 // A privileged entry is the reviewed caller on the repository's default
 // branch. In particular, a PR-context review hop cannot mint the App token.
+export function controllerWakeup(eventName, event) {
+  return eventName !== "workflow_run" || event?.workflow_run?.path !== ".github/workflows/factory.yml"
+    || event.workflow_run.event === "workflow_dispatch";
+}
+
 export async function verifyEntry({ api, env, context }) {
   const path = ".github/workflows/factory.yml", repo = env.GITHUB_REPOSITORY;
   if (env.GITHUB_WORKFLOW_REF !== `${repo}/${path}@refs/heads/${context.defaultBranch}`
