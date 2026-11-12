@@ -73,6 +73,59 @@ test("status is edited in place and factory label repair preserves unrelated hum
   assert.match(f.rows.get(9)[0].body, /Waiting for CI/);
 });
 
+test("label inventory failures produce one durable observation notice and recover it in place", async () => {
+  const f = fixture(), service = f.service(), issue = f.api.issue;
+  await service.render(f.state, f.context); let reads = 0;
+  f.api.issue = async (n) => { if (n === 9) { reads++; throw Object.assign(new Error("private read detail"), { status: 403 }); } return issue(n); };
+  for (const time of [at, "2026-11-12T12:01:00Z", "2026-11-12T12:03:00Z"]) { f.tick(time); await service.render(f.state, f.context); }
+  const alerts = Object.values(f.state.items["issue:7"].apiAlerts);
+  assert.equal(alerts.length, 1); assert.equal(alerts[0].source, "preflight"); assert.equal(alerts[0].kind, "labels");
+  assert.equal(alerts[0].request, undefined); assert.equal(f.state.items["issue:7"].question, null);
+  const notice = f.rows.get(9).find((r) => r.body.includes("factory:attention="));
+  assert.match(notice.body, /Observation:/); assert.doesNotMatch(notice.body, /Request:|undefined|private read detail/);
+  f.tick("2026-11-12T12:04:00Z"); await service.render(f.state, f.context); assert.equal(reads, 3);
+  f.api.issue = issue; f.tick("2026-11-12T12:07:00Z"); await service.render(f.state, f.context);
+  assert.equal(f.state.items["issue:7"].apiAlerts[alerts[0].id].resolution, "observed");
+  assert.equal(f.rows.get(9).filter((r) => r.body.includes("factory:attention=")).length, 1);
+  assert.match(f.rows.get(9).find((r) => r.id === notice.id).body, /Recovered/);
+  assert.equal(f.state.items["issue:7"].attempts.length, 0);
+});
+
+test("a failed status lookup still permits label repair and cannot recursively notify about notifications", async () => {
+  const f = fixture(), service = f.service(), comments = f.write.comments;
+  f.write.comments = async (n) => { if (n === 9) throw Object.assign(new Error("comments unavailable"), { status: 503 }); return comments(n); };
+  for (const time of [at, "2026-11-12T12:01:00Z", "2026-11-12T12:03:00Z", "2026-11-12T12:04:00Z"]) {
+    f.tick(time); await service.render(f.state, f.context);
+  }
+  assert.deepEqual(f.labels.get(9).sort(), ["agent-review", "bug"]);
+  const item = f.state.items["issue:7"], alerts = Object.values(item.apiAlerts);
+  assert.equal(alerts.length, 1); assert.equal(alerts[0].kind, "status"); assert.equal(alerts[0].source, "preflight");
+  assert.ok(Object.values(item.preflights).some((r) => r.kind === "notification"));
+  assert.equal(Object.values(item.preflights).find((r) => r.kind === "status").failures, 3);
+  assert.ok(Object.values(item.apiEffects).filter((e) => e.definition.kind === "comment-create" && e.definition.target === 9)
+    .every((e) => e.requests.length === 0));
+  assert.equal(item.question, null);
+  f.write.comments = comments; f.tick("2026-11-12T12:07:00Z"); await service.render(f.state, f.context);
+  assert.equal(f.state.items["issue:7"].apiAlerts[alerts[0].id].resolution, "observed");
+});
+
+test("handover read failures escalate before an intent exists and settle after a known stop", async () => {
+  const f = fixture(), service = f.service(); let reads = 0;
+  f.api.pull = async () => { reads++; throw Object.assign(new Error("PR unavailable"), { status: 403 }); };
+  const args = { key: "issue:7", number: 9, head: B, context: f.context };
+  await assert.rejects(service.handover(args));
+  await assert.rejects(service.handover(args), (e) => e.code === "preflight-wait"); assert.equal(reads, 1);
+  for (const time of ["2026-11-12T12:01:00Z", "2026-11-12T12:03:00Z"]) { f.tick(time); await assert.rejects(service.handover(args)); }
+  assert.equal(f.state.items["issue:7"].apiEffects, undefined);
+  await service.render(f.state, f.context);
+  const alert = Object.values(f.state.items["issue:7"].apiAlerts)[0];
+  assert.equal(alert.kind, "ready"); assert.equal(alert.source, "preflight");
+  assert.equal(f.writes.some(([kind]) => kind === "ready" || kind === "review"), false);
+  await f.store.transact((s) => evolve(s, "issue:7", { type: "stop" }));
+  await service.render(f.state, f.context);
+  assert.equal(f.state.items["issue:7"].apiAlerts[alert.id].resolution, "superseded");
+});
+
 test("a runtime conflict before surface submission leaves an unsent intent without an uncertain request", async () => {
   const f = fixture(), outcomes = [];
   await f.service({ assertRuntime: async () => { throw new Error("Legacy runtime conflict"); } }).render(f.state, f.context, outcomes);
@@ -106,6 +159,26 @@ test("only confirmed deletion of a previously created status permits a replaceme
   const f = fixture(), service = f.service(); await service.render(f.state, f.context);
   f.rows.set(9, []); await service.render(f.state, f.context); await service.render(f.state, f.context);
   assert.equal(f.writes.filter(([kind, n]) => kind === "comment" && n === 9).length, 2);
+});
+
+test("failed status receipt reads back off and recover from a subsequent authoritative inventory", async () => {
+  const f = fixture(), service = f.service(), comments = f.write.comments, byId = f.write.commentById; let reads = 0;
+  f.write.comments = async (n) => n === 9 ? [] : comments(n);
+  f.write.commentById = async (kind, id) => {
+    if (f.rows.get(9).some((r) => r.id === id && r.body.includes("factory:status="))) {
+      reads++; throw Object.assign(new Error("comment read unavailable"), { status: 503 });
+    }
+    return byId(kind, id);
+  };
+  for (const time of [at, "2026-11-12T12:01:00Z", "2026-11-12T12:03:00Z", "2026-11-12T12:04:00Z"]) {
+    f.tick(time); await service.render(f.state, f.context);
+  }
+  const alert = Object.values(f.state.items["issue:7"].apiAlerts)[0];
+  assert.equal(reads, 3); assert.equal(alert.kind, "status"); assert.equal(alert.source, "preflight");
+  assert.equal(f.rows.get(9).filter((r) => r.body.includes("factory:status=")).length, 1);
+  f.write.comments = comments; f.tick("2026-11-12T12:07:00Z"); await service.render(f.state, f.context);
+  assert.equal(f.state.items["issue:7"].apiAlerts[alert.id].resolution, "observed");
+  assert.equal(Object.values(f.state.items["issue:7"].preflights).find((r) => r.kind === "status").status, "observed");
 });
 
 test("mentions get eyes immediately and a single action acknowledgement after routing", async () => {
@@ -170,6 +243,21 @@ test("questions notify once per occurrence and request review while preserving t
   assert.notEqual(f.state.items["issue:7"].question.id, first);
   await service.render(f.state, f.context);
   assert.equal(f.rows.get(9).filter((r) => r.body.includes("factory:question=")).length, 2);
+});
+
+test("question review preflights back off without creating an attention loop", async () => {
+  const f = fixture(), service = f.service(), pull = f.api.pull; let reads = 0;
+  await f.store.transact((s) => evolve(s, "issue:7", { type: "ask", reason: "Choose one of these options" }));
+  f.api.pull = async () => { reads++; throw Object.assign(new Error("PR read unavailable"), { status: 503 }); };
+  for (const time of [at, "2026-11-12T12:01:00Z", "2026-11-12T12:03:00Z", "2026-11-12T12:04:00Z"]) {
+    f.tick(time); await service.render(f.state, f.context);
+  }
+  assert.equal(reads, 3); assert.equal(f.state.items["issue:7"].apiAlerts, undefined);
+  assert.equal(f.rows.get(9).filter((r) => r.body.includes("factory:question=")).length, 1);
+  assert.equal(f.writes.filter(([kind]) => kind === "review").length, 0);
+  f.api.pull = pull; f.tick("2026-11-12T12:07:00Z"); await service.render(f.state, f.context);
+  assert.equal(f.writes.filter(([kind]) => kind === "review").length, 1);
+  assert.ok(Object.values(f.state.items["issue:7"].preflights).every((r) => r.status === "observed"));
 });
 
 test("closure questions stay on the affected PR and their acknowledgement names the accepted disposition", async () => {

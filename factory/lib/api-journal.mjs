@@ -1,6 +1,7 @@
 // The controller's GitHub API effects. They are separate from code publication:
 // a broken status surface cannot roll back a push or authorize another worker.
 import { createHash } from "node:crypto";
+import { preflightRead, preflightId, recoveryNotice } from "./recovery.mjs";
 const object = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const positive = (v) => Number.isSafeInteger(v) && v > 0;
 const sha = (v) => typeof v === "string" && /^[a-f0-9]{40}$/.test(v);
@@ -95,6 +96,11 @@ export async function runApiEffect({ store, key, slot, definition, run, writer, 
   });
   let { state } = await store.load(), effect = record(state);
   if (effect.status === "superseded" || effect.status === "applied" && !repeatableEffect(definition.kind)) return effect;
+  const item = state.items[key], bound = definition.guard;
+  if (effect.status !== "pending" && bound && (item.paused || item.generation !== bound.generation || item.revision !== bound.revision)) {
+    await store.transact((s) => { record(s).status = "superseded"; return s; });
+    return record((await store.load()).state);
+  }
   const anotherStateWrite = (s) => stateWrite(definition.kind) && Object.entries(s.items).some(([itemKey, item]) => Object.values(item.apiEffects ?? {}).some((e) =>
     (itemKey !== key || e.id !== id) && e.status === "pending" && e.definition.target === definition.target && stateWrite(e.definition.kind)));
   if (effect.status !== "pending" && anotherStateWrite(state)) return effect;
@@ -104,18 +110,32 @@ export async function runApiEffect({ store, key, slot, definition, run, writer, 
     if (!validApiReceipt(current.definition, receipt)) throw new Error("API response does not establish the requested effect");
     current.status = "applied"; current.receipt = { ...receipt, at: now() };
     if (current.requests.length) current.requests.at(-1).receipt = current.receipt;
+    const kind = recoveryNotice(current) ? "notification" : current.definition.kind;
+    const blocked = s.items[key].preflights?.[preflightId(kind, current.definition.target, "guard", kind === "ci-rerun" ? current.definition.payload.runId : undefined)];
+    if (blocked?.status === "failed" && blocked.effect === current.id) {
+      blocked.status = "superseded"; blocked.resolvedAt = now(); blocked.nextAt = null;
+    }
     return s;
   });
-  const inspected = await writer.inspect(definition, effect);
+  const read = (stage, action) => {
+    const notice = recoveryNotice(effect), kind = notice ? "notification" : definition.kind;
+    if (!notice && ["pending", "rejected"].includes(effect.status)) return action();
+    return preflightRead({ store, key, item, kind, target: definition.target, stage, guard: bound, effect: effect.id,
+      ...(kind === "ci-rerun" ? { runId: definition.payload.runId } : {}), read: action, now });
+  };
+  let inspected;
+  try { inspected = await read("inspect", () => writer.inspect(definition, effect)); }
+  catch (error) { if (error?.code === "preflight-wait") return effect; throw error; }
   if (inspected?.outcome === "applied") return effect.status === "applied" ? effect : record((await observe(inspected.receipt)).state);
   if (recoverOnly) return effect;
   const pending = effect.status === "pending";
   if (pending && !repeatableEffect(definition.kind)) return effect;
   const spent = (e) => e.requests.filter((r) => new Date(r.at).toISOString().slice(0, 10) === new Date(now()).toISOString().slice(0, 10)).length;
   if (spent(effect) >= 3 || effect.nextAt && Date.parse(now()) < Date.parse(effect.nextAt)) return effect;
-  const item = state.items[key], bound = definition.guard;
-  if (bound && (item.paused || item.generation !== bound.generation || item.revision !== bound.revision)
-    || !await guard(item, effect)) {
+  let allowed;
+  try { allowed = await read("guard", () => guard(item, effect)); }
+  catch (error) { if (error?.code === "preflight-wait") return effect; throw error; }
+  if (bound && (item.paused || item.generation !== bound.generation || item.revision !== bound.revision) || !allowed) {
     if (!pending) await store.transact((s) => { record(s).status = "superseded"; return s; });
     return record((await store.load()).state);
   }

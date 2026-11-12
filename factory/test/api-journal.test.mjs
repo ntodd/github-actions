@@ -194,3 +194,48 @@ test("state-write exclusion follows the physical PR across item and effect ident
   }
   assert.equal(sends, 1);
 });
+
+test("unsent guard failures back off and escalate without inventing API requests", async () => {
+  const f = fixture(); let time = at, guards = 0, sends = 0, available = false;
+  const args = { store: f.store, key: "issue:7", slot: "preflight-comment", definition, run, now: () => time,
+    guard: async () => { guards++; if (!available) throw Object.assign(new Error("private API detail"), { status: 403 }); return true; },
+    writer: { inspect: async () => ({ outcome: "unknown" }), apply: async () => { sends++; return { outcome: "applied", receipt: { kind: "comment-create", target: 9, id: 123 } }; } } };
+  await assert.rejects(runApiEffect(args));
+  assert.equal((await runApiEffect(args)).status, "prepared"); assert.equal(guards, 1);
+  for (const value of ["2026-11-12T12:01:00Z", "2026-11-12T12:03:00Z"]) { time = value; await assert.rejects(runApiEffect(args)); }
+  await f.store.transact((s) => evolve(s, "issue:7", { type: "sync-api-alerts", at: time, timeoutMinutes: 15 }));
+  const alert = Object.values(f.state.items["issue:7"].apiAlerts)[0];
+  assert.equal(alert.source, "preflight"); assert.equal(alert.request, undefined);
+  assert.equal(f.state.items["issue:7"].apiEffects[apiEffectId(args.slot)].requests.length, 0); assert.equal(sends, 0);
+  available = true; time = "2026-11-12T12:07:00Z";
+  assert.equal((await runApiEffect(args)).status, "applied"); assert.equal(sends, 1);
+  await f.store.transact((s) => evolve(s, "issue:7", { type: "sync-api-alerts", at: time, timeoutMinutes: 15 }));
+  assert.equal(f.state.items["issue:7"].apiAlerts[alert.id].resolution, "observed");
+  assert.equal(JSON.stringify(f.state).includes("private API detail"), false);
+});
+
+test("observing a fulfilled effect retires an obsolete failed submission guard", async () => {
+  const f = fixture(); let present = false, time = at;
+  const args = { store: f.store, key: "issue:7", slot: "guard-no-longer-needed", definition, run, now: () => time,
+    guard: async () => { throw new Error("guard unavailable"); },
+    writer: { inspect: async () => present ? { outcome: "applied", receipt: { kind: "comment-create", target: 9, id: 123 } } : { outcome: "unknown" },
+      apply: async () => assert.fail("An observed create must not be sent again") } };
+  await assert.rejects(runApiEffect(args)); time = "2026-11-12T12:16:00Z";
+  await f.store.transact((s) => evolve(s, "issue:7", { type: "sync-api-alerts", at: time, timeoutMinutes: 15 }));
+  const id = Object.values(f.state.items["issue:7"].apiAlerts)[0].id;
+  present = true; assert.equal((await runApiEffect(args)).status, "applied");
+  await f.store.transact((s) => evolve(s, "issue:7", { type: "sync-api-alerts", at: time, timeoutMinutes: 15 }));
+  assert.equal(f.state.items["issue:7"].apiAlerts[id].resolution, "superseded");
+  assert.equal(f.state.items["issue:7"].apiEffects[apiEffectId(args.slot)].requests.length, 0);
+});
+
+test("failed receipt recovery retains its actual request instead of becoming an unsent preflight", async () => {
+  const f = fixture(); let broken = false;
+  const args = { store: f.store, key: "issue:7", slot: "pending-read", definition, run, now: () => at,
+    writer: { inspect: async () => { if (broken) throw new Error("receipt read unavailable"); return { outcome: "unknown" }; }, apply: async () => ({ outcome: "unknown" }) } };
+  await runApiEffect(args); broken = true; await assert.rejects(runApiEffect(args));
+  await f.store.transact((s) => evolve(s, "issue:7", { type: "sync-api-alerts", at: "2026-11-12T12:16:00Z", timeoutMinutes: 15 }));
+  const item = f.state.items["issue:7"], effect = item.apiEffects[apiEffectId(args.slot)], alert = Object.values(item.apiAlerts)[0];
+  assert.equal(effect.status, "pending"); assert.equal(effect.requests.length, 1); assert.equal(item.preflights, undefined);
+  assert.equal(alert.source, undefined); assert.equal(alert.request, effect.requests[0].id);
+});

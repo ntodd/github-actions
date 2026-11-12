@@ -6,7 +6,7 @@ import { attachmentManifest, referencedAttachments, attachmentDescriptor } from 
 import { validEffect, validReceipt, pullRequestText, expectedEffectHead } from "./effects.mjs";
 import { validApiJournal } from "./api-journal.mjs";
 import { nodeId, replyProposal, threadRevision, threadEffectId } from "./threads.mjs";
-import { syncApiAlerts, validApiAlerts } from "./recovery.mjs";
+import { syncApiAlerts, validApiAlerts, validPreflights } from "./recovery.mjs";
 import { answerText, closureAnswer, issueClosureChoice } from "./answers.mjs";
 import { validFactoryApp } from "./identity.mjs";
 import { compareRequests } from "./ordering.mjs";
@@ -132,7 +132,7 @@ export function validateLedger(s) {
         "corrupt", `Malformed routing usage for ${key}`);
     }
     requireThat(validApiJournal(item), "corrupt", `Malformed controller API journal for ${key}`);
-    requireThat(validApiAlerts(item), "corrupt", `Malformed API recovery alerts for ${key}`);
+    requireThat(validPreflights(item) && validApiAlerts(item), "corrupt", `Malformed API recovery alerts for ${key}`);
     requireThat(validMainRepair(item), "corrupt", `Malformed main repair evidence for ${key}`);
     requireThat(item.revisionPending === undefined || typeof item.revisionPending === "boolean", "corrupt", `Malformed revision state for ${key}`);
     requireThat(item.question === null || (object(item.question) && typeof item.question.reason === "string"

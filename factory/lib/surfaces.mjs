@@ -5,13 +5,14 @@ import { loadConfig } from "./config.mjs";
 import { readFeedback } from "./admission.mjs";
 import { observeAuthorization, observeItem } from "./observe.mjs";
 import { pendingControls } from "./commands.mjs";
-import { pendingWrites, pendingText } from "./recovery.mjs";
+import { pendingWrites, pendingText, preflightRead, preflightId } from "./recovery.mjs";
 import { evolve } from "./protocol.mjs";
 import { factoryReadApi } from "./identity.mjs";
 import { itemUsage, usageText } from "./usage.mjs";
 const hash = (v) => createHash("sha256").update(v).digest("hex");
 const ownNumber = (item) => Number(item.key.split(":")[1]);
 const hidden = (value) => JSON.stringify(value).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
+const alertReference = (alert) => alert.source === "preflight" ? `Observation: \`${alert.read}\`` : `Request: \`${alert.request}\``;
 const nextText = (status) => ({ answer: "Answer the question with /agent answer <text>.", "work-command": "A work command resumes this item.",
   ci: "The current commit's CI result wakes the controller.", signals: "The configured review/check results wake the controller.",
   "main-green": "Work resumes after the default branch's required checks pass.", "owner-terminal": "The worker's completion wakes the controller.",
@@ -43,7 +44,7 @@ export function projectItem(ledger, key) {
       generation: item.generation, operation: op?.id ?? null, run: op?.owner?.id ?? null, prs, pendingWrites: pending, alerts, usage };
     const lines = [`**${status.state}:** ${status.reason}`, "", nextText(status)];
     const relevantAlerts = target === ownNumber(item) ? alerts : alerts.filter((a) => a.target === target);
-    if (relevantAlerts.length) lines.push("", "**Needs attention:**", ...relevantAlerts.map((a) => `- ${a.reason} Request: \`${a.request}\`.`));
+    if (relevantAlerts.length) lines.push("", "**Needs attention:**", ...relevantAlerts.map((a) => `- ${a.reason} ${alertReference(a)}.`));
     const relevant = target === ownNumber(item) ? pending : pending.filter((w) => w.target === target);
     if (relevant.length) lines.push(pendingText(relevant));
     if (target === ownNumber(item) && !item.evidence.own && prs.length) {
@@ -98,17 +99,27 @@ export function surfaceService({ api, write, store, repo, appLogin, run, now = (
     if (definition.kind !== "comment-create" || definition.target !== target || definition.payload.marker !== marker) throw new Error("Comment surface identity mismatch");
     return execute(key, slot, definition, guard);
   }
-  async function statusComment(key, projection) {
+  async function statusComment(key, projection, item) {
     const { target, body, marker } = projection;
-    const matches = (await write.comments(target)).filter((c) => own(c) && c.body?.includes(marker));
-    if (matches.length > 1) throw new Error("Several App comments claim one status surface");
+    const matches = await preflightRead({ store, key, item, kind: "status", target, stage: "plan", now,
+      read: async () => {
+        const matches = (await write.comments(target)).filter((c) => own(c) && c.body?.includes(marker));
+        if (matches.length > 1) throw new Error("Several App comments claim one status surface");
+        return matches;
+      } });
     let found = matches[0], slot = `status:${key}:${target}`;
+    if (found && item.preflights?.[preflightId("status", target, "inspect")]?.status === "failed") {
+      await preflightRead({ store, key, item, kind: "status", target, stage: "inspect", now, read: async () => found });
+    }
     for (let recovery = 0; !found && recovery < 10; recovery++) {
       const posted = await comment(key, slot, target, body, marker);
       if (posted.status !== "applied") return posted;
-      try { found = await write.commentById("issue-comment", posted.receipt.id); }
-      catch (error) {
-        if (error.status !== 404) throw error;
+      found = await preflightRead({ store, key, item, kind: "status", target, stage: "inspect", now,
+        read: async () => {
+          try { return await write.commentById("issue-comment", posted.receipt.id); }
+          catch (error) { if (error.status !== 404) throw error; return null; }
+        } });
+      if (!found) {
         // Only an authoritative deletion of a known, successfully created
         // comment allows a replacement. Absence after a timeout does not.
         slot += `:after-${posted.receipt.id}`;
@@ -120,8 +131,9 @@ export function surfaceService({ api, write, store, repo, appLogin, run, now = (
       kind: "comment-edit", target, payload: { id: found.id, body, marker },
     });
   }
-  async function labels(key, projection) {
-    const existing = (await api.issue(projection.target)).labels.map((l) => l.name ?? l);
+  async function labels(key, projection, item) {
+    const existing = await preflightRead({ store, key, item, kind: "labels", target: projection.target, stage: "plan", now,
+      read: async () => (await api.issue(projection.target)).labels.map((l) => l.name ?? l) });
     const results = [];
     for (const label of existing.filter((l) => factoryLabels.has(l) && l !== projection.status.state)) {
       results.push(await execute(key, `label-remove:${projection.target}:${label}`, { kind: "label-remove", target: projection.target, payload: { label } }));
@@ -182,7 +194,8 @@ export function surfaceService({ api, write, store, repo, appLogin, run, now = (
   async function handover({ key, number, head, context, readyOnly = false }) {
     const item = await currentItem(key);
     if (item.evidence.own) return { status: "applied" };
-    const pr = await api.pull(number);
+    const binding = { generation: item.generation, revision: item.revision };
+    const pr = await preflightRead({ store, key, item, kind: "ready", target: number, stage: "plan", guard: binding, now, read: () => api.pull(number) });
     if (!own(pr) || pr.state !== "open" || pr.head.sha !== head) return { status: "superseded" };
     const definition = { kind: "ready", target: number, payload: { head, nodeId: pr.node_id },
       guard: { generation: item.generation, revision: item.revision } };
@@ -197,7 +210,7 @@ export function surfaceService({ api, write, store, repo, appLogin, run, now = (
         && (readyOnly || !current.signals?.pending?.length) && !(current.feedback ?? []).some((f) => f.requiresResponse
           && ["instruction", "signal"].includes(f.authority) && state.items[key].feedback?.[f.sourceId] !== f.revision);
     };
-    if (!await guard()) return { status: "superseded" };
+    if (!await preflightRead({ store, key, item, kind: "ready", target: number, stage: "guard", guard: binding, now, read: guard })) return { status: "superseded" };
     const ready = await execute(key, `ready:${number}:${head}:${item.generation}`, definition, guard);
     if (ready.status !== "applied" || readyOnly) return ready;
     return requestReview(key, number, head, `handover-review:${number}:${head}:${item.generation}`, context, guard);
@@ -209,18 +222,27 @@ export function surfaceService({ api, write, store, repo, appLogin, run, now = (
         catch (error) { outcomes.push({ key: item.key, surface: "receipt", status: "waiting", reason: error.message }); }
       }
       await store.transact((s) => evolve(s, item.key, { type: "sync-api-alerts", at: now(), timeoutMinutes: context.config.timeouts.publishMinutes ?? 15 }));
-      for (const projection of projectItem((await store.load()).state, item.key)) {
+      const snapshot = (await store.load()).state;
+      for (const projection of projectItem(snapshot, item.key)) {
+        let status, projected;
         try {
-          const status = await statusComment(item.key, projection), projected = await labels(item.key, projection);
-          if (status.status !== "applied" || projected.some((r) => r.status !== "applied")) outcomes.push({ key: item.key, surface: "status", status: "waiting" });
-        } catch (error) { outcomes.push({ key: item.key, surface: "status", status: "interrupted", reason: error.message }); }
+          status = await statusComment(item.key, projection, snapshot.items[item.key]);
+        } catch (error) { outcomes.push({ key: item.key, surface: "status", status: error.code === "preflight-wait" ? "waiting" : "interrupted", reason: error.message }); }
+        try {
+          projected = await labels(item.key, projection, snapshot.items[item.key]);
+        } catch (error) { outcomes.push({ key: item.key, surface: "labels", status: error.code === "preflight-wait" ? "waiting" : "interrupted", reason: error.message }); }
+        if (status?.status !== "applied" || projected?.some((r) => r.status !== "applied")) outcomes.push({ key: item.key, surface: "status", status: "waiting" });
       }
-      const current = await currentItem(item.key);
+      let current = await currentItem(item.key);
+      if (JSON.stringify(current.preflights) !== JSON.stringify(snapshot.items[item.key].preflights)) {
+        await store.transact((s) => evolve(s, item.key, { type: "sync-api-alerts", at: now(), timeoutMinutes: context.config.timeouts.publishMinutes ?? 15 }));
+        current = await currentItem(item.key);
+      }
       for (const alert of Object.values(current.apiAlerts ?? {})) {
         try {
           const slot = `attention:${alert.id}`, marker = `<!-- factory:attention=${alert.id} -->`;
           if (alert.status === "active" && !current.paused) {
-            const body = `**Needs attention:** ${alert.reason}\n\nRequest: \`${alert.request}\`.\n\n${marker}`;
+            const body = `**Needs attention:** ${alert.reason}\n\n${alertReference(alert)}.\n\n${marker}`;
             const posted = await comment(item.key, slot, alert.target,
               body,
               marker, async () => { const fresh = await currentItem(item.key); return !fresh.paused && fresh.apiAlerts?.[alert.id]?.status === "active"; });
@@ -233,8 +255,10 @@ export function surfaceService({ api, write, store, repo, appLogin, run, now = (
           } else if (alert.status === "resolved") {
             const notice = current.apiEffects?.[apiEffectId(slot)];
             if (notice?.status === "applied" && current.apiEffects?.[apiEffectId(`attention-resolved:${alert.id}`)]?.status !== "applied") {
-              const body = alert.resolution === "applied" ? `**Recovered:** ${alert.kind} on #${alert.target} was observed.\n\n${marker}`
-                : `**Settled:** ${alert.kind} on #${alert.target} was superseded; no new request will be sent.\n\n${marker}`;
+              const body = alert.resolution === "observed" ? `**Recovered:** ${alert.kind} preconditions on #${alert.target} can be observed again.\n\n${marker}`
+                : alert.source === "preflight" ? `**Settled:** ${alert.kind} preconditions on #${alert.target} belong to superseded work.\n\n${marker}`
+                  : alert.resolution === "applied" ? `**Recovered:** ${alert.kind} on #${alert.target} was observed.\n\n${marker}`
+                    : `**Settled:** ${alert.kind} on #${alert.target} was superseded; no new request will be sent.\n\n${marker}`;
               await execute(item.key, `attention-resolved:${alert.id}`, { kind: "comment-edit", target: alert.target,
                 payload: { id: notice.receipt.id, body, marker } }, async () => {
                   const present = (await currentItem(item.key)).apiAlerts?.[alert.id];
@@ -257,7 +281,8 @@ export function surfaceService({ api, write, store, repo, appLogin, run, now = (
             });
           if (posted.status !== "applied") outcomes.push({ key: item.key, surface: "question", status: "waiting" });
           if (posted.status === "applied" && !item.evidence.own && item.prs.some((p) => p.number === target)) {
-            const pr = await api.pull(target);
+            const pr = await preflightRead({ store, key: item.key, item: current, kind: "notification", target, stage: "plan", now,
+              guard: { generation: current.generation, revision: current.revision }, read: () => api.pull(target) });
             if (pr.state === "open") {
               const review = await requestReview(item.key, target, pr.head.sha, `question-review:${id}:${pr.head.sha}`, context);
               if (review.status !== "applied") outcomes.push({ key: item.key, surface: "question-review", status: "waiting" });
@@ -293,10 +318,14 @@ export function surfaceService({ api, write, store, repo, appLogin, run, now = (
       const slot = `ci-rerun:${key}:${number}:${head}:${id}:${item.generation}`, existing = item.apiEffects?.[apiEffectId(slot)];
       let definition = existing?.definition;
       if (!definition) {
-        const actual = await api.run(id);
-        if (String(actual.id) !== id || String(actual.repository?.id) !== context.repositoryId
-          || String(actual.head_repository?.id) !== context.repositoryId || ![head, testedSha].includes(actual.head_sha)
-          || actual.path === ".github/workflows/factory.yml" || !Number.isSafeInteger(actual.run_attempt) || actual.run_attempt < 1) throw new Error("CI rerun is not the recorded current-head check run");
+        const actual = await preflightRead({ store, key, item, kind: "ci-rerun", target: number, stage: "plan", runId: id,
+          guard: { generation: item.generation, revision: item.revision }, now, read: async () => {
+            const actual = await api.run(id);
+            if (String(actual.id) !== id || String(actual.repository?.id) !== context.repositoryId
+              || String(actual.head_repository?.id) !== context.repositoryId || ![head, testedSha].includes(actual.head_sha)
+              || actual.path === ".github/workflows/factory.yml" || !Number.isSafeInteger(actual.run_attempt) || actual.run_attempt < 1) throw new Error("CI rerun is not the recorded current-head check run");
+            return actual;
+          } });
         definition = { kind: "ci-rerun", target: number, payload: { head, testedSha, runHead: actual.head_sha, runId: id, attempt: actual.run_attempt },
           guard: { generation: item.generation, revision: item.revision } };
       }
