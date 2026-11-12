@@ -85,6 +85,7 @@ export function validateLedger(s) {
     && Number.isSafeInteger(s.integration.pr) && s.integration.pr > 0
     && Number.isFinite(Date.parse(s.integration.selectedAt)) && Number.isFinite(Date.parse(s.integration.deadline)),
     "corrupt", "Malformed integration selection");
+  const prs = new Set();
   for (const [key, item] of Object.entries(s.items)) {
     requireThat(KEY.test(key) && object(item) && item.key === key && integer(item.generation)
       && typeof item.paused === "boolean" && typeof item.complete === "boolean"
@@ -213,6 +214,10 @@ export function validateLedger(s) {
       && Number.isSafeInteger(p.number) && p.number > 0 && typeof p.required === "boolean"
       && ["open", "merged", "closed"].includes(p.state) && typeof p.acceptedClosure === "boolean"
       && (p.state !== "merged" || SHA.test(p.mergedSha))), "corrupt", `Malformed PR membership for ${key}`);
+    for (const pr of item.prs) {
+      requireThat(!prs.has(pr.number), "corrupt", `PR #${pr.number} belongs to more than one item`);
+      prs.add(pr.number);
+    }
     for (const pr of item.prs) if (pr.dispositions !== undefined) requireThat(Array.isArray(pr.dispositions)
       && pr.dispositions.every((d) => object(d) && item.commands[d.commandId]?.sourceId === d.sourceId
         && item.commands[d.commandId].revision === d.commandRevision && item.commands[d.commandId].status === "applied"
@@ -227,7 +232,8 @@ export function validateLedger(s) {
       && SHA.test(op.base?.sha) && validBranch(op.base?.ref) && SHA.test(op.toolingSha) && SHA.test(op.configSha)
       && validBranch(op.target?.branch) && op.target.branch !== op.base.ref && op.target.branch !== "factory-state"
       && (op.target.head === null || SHA.test(op.target.head))
-      && (op.target.number === null || (Number.isSafeInteger(op.target.number) && op.target.number > 0))
+      && (op.target.number === null || (Number.isSafeInteger(op.target.number) && op.target.number > 0
+        && s.items[op.item].prs.some((p) => p.number === op.target.number)))
       && /^[0-9a-f]{64}$/.test(op.revision) && object(op.worker)
       && op.worker.workflowPath === ".github/workflows/factory.yml" && SHA.test(op.worker.entrySha), "corrupt", `Malformed operation ${id}`);
     requireThat(op.phase !== "claimed" || op.owner !== null, "corrupt", `Missing owner for ${id}`);

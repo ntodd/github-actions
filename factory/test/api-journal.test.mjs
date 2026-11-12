@@ -179,15 +179,17 @@ test("a successful close response is a receipt even if subsequent state reads ar
 
 test("state-write exclusion follows the physical PR across item and effect identities", async () => {
   const f = fixture(); let sends = 0;
-  await f.store.transact((s) => admit(s, { key: "issue:8", revision: s.items["issue:7"].revision, evidence: { sourceId: "label:124" },
-    prs: [{ number: 9, required: true, state: "open", mergedSha: null, acceptedClosure: false }] }));
+  // The repository validator now rejects duplicate PR membership. Exercise
+  // physical-target exclusion with different endpoint kinds instead.
+  await f.store.transact((s) => admit(s, { key: "issue:9", revision: s.items["issue:7"].revision, evidence: { sourceId: "label:124" } }));
   const writer = { inspect: async () => ({ outcome: "unknown", stateCursor: "0" }), apply: async () => { sends++; return { outcome: "unknown" }; } };
-  for (const key of ["issue:7", "issue:8"]) {
+  for (const key of ["issue:7", "issue:9"]) {
     await f.store.transact((s) => ingestCommands(s, key, [{ authority: "instruction", sourceId: "issue-comment:100", revision: "e".repeat(64),
       author: "ntodd", createdAt: at, command: { action: "restart", text: "" } }]));
     const item = f.state.items[key], commandId = Object.keys(item.commands)[0];
     const result = await runApiEffect({ store: f.store, key, slot: "same-slot", run, writer, now: () => at,
-      definition: { kind: "pr-close", target: 9, payload: { head: "a".repeat(40) }, guard: { generation: 0, revision: item.revision, commandId } } });
+      definition: { kind: key === "issue:7" ? "pr-close" : "issue-close", target: 9,
+        payload: key === "issue:7" ? { head: "a".repeat(40) } : { revision: item.revision }, guard: { generation: 0, revision: item.revision, commandId } } });
     assert.equal(result.status, key === "issue:7" ? "pending" : "prepared");
   }
   assert.equal(sends, 1);

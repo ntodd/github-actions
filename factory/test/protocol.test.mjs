@@ -8,6 +8,15 @@ const fails = (fn, code) => assert.throws(fn, (e) => e.code === code);
 const observed = (s, outcome, evidence, extra = {}) => step(s, { type: "effect-observed", effectId: "push",
   requestId: "op-1/push/1", outcome, evidence, ...extra });
 
+test("operation targets must belong to their item and PR membership is repository-wide", () => {
+  const state = step(initial(), reserve());
+  operation(state).target.number = 99;
+  fails(() => validateLedger(state), "corrupt");
+  const duplicate = initial();
+  duplicate.items["issue:8"] = { ...structuredClone(duplicate.items["issue:7"]), key: "issue:8" };
+  fails(() => validateLedger(duplicate), "corrupt");
+});
+
 test("prepared abandonment requires exhausted dispatch, an explicit request and zero ownership", () => {
   let s = ingestCommands(step(initial(), reserve()), "issue:7", [{ authority: "instruction", sourceId: "issue-comment:997", revision,
     author: "ntodd", createdAt: at, target: 9, command: { action: "retry", text: "" } }]);
