@@ -46,6 +46,18 @@ test("foreign workflows, repository heads and rerun attempts cannot provide a re
   await assert.rejects(() => fixture({ artifact: { workflow_run: { id: 999 } } }).client.inspect(op, context), /metadata/);
 });
 
+test("historical owner and artifact provenance use the recorded default branch after a repository switch", async () => {
+  const latest = { ...context, defaultBranch: "release" }, f = fixture();
+  assert.equal((await f.client.inspect(op, latest)).owner.status, "completed");
+  const result = await f.client.download(op, latest);
+  try { assert.equal(result.proposal.outcome, "no-change"); } finally { result.dispose(); }
+  f.artifact.workflow_run.head_branch = "release";
+  await assert.rejects(f.client.inspect(op, latest), /metadata/);
+  const wrong = fixture({ run: { head_branch: "release" }, artifact: { workflow_run: { id: 100, repository_id: 42,
+    head_repository_id: 42, head_sha: A, head_branch: "release" } } });
+  await assert.rejects(wrong.client.inspect(op, latest), /provenance/);
+});
+
 test("queued runs are uninspected, missing results are observed absent, and expired results are not accepted", async () => {
   const queued = fixture({ run: { status: "queued" } });
   assert.equal((await queued.client.inspect(op, context)).inspected, false);
@@ -79,6 +91,12 @@ test("execution measurements use the owned job's elapsed time even when its arti
   assert.equal(usage.ran, true);
   assert.equal(f.requests.some((r) => r.url.includes("/artifacts")), false);
   assert.equal(await fixture({ run: { status: "in_progress" } }).client.measure(op, context), null);
+});
+
+test("historical execution accounting survives a default-branch switch without accepting a replacement branch", async () => {
+  const latest = { ...context, defaultBranch: "release" };
+  assert.equal((await fixture({ jobs: [job] }).client.measure(op, latest)).durationMs, 120000);
+  await assert.rejects(fixture({ jobs: [job], run: { head_branch: "release" } }).client.measure(op, latest), /provenance/);
 });
 
 test("missing jobs, ambiguous roles, wrong attempts/runners and incomplete timestamps stay unknown", async () => {

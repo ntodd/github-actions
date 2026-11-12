@@ -106,7 +106,10 @@ export function actionsClient({ token, repo, apiUrl = "https://api.github.com", 
     }
     return all;
   }
-  async function inspect(op, { repositoryId, defaultBranch }) {
+  async function inspect(op, { repositoryId }) {
+    // Supported operations record the default branch as their base. Historical
+    // ownership remains bound to that branch after repository policy changes.
+    const defaultBranch = op.base.ref;
     const run = await (await response(`/actions/runs/${op.owner.id}/attempts/${op.owner.attempt}`)).json();
     const owner = runProvenance(run, op, repositoryId, defaultBranch);
     if (owner.status === "in_progress") {
@@ -165,9 +168,9 @@ export function actionsClient({ token, repo, apiUrl = "https://api.github.com", 
         dispose: () => rmSync(directory, { recursive: true, force: true }) };
     } catch { rmSync(directory, { recursive: true, force: true }); throw new InvalidResult("Worker proposal or bundle failed validation"); }
   }
-  async function measure(op, { repositoryId, defaultBranch }) {
+  async function measure(op, { repositoryId }) {
     const run = await (await response(`/actions/runs/${op.owner.id}/attempts/${op.owner.attempt}`)).json();
-    const owner = runProvenance(run, op, repositoryId, defaultBranch);
+    const owner = runProvenance(run, op, repositoryId, op.base.ref);
     if (owner.status !== "completed") return null;
     const jobs = await list(`/actions/runs/${op.owner.id}/attempts/${op.owner.attempt}/jobs?per_page=100`, (d) => d.jobs);
     const name = op.mode === "update" ? "factory-update" : "factory-worker";

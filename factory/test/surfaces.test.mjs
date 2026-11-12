@@ -292,6 +292,16 @@ test("handover marks an agent PR ready and requests review once, while an own PR
   assert.equal(own.writes.length, 0); assert.equal(own.pr.draft, true);
 });
 
+test("a PR on a former default is not handed over or admitted for another CI rerun", async () => {
+  const f = fixture(), service = f.service();
+  f.api.repository = async () => ({ id: 42, default_branch: "release" });
+  f.api.branchSha = async () => A;
+  assert.equal((await service.handover({ key: "issue:7", number: 9, head: B, context: f.context })).status, "superseded");
+  assert.equal(f.pr.draft, true);
+  assert.equal(f.writes.some(([kind]) => ["ready", "review"].includes(kind)), false);
+  assert.equal(await service.workGuard("issue:7", { kind: "ci-rerun", target: 9, payload: { head: B } }), false);
+});
+
 test("handover revalidates CI even if a previously-ready PR already satisfies the metadata effect", async () => {
   const f = fixture(), service = f.service(), args = { key: "issue:7", number: 9, head: B, context: f.context };
   await service.handover(args); f.writes.length = 0; f.pr.requested_reviewers = [];

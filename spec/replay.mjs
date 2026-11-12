@@ -14,6 +14,7 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), "factory-replay-"));
 const at = "2026-11-12T12:00:00Z";
 const sha = (n) => Number(n).toString(16).padStart(40, "0");
+const baseRef = (n) => n === 0 ? "main" : `default-${n}`;
 const tooling = "a".repeat(40);
 const revision = revisionOf({ title: "Accepted issue" });
 const identity = (id) => ({ id: String(id), attempt: 1 });
@@ -45,7 +46,7 @@ function replay(file) {
   let ledger = admit(emptyLedger("42"), { key: "issue:7", revision, evidence: { sourceId: "label:1" },
     prs: [1, 2].map((number) => ({ number, required: true, state: "open", mergedSha: null, acceptedClosure: false })) });
   function update(event) { ledger = evolve(ledger, "issue:7", { at, publisher: { id: "900", attempt: 1 }, ...event }); }
-  function obs(m) { return { authorization: { valid: true, revision }, open: !m.merged.includes(m.target),
+  function obs(m) { return { authorization: { valid: true, revision }, open: !m.merged.includes(m.target) && m.defaultRef === m.expectedDefaultRef,
     head: sha(m.heads[m.target]), baseSha: sha(m.main) }; }
   for (let n = 1; n < states.length; n++) {
     const a = states[n - 1], b = states[n], id = `op-${b.op}`;
@@ -53,7 +54,7 @@ function replay(file) {
     try {
       if (b.op !== a.op) event("reserve", { id, mode: "respond", revision, toolingSha: tooling, configSha: tooling,
         target: { number: b.target, branch: `factory/pr-${b.target}`, head: sha(b.expectedHead) },
-        base: { ref: "main", sha: sha(b.expectedBase) } });
+        base: { ref: baseRef(b.expectedDefaultRef), sha: sha(b.expectedBase) } });
       else if (b.owner !== a.owner) event("claim", { run: identity(b.owner), provenance, observation: obs(a) });
       else if (a.admitted && !b.admitted) event("revoke-admission", { authorization: { valid: false } });
       else if (!a.admitted && b.admitted) {
@@ -81,7 +82,7 @@ function replay(file) {
           });
         } else if (b.phase === "publishing") event("authorize-publish", { observation: obs(a) });
         else if (b.phase === "superseded" && a.phase === "prepared" && a.opGeneration === a.generation
-          && a.heads[a.target] === a.expectedHead && a.main === a.expectedBase && !a.merged.includes(a.target)) {
+          && a.heads[a.target] === a.expectedHead && a.main === a.expectedBase && a.defaultRef === a.expectedDefaultRef && !a.merged.includes(a.target)) {
           for (let attempt = 0; attempt < 3; attempt++) event("dispatch-request", { at: `2026-11-12T12:${String(attempt * 5).padStart(2, "0")}:00Z` });
           const sourceId = `issue-comment:${900 + b.op}`;
           ledger = ingestCommands(ledger, "issue:7", [{ authority: "instruction", sourceId, revision,
@@ -120,6 +121,7 @@ function replay(file) {
         assert.equal(op.generation, b.opGeneration);
         assert.equal(op.target.head, sha(b.expectedHead));
         assert.equal(op.base.sha, sha(b.expectedBase));
+        assert.equal(op.base.ref, baseRef(b.expectedDefaultRef));
         assert.equal(op.owner?.id ?? "0", String(b.owner));
       }
     } catch (error) {

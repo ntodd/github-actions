@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { runController, claimOperation, parseRequest } from "../lib/controller.mjs";
 import { emptyLedger, validateLedger, recordFactoryApp } from "../lib/protocol.mjs";
 import { publishOperation } from "../lib/publish.mjs";
+import { actionsClient } from "../lib/actions.mjs";
 import { mentionRouter } from "../lib/router.mjs";
 import { itemUsage } from "../lib/usage.mjs";
 import { preparationOutcome } from "../lib/project-setup.mjs";
@@ -110,6 +111,81 @@ test("a fresh trusted relabel can replace revoked admission without resetting at
   assert.equal(f.state.operations["op-1"].phase, "superseded");
   assert.equal(f.state.operations["op-2"].phase, "prepared");
   assert.equal(f.state.items["issue:7"].attempts.length, 2);
+});
+
+test("a same-commit default-branch switch rejects old admission and replans the build against the new branch", async () => {
+  const f = fixture(); await f.pass();
+  f.api.repository = async () => ({ id: 42, default_branch: "release" });
+  f.api.branchSha = async (ref) => { if (["main", "release"].includes(ref)) return A; throw Object.assign(new Error("missing"), { status: 404 }); };
+  f.api.run = async () => ({ id: 100, run_attempt: 1, repository: { id: 42 }, head_repository: { id: 42 }, path: ".github/workflows/factory.yml",
+    head_sha: A, head_branch: "release", event: "workflow_dispatch", status: "in_progress" });
+  assert.equal((await claimOperation({ api: f.api, store: f.store, repo: "ntodd/project", itemKey: "issue:7", operationId: "op-1", run,
+    context: { sha: A, defaultBranch: "release" } })).claimed, false);
+  assert.equal(f.state.operations["op-1"].owner, null);
+  const result = await f.pass({ operationId: () => "op-2" });
+  assert.equal(result.outcomes.some((o) => o.status === "interrupted"), false);
+  assert.equal(f.state.operations["op-1"].phase, "superseded");
+  assert.equal(f.state.operations["op-2"].base.ref, "release");
+  assert.equal(f.state.operations["op-2"].base.sha, A);
+  assert.equal(f.state.operations["op-2"].owner, null);
+  assert.equal(f.state.items["issue:7"].authorizationRevoked, undefined);
+  assert.equal(f.state.items["issue:7"].attempts.length, 2);
+});
+
+test("known default-branch changes still cancel obsolete ownership when CI observation is unavailable", async () => {
+  const f = fixture(); await f.pass();
+  await claimOperation({ api: f.api, store: f.store, repo: "ntodd/project", itemKey: "issue:7", operationId: "op-1", run,
+    context: { sha: A, defaultBranch: "main" } });
+  f.api.repository = async () => ({ id: 42, default_branch: "release" });
+  f.api.branchSha = async () => A;
+  f.api.branchRules = async () => { throw new Error("rules API unavailable"); };
+  const cancelled = [], result = await f.pass({ maxPasses: 1, write: { cancelRun: async (id) => { cancelled.push(id); } } });
+  assert.equal(result.plans[0].action.type, "cancel-owner");
+  assert.deepEqual(cancelled, ["100"]);
+  assert.equal(f.state.operations["op-1"].owner.id, "100");
+  assert.equal(f.state.operations["op-1"].cancel.attempts.length, 1);
+  assert.equal(f.state.items["issue:7"].attempts.length, 1);
+});
+
+test("the real Actions adapter can retire a terminal owner from the former default before replacing it", async () => {
+  const f = fixture(); await f.pass();
+  await claimOperation({ api: f.api, store: f.store, repo: "ntodd/project", itemKey: "issue:7", operationId: "op-1", run,
+    context: { sha: A, defaultBranch: "main" } });
+  f.api.repository = async () => ({ id: 42, default_branch: "release" });
+  const branchSha = f.api.branchSha;
+  f.api.branchSha = async (ref) => ref === "release" ? A : branchSha(ref);
+  let inspections = 0;
+  const adapter = actionsClient({ token: "read", repo: "ntodd/project", fetch: async (url) => {
+    if (url.endsWith("/attempts/1")) {
+      inspections++;
+      return Response.json({ id: 100, run_attempt: 1, repository: { id: 42 }, head_repository: { id: 42 }, path: ".github/workflows/factory.yml",
+        head_sha: A, head_branch: "main", event: "workflow_dispatch", status: "completed", conclusion: "cancelled" });
+    }
+    assert.match(url, /\/artifacts\?/); return Response.json({ artifacts: [] });
+  } });
+  const result = await f.pass({ actions: { inspect: adapter.inspect }, operationId: () => "op-2" });
+  assert.equal(result.outcomes.some((o) => o.status === "interrupted"), false);
+  assert.equal(inspections, 1);
+  assert.equal(f.state.operations["op-1"].owner.status, "completed");
+  assert.equal(f.state.operations["op-1"].phase, "superseded");
+  assert.equal(f.state.operations["op-2"].phase, "prepared");
+  assert.equal(f.state.operations["op-2"].base.ref, "release");
+});
+
+test("a default switch between planning and reservation cannot allocate maintenance against the former default", async () => {
+  const f = fixture(); await f.pass();
+  await claimOperation({ api: f.api, store: f.store, repo: "ntodd/project", itemKey: "issue:7", operationId: "op-1", run,
+    context: { sha: A, defaultBranch: "main" } });
+  f.finish(); await f.pass(); let reads = 0;
+  f.api.repository = async () => ({ id: 42, default_branch: ++reads === 1 ? "main" : "release" });
+  const branchSha = f.api.branchSha;
+  f.api.branchSha = async (ref) => ref === "release" ? A : branchSha(ref);
+  f.api.comments = async (n) => n === 9 ? [{ id: 1001, body: "/agent update", user: { login: "ntodd" }, created_at: at, updated_at: at }] : [];
+  const result = await f.pass({ operationId: () => "op-2" });
+  assert.equal(result.outcomes.some((o) => o.status === "interrupted"), false);
+  assert.equal(f.state.operations["op-2"], undefined);
+  assert.equal(f.state.items["issue:7"].attempts.length, 1);
+  assert.match(f.state.items["issue:7"].question.reason, /#9.*default branch.*release/);
 });
 
 test("a fresh command cannot override untrusted issue edits during readmission", async () => {

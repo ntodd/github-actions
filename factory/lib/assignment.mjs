@@ -19,6 +19,7 @@ export async function workerAssignment({ api, store, repo, repositoryId, itemKey
     if (!record || record.activeOperation !== operationId || active?.phase !== "claimed" || !sameRun(active.owner, run)
       || String(actionsRun.id) !== run.id || actionsRun.run_attempt !== run.attempt || actionsRun.status !== "in_progress") return { valid: false };
     if (factoryApp && (current.factoryApp?.id !== factoryApp.id || current.factoryApp?.login !== factoryApp.login)) return { valid: false, reason: "The factory App identity changed" };
+    if (active.base.ref !== latest.defaultBranch) return { valid: false, reason: "The operation no longer targets the repository's default branch" };
     latest.config = withFactoryApp(latest.config, current.factoryApp?.login);
     let authorization, issue;
     if (record.evidence.own) {
@@ -28,6 +29,13 @@ export async function workerAssignment({ api, store, repo, repositoryId, itemKey
       const inspected = await inspectIssue(api, number, latest.config, { evidence: record.evidence });
       authorization = inspected;
       issue = inspected.issue;
+    }
+    if (authorization.valid && active.target.number) {
+      const pr = record.evidence.own ? issue : await api.pull(active.target.number);
+      if (pr.state !== "open" || pr.head?.sha !== active.target.head || pr.head.ref !== active.target.branch
+        || pr.head.repo?.full_name?.toLowerCase() !== repo.toLowerCase() || pr.base?.ref !== active.base.ref) {
+        return { valid: false, reason: "The recorded PR was closed or its branch, head or base changed" };
+      }
     }
     let head;
     try { head = await api.branchSha(active.target.branch); }

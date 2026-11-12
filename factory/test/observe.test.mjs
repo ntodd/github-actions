@@ -95,6 +95,32 @@ test("an unacknowledged stop fences publication and a changed/deleted explicit c
   assert.equal((await publishObservation(f.api, s.items["issue:7"], explicit, f.context.repo)).authorization.valid, false);
 });
 
+test("a default-branch switch fences publication even at the same commit or after deleting the former branch", async () => {
+  for (const deleted of [false, true]) {
+    const f = fixture(), reads = [];
+    f.api.repository = async () => ({ id: 42, default_branch: "release" });
+    f.api.branchSha = async (ref) => {
+      reads.push(ref);
+      if (ref === "main" && deleted) throw Object.assign(new Error("former default was deleted"), { status: 404 });
+      return ["main", "release"].includes(ref) ? A : B;
+    };
+    const observed = await publishObservation(f.api, f.ledger.items["issue:7"], operation(f.ledger), f.context.repo);
+    assert.equal(observed.authorization.valid, true); assert.equal(observed.open, false);
+    assert.equal(observed.baseSha, A); assert.equal(reads.includes("main"), false);
+  }
+});
+
+test("an open PR aimed at a former default is observed without querying its obsolete CI or base", async () => {
+  const f = fixture(); f.context.defaultBranch = "release";
+  f.api.repository = async () => ({ id: 42, default_branch: "release" });
+  f.api.branchSha = async (ref) => { assert.notEqual(ref, "main"); return ref === "release" ? A : B; };
+  f.api.pullStatus = async () => assert.fail("Unsupported PRs must not block owner recovery on CI reads");
+  const observed = await f.observe();
+  assert.equal(observed.main.ref, "release"); assert.equal(observed.main.sha, A);
+  assert.equal(observed.prs.find((p) => p.number === 9).unsupported, true);
+  assert.equal(observed.owner.id, "100");
+});
+
 test("configured check findings can be revalidated at the publish boundary", async () => {
   const f = fixture();
   f.api.checks = async (sha) => raw(sha, [check({ head_sha: sha, name: "scan", conclusion: "failure", output: { summary: "dependency risk" } })]);

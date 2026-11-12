@@ -150,7 +150,8 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
       item.question?.reason ?? "Recover the issue-reopen request before continuing existing work", { kind: "issue-reopen", target: c.commandId, deadline });
   }
   const stale = op && !TERMINAL.has(op.phase) && (op.generation !== item.generation || op.revision !== item.revision
-    || (target && (target.state !== "open" || target.headSha !== op.target.head))
+    || facts.main?.ref && op.base.ref !== facts.main.ref
+    || (target && (target.state !== "open" || target.headSha !== op.target.head || target.baseRef && target.baseRef !== op.base.ref))
     || (op.phase === "prepared" && facts.main?.sha && op.base.sha !== facts.main.sha));
   const cancel = (reason) => {
     const count = op.cancel?.attempts.length ?? 0;
@@ -285,6 +286,9 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
   }
   const unaccounted = item.prs.find((p) => p.required && p.state === "closed" && !p.acceptedClosure);
   if (unaccounted && command?.action !== "restart") return ask(closureQuestion(unaccounted.number), "agent-needs-you", { kind: "pr-closure", number: unaccounted.number });
+  const formerDefault = open.find((p) => facts.main?.ref && p.baseRef && p.baseRef !== facts.main.ref);
+  if (formerDefault) return ask(`PR #${formerDefault.number} no longer targets the repository's default branch (${facts.main.ref}). Retarget it or restore the default branch before requesting work.`,
+    "agent-needs-you", command ? { consumeCommand: command.id } : {});
   if (open.length > 1 || facts.unsupportedStack) return ask("This work has several dependent PRs; stack maintenance is not enabled yet");
 
   const reserve = (mode, pr = null, request = null, feedback = []) => {

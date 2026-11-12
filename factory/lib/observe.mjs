@@ -123,7 +123,8 @@ export async function publishObservation(api, item, op, repo, appLogin = null) {
   }
   return { authorization: controls.length || !commandsValid || !feedbackValid
     ? { valid: false, reason: controls.length ? "A stop or restart command is pending" : "Authorizing feedback changed or disappeared" } : authorization,
-    head, baseSha: await api.branchSha(op.base.ref), threadRevisions, open: expectedBranch && subject.state === "open" && (!pr || pr.state === "open") };
+    head, baseSha: await api.branchSha(context.defaultBranch), threadRevisions,
+    open: op.base.ref === context.defaultBranch && expectedBranch && subject.state === "open" && (!pr || pr.state === "open") };
 }
 
 export async function observeItem({ api, actions, ledger, key, context, rules }) {
@@ -152,6 +153,10 @@ export async function observeItem({ api, actions, ledger, key, context, rules })
     const pr = await api.pull(record.number), state = pr.merged_at ? "merged" : pr.state;
     const head = pr.head?.sha;
     if (state !== "open") { prs.push({ number: pr.number, state, mergedSha: pr.merge_commit_sha, headSha: head }); continue; }
+    if (pr.head?.repo?.full_name?.toLowerCase() !== context.repo.toLowerCase() || pr.base.ref !== context.defaultBranch) {
+      prs.push({ number: pr.number, state, headSha: head, baseRef: pr.base.ref, unsupported: true });
+      continue;
+    }
     const base = await api.branchSha(pr.base.ref);
     const [status, tested, comparison] = await Promise.all([api.pullStatus(pr.number), prChecks(api, pr, base), api.compare(base, head)]);
     const fresh = status?.headRefOid === head && status?.baseRefOid === base;
@@ -190,5 +195,5 @@ export async function observeItem({ api, actions, ledger, key, context, rules })
     result = await actions.inspect(op, context); owner = result.owner;
   }
   return { authorization, issueState: subject.state, feedback, prs, owner, result,
-    main: { sha: mainSha, checks: mainChecks }, repairSpec: spec, repairBaseline, unsupportedStack: prs.some((p) => p.unsupported) };
+    main: { ref: context.defaultBranch, sha: mainSha, checks: mainChecks }, repairSpec: spec, repairBaseline, unsupportedStack: prs.some((p) => p.unsupported) };
 }

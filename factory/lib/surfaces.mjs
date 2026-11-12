@@ -85,6 +85,7 @@ export function surfaceService({ api, write, store, repo, appLogin, run, now = (
     if (definition.payload.head) {
       const pr = await api.pull(definition.target);
       if (pr.state !== "open" || pr.head?.sha !== definition.payload.head || pr.head.repo?.full_name?.toLowerCase() !== repo.toLowerCase()) return false;
+      if (definition.kind === "ci-rerun" && pr.base?.ref !== latest.defaultBranch) return false;
       if (["ready", "review-request", "pr-close"].includes(definition.kind) && !own(pr)) return false;
     }
     if (definition.guard?.commandId && !await freshCommand(item, definition.guard.commandId)) return false;
@@ -206,7 +207,7 @@ export function surfaceService({ api, write, store, repo, appLogin, run, now = (
       if (active && !["done", "failed", "superseded"].includes(active.phase)) return false;
       const facts = await observeItem({ api, actions: null, ledger: state, key, context: latest, rules: await api.branchRules(latest.defaultBranch) });
       const current = facts.prs.find((p) => p.number === number);
-      return current?.headSha === head && current.checks?.state === "success" && current.mergeable === "MERGEABLE"
+      return !current?.unsupported && current?.headSha === head && current.checks?.state === "success" && current.mergeable === "MERGEABLE"
         && (readyOnly || !current.signals?.pending?.length) && !(current.feedback ?? []).some((f) => f.requiresResponse
           && ["instruction", "signal"].includes(f.authority) && state.items[key].feedback?.[f.sourceId] !== f.revision);
     };

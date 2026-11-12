@@ -76,7 +76,8 @@ export async function claimOperation({ api, store, repo, itemKey, operationId, r
   if (owner.status !== "in_progress") return { claimed: false };
   const provenance = { repositoryId: state.repositoryId, workflowPath: actual.path, headSha: actual.head_sha };
   const observation = await publishObservation(api, item, op, repo);
-  if (context.sha !== op.worker.entrySha || !observation.authorization.valid) return { claimed: false };
+  if (context.sha !== op.worker.entrySha || op.base.ref !== context.defaultBranch || observation.open !== true
+    || !observation.authorization.valid) return { claimed: false };
   const result = await store.transact((s) => evolve(s, itemKey, { type: "claim", operationId, run, provenance, observation }));
   const current = result.state.operations[operationId];
   return { claimed: current.owner?.id === run.id && current.owner.attempt === run.attempt,
@@ -112,7 +113,7 @@ export async function runController({ api, write, store, actions, repo, toolingS
   for (const key of Object.keys(snapshot.items)) {
     try { observations[key] = await observe({ api, actions, ledger: snapshot, key, context, rules }); }
     catch (error) {
-      observations[key] = { authorization: null, feedback: [], prs: [], observationError: error.message };
+      observations[key] = { authorization: null, feedback: [], prs: [], main: { ref: context.defaultBranch }, observationError: error.message };
       try {
         observations[key].feedback = await readFeedback(api, { issue: snapshot.items[key].evidence.own ? null : Number(key.split(":")[1]),
           prs: snapshot.items[key].prs.map((p) => p.number) }, context.config);
@@ -176,6 +177,7 @@ export async function runController({ api, write, store, actions, repo, toolingS
           if (!fresh.authorization.valid || fresh.authorization.revision !== item.revision) break;
           const pr = action.pr ? fresh.prs.find((p) => p.number === action.pr && p.state === "open") : null;
           if (action.pr && !pr) break;
+          if (pr && (pr.unsupported || pr.baseRef !== latest.defaultBranch)) break;
           if (fresh.main) fresh.main.repairWork = mainRepairRole(item, fresh);
           const id = operationId(), branch = pr?.branch ?? `factory/issue-${key.split(":")[1]}-${id}`;
           const base = { ref: pr?.baseRef ?? latest.defaultBranch, sha: pr?.baseSha ?? latest.sha };

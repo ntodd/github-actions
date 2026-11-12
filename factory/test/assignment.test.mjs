@@ -19,6 +19,7 @@ test("project execution pins environment declarations and rechecks stop, entry a
     repository: async () => ({ id: 42, default_branch: "main" }), fileAt: async (_path, ref) => { reads.push(ref); return { content: ref === A ? pinned : latest }; },
     branchSha: async (ref) => ref === "main" ? C : B, run: async () => ({ id: 100, run_attempt: 1, status: "in_progress" }),
     issue: async () => ({ number: 7, state: "open", title: "Fix it", body: "Accepted task", user: { login: "ntodd" } }),
+    pull: async () => ({ number: 9, state: "open", head: { sha: B, ref: "factory/issue-7", repo: { full_name: "ntodd/project" } }, base: { ref: "main" } }),
     editors: async () => [], events: async () => [{ id: 123, event: "labeled", created_at: at, label: { name: "agent-ready" }, actor: { login: "ntodd" } }],
     comments: async () => [], threads: async () => [], reviews: async () => [],
   };
@@ -30,6 +31,14 @@ test("project execution pins environment declarations and rechecks stop, entry a
   assert.deepEqual(selectProjectSecrets(context.assignment.config.environment, "DATABASE_PASSWORD=known\nNEW_SECRET=not-selected"), { DATABASE_PASSWORD: "known" });
   assert.ok(reads.includes(A) && reads.includes(C));
   assert.equal(context.readToken, "read-only");
+  const pull = api.pull;
+  for (const patch of [{ base: { ref: "release" } }, { state: "closed" }, { head: { sha: B, ref: "other", repo: { full_name: "ntodd/project" } } },
+    { head: { sha: B, ref: "factory/issue-7", repo: { full_name: "elsewhere/project" } } }]) {
+    api.pull = async () => ({ ...await pull(), ...patch });
+    assert.equal((await context.readFresh()).valid, false);
+    await assert.rejects(currentWorker({ env, api, store }), /before project execution/);
+  }
+  api.pull = pull;
   await assert.rejects(currentWorker({ env: { ...env, GITHUB_SHA: C }, api, store }), /before project execution/);
   await assert.rejects(currentWorker({ env: { ...env, GITHUB_RUN_ATTEMPT: "2" }, api, store }), /does not own/);
   state.items["issue:7"].paused = true;
@@ -37,6 +46,27 @@ test("project execution pins environment declarations and rechecks stop, entry a
   state.items["issue:7"].paused = false;
   api.workflows = async () => [{ id: 123, path: ".github/workflows/agent-ready.yml", state: "active" }];
   await assert.rejects(context.readFresh(), /legacy agent-ready workflow/);
+});
+
+test("a default-branch switch stops project execution even when both branch names resolve to the same commit", async () => {
+  const state = claimed(); let defaultBranch = "main";
+  const api = {
+    workflows: async () => [], repository: async () => ({ id: 42, default_branch: defaultBranch }),
+    fileAt: async () => ({ content: "trusted-users: [ntodd]\nenvironment: {worker-secrets: [DATABASE_PASSWORD]}" }),
+    branchSha: async (ref) => ref === defaultBranch ? A : B,
+    run: async () => ({ id: 100, run_attempt: 1, status: "in_progress" }),
+    issue: async () => ({ number: 7, state: "open", title: "Fix it", body: "Accepted task", user: { login: "ntodd" } }),
+    pull: async () => ({ number: 9, state: "open", head: { sha: B, ref: "factory/issue-7", repo: { full_name: "ntodd/project" } }, base: { ref: "main" } }),
+    editors: async () => [], events: async () => [{ id: 123, event: "labeled", created_at: at, label: { name: "agent-ready" }, actor: { login: "ntodd" } }],
+    comments: async () => [], threads: async () => [], reviews: async () => [],
+  };
+  const env = { GITHUB_TOKEN: "read-only", GITHUB_REPOSITORY: "ntodd/project", GITHUB_REPOSITORY_ID: "42", GITHUB_SHA: A,
+    GITHUB_RUN_ID: "100", GITHUB_RUN_ATTEMPT: "1", FACTORY_ITEM: "issue:7", FACTORY_OPERATION: "op-1",
+    RUNNER_TEMP: "/tmp/factory-runner", GITHUB_WORKSPACE: "/tmp/factory-project" };
+  const store = { load: async () => ({ state }) }, context = await currentWorker({ env, api, store });
+  defaultBranch = "release";
+  assert.equal((await context.readFresh()).valid, false);
+  await assert.rejects(currentWorker({ env, api, store }), /before project execution/);
 });
 
 test("a routed stop remains visible to the worker across a controller crash before applyControls", async () => {
@@ -47,6 +77,7 @@ test("a routed stop remains visible to the worker across a controller crash befo
     fileAt: async () => ({ content: "trusted-users: [ntodd]" }), branchSha: async (ref) => ref === "main" ? A : B,
     run: async () => ({ id: 100, run_attempt: 1, status: "in_progress" }),
     issue: async () => ({ number: 7, state: "open", title: "Fix it", body: "Accepted task", user: { login: "ntodd" } }),
+    pull: async () => ({ number: 9, state: "open", head: { sha: B, ref: "factory/issue-7", repo: { full_name: "ntodd/project" } }, base: { ref: "main" } }),
     editors: async () => [], events: async () => [{ id: 123, event: "labeled", created_at: at, label: { name: "agent-ready" }, actor: { login: "ntodd" } }],
     comments: async (n) => n === 7 ? comments : [], reviews: async () => [], threads: async () => [],
   };
@@ -69,6 +100,7 @@ test("worker context takes App identity from protected state across config chang
     repository: async () => ({ id: 42, default_branch: "main" }), fileAt: async () => ({ content: text }),
     branchSha: async (ref) => ref === "main" ? A : B, run: async () => ({ id: 100, run_attempt: 1, status: "in_progress" }),
     issue: async () => ({ number: 7, state: "open", title: "Fix it", body: "Accepted task", user: { login: "ntodd" } }),
+    pull: async () => ({ number: 9, state: "open", head: { sha: B, ref: "factory/issue-7", repo: { full_name: "ntodd/project" } }, base: { ref: "main" } }),
     editors: async () => [], events: async () => [{ id: 123, event: "labeled", created_at: at, label: { name: "agent-ready" }, actor: { login: "ntodd" } }],
     comments: async () => [], threads: async () => [], reviews: async (number) => number === 9 ? [{ id: 998, author: "actual-factory[bot]",
       body: "/agent respond more work", state: "CHANGES_REQUESTED", commitSha: B, lastEditedAt: null, createdAt: at }] : [],

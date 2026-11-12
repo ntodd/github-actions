@@ -52,6 +52,24 @@ test("known admission revocation fences a live owner, while an observation outag
   assert.equal(unknown.items["issue:7"].generation, 0);
 });
 
+test("a changed default-branch name retires or cancels old ownership even when its commit is identical", () => {
+  const main = { ref: "release", sha: "a".repeat(40) };
+  for (const state of [step(initial(), reserve()), ready()]) {
+    assert.equal(decide(state, facts({ main })).action.type, "supersede");
+  }
+  assert.equal(decide(claimed(), facts({ main, owner: { ...run, status: "in_progress", conclusion: null } })).action.type, "cancel-owner");
+  const unsupported = facts({ main, prs: [pr({ baseRef: "main", unsupported: true })], unsupportedStack: true });
+  const plan = decide(initial(), unsupported);
+  assert.equal(plan.action.type, "ask"); assert.match(plan.action.reason, /#9.*default branch.*release/);
+  assert.equal(plan.action.reason.includes("stack"), false);
+});
+
+test("retargeting a PR without changing its head retires or cancels its old operation", () => {
+  const changed = facts({ main: { ref: "main", sha: "a".repeat(40) }, prs: [pr({ baseRef: "release", unsupported: true })], unsupportedStack: true });
+  assert.equal(decide(ready(), changed).action.type, "supersede");
+  assert.equal(decide(claimed(), { ...changed, owner: { ...run, status: "in_progress", conclusion: null } }).action.type, "cancel-owner");
+});
+
 test("revoked admission preserves a pending publication and cannot readmit before its outcome is known", () => {
   const state = ingestCommands(pending(), "issue:7", [{ authority: "instruction", sourceId: "issue-comment:1001", revision: "e".repeat(64),
     author: "ntodd", createdAt: at, target: 7, command: { action: "build", text: "" } }]);

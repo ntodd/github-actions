@@ -11,6 +11,7 @@ module factory {
   type Publication = {
     op: int, generation: int, expectedGeneration: int, paused: bool, admitted: bool,
     head: int, expectedHead: int, base: int, expectedBase: int,
+    defaultRef: int, expectedDefaultRef: int,
     owner: int, resultOwner: int
   }
   type Merge = {
@@ -20,7 +21,7 @@ module factory {
   type State = {
     generation: int, paused: bool, admitted: bool, op: int, opGeneration: int,
     phase: str, target: int, owner: int, expectedHead: int,
-    expectedBase: int, attempts: int,
+    expectedBase: int, expectedDefaultRef: int, defaultRef: int, attempts: int,
     deliveries: Set[(int, int)], live: Set[(int, int)], running: Set[(int, int)],
     artifacts: Set[(int, int)], result: bool, resultOp: int, resultOwner: int, locked: bool,
     requested: bool, pending: bool, rejected: bool, requests: List[Publication],
@@ -38,7 +39,7 @@ module factory {
   action init = s' = {
     generation: 0, paused: false, admitted: true, op: 0, opGeneration: 0,
     phase: "idle", target: 1, owner: 0, expectedHead: 0,
-    expectedBase: 0, attempts: 0,
+    expectedBase: 0, expectedDefaultRef: 0, defaultRef: 0, attempts: 0,
     deliveries: Set(), live: Set(), running: Set(),
     artifacts: Set(), result: false, resultOp: 0, resultOwner: 0, locked: false,
     requested: false, pending: false, rejected: false, requests: List(),
@@ -55,6 +56,7 @@ module factory {
   val currentResult = all {
     s.result, s.resultOp == s.op, s.resultOwner == s.owner, s.owner != 0,
     s.opGeneration == s.generation, not(s.paused), s.admitted,
+    s.defaultRef == s.expectedDefaultRef,
     s.heads.get(s.target) == s.expectedHead,
     not(s.merged.contains(s.target))
   }
@@ -65,6 +67,7 @@ module factory {
     s' = { ...s, op: s.op + 1, opGeneration: s.generation,
       phase: "prepared", target: pr, owner: 0,
       expectedHead: s.heads.get(pr), expectedBase: s.main,
+      expectedDefaultRef: s.defaultRef,
       attempts: s.attempts + 1, result: false, resultOp: 0, resultOwner: 0,
       requested: false, pending: false, rejected: false }
   }
@@ -80,6 +83,7 @@ module factory {
     not(s.locked), s.deliveries.contains((op, runId)),
     op == s.op, s.phase == "prepared", s.owner == 0,
     not(s.paused), s.admitted, s.opGeneration == s.generation, (s.live.size() == 0),
+    s.defaultRef == s.expectedDefaultRef,
     s.heads.get(s.target) == s.expectedHead, not(s.merged.contains(s.target)),
     s' = { ...s, owner: runId, phase: "claimed", live: Set((op, runId)) }
   }
@@ -89,7 +93,7 @@ module factory {
   action abandonPrepared = all {
     not(s.locked), s.phase == "prepared", s.owner == 0, s.live.size() == 0,
     s.opGeneration == s.generation, s.heads.get(s.target) == s.expectedHead,
-    not(s.merged.contains(s.target)), s.main == s.expectedBase,
+    not(s.merged.contains(s.target)), s.main == s.expectedBase, s.defaultRef == s.expectedDefaultRef,
     s' = { ...s, phase: "superseded" }
   }
 
@@ -102,6 +106,7 @@ module factory {
   action startWorker = all {
     s.phase == "claimed", s.live.contains((s.op, s.owner)),
     (s.running.size() == 0), not(s.paused), s.opGeneration == s.generation,
+    s.defaultRef == s.expectedDefaultRef,
     s' = { ...s, running: s.live }
   }
 
@@ -173,7 +178,7 @@ module factory {
     not(s.locked), (s.live.size() == 0),
     Set("prepared", "result-ready").contains(s.phase),
     s.opGeneration != s.generation or s.heads.get(s.target) != s.expectedHead
-      or s.main != s.expectedBase or s.merged.contains(s.target),
+      or s.main != s.expectedBase or s.defaultRef != s.expectedDefaultRef or s.merged.contains(s.target),
     s' = { ...s, phase: "superseded", staleSeen: true }
   }
 
@@ -204,6 +209,7 @@ module factory {
         generation: s.generation, expectedGeneration: s.opGeneration,
         paused: s.paused, admitted: s.admitted, head: s.heads.get(s.target), expectedHead: s.expectedHead,
         base: s.main, expectedBase: s.expectedBase,
+        defaultRef: s.defaultRef, expectedDefaultRef: s.expectedDefaultRef,
         owner: s.owner, resultOwner: s.resultOwner }) }
   }
 
@@ -223,6 +229,7 @@ module factory {
         generation: s.generation, expectedGeneration: s.opGeneration,
         paused: s.paused, admitted: s.admitted, head: s.heads.get(s.target), expectedHead: s.expectedHead,
         base: s.main, expectedBase: s.expectedBase,
+        defaultRef: s.defaultRef, expectedDefaultRef: s.expectedDefaultRef,
         owner: s.owner, resultOwner: s.resultOwner }) }
   }
 
@@ -277,6 +284,10 @@ module factory {
   }
 
   action mainMoves = s' = { ...s, main: s.main + 1 }
+
+  // Repository policy can change while a publisher holds its own lock. The
+  // branch name may change independently of the base commit's identity.
+  action defaultBranchChanges = s' = { ...s, defaultRef: s.defaultRef + 1 }
 
   action approve(pr: int): bool = all {
     not(s.merged.contains(pr)),
@@ -333,7 +344,7 @@ module factory {
     rejectRacedPublish,
     nondet pr = PRS.oneOf()
     humanPush(pr),
-    mainMoves,
+    mainMoves, defaultBranchChanges,
     nondet pr = PRS.oneOf()
     approve(pr),
     nondet check = s.checks.oneOf()
@@ -374,6 +385,7 @@ module factory {
   val boundedAttempts = s.attempts <= BUDGET and s.op == s.attempts
   val authorizedPublishRequests = s.requests.indices().map(i => s.requests.nth(i)).forall(p => all {
     p.generation == p.expectedGeneration, not(p.paused), p.admitted,
+    p.defaultRef == p.expectedDefaultRef,
     p.head == p.expectedHead,
     p.owner == p.resultOwner, p.owner != 0
   })
@@ -561,4 +573,22 @@ module factory {
     .then(authorizePublish).then(push).then(crashPublisher).then(revokeAdmission)
     .then(applyPush).then(recoverPublished)
     .expect(not(s.admitted) and s.receipts == Set(1) and s.attempts == 1 and safety)
+
+  run defaultBranchChangeFencesClaimTest = init.then(reserve(1)).then(dispatch(1))
+    .then(defaultBranchChanges).then(claim(1, 1)).fail()
+
+  run defaultBranchChangeFencesStartTest = init.then(reserve(1)).then(dispatch(1)).then(claim(1, 1))
+    .then(defaultBranchChanges).then(startWorker).fail()
+
+  run defaultBranchChangeFencesPublishTest = init.then(resultFor(1))
+    .then(authorizePublish).then(defaultBranchChanges).then(push).fail()
+
+  run defaultBranchChangeReplansTest = init.then(reserve(1)).then(dispatch(1)).then(defaultBranchChanges)
+    .then(discardStale).then(reserve(1)).then(dispatch(2)).then(claim(2, 2))
+    .expect(s.owner == 2 and s.expectedDefaultRef == s.defaultRef and s.main == 0 and safety)
+
+  run defaultBranchChangeRecoversSentPushTest = init.then(resultFor(1))
+    .then(authorizePublish).then(push).then(crashPublisher).then(defaultBranchChanges)
+    .then(applyPush).then(recoverPublished)
+    .expect(s.receipts == Set(1) and s.requests.length() == 1 and s.main == 0 and safety)
 }
