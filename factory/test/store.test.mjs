@@ -60,6 +60,41 @@ const setup = async () => {
   return { git, store };
 };
 
+test("ledger reads report GET counts for one item and 200 historical operations", async (t) => {
+  for (const operations of [0, 200]) {
+    const { git, store } = await setup();
+    let state = initial();
+    if (operations) {
+      const prototype = evolve(state, "issue:7", reserve());
+      state = structuredClone(prototype); state.operations = {}; state.items["issue:7"].attempts = [];
+      for (let i = 1; i <= operations; i++) {
+        const id = `op-${i}`, at = new Date(Date.UTC(2026, 10, 12) - i * 86400000).toISOString();
+        state.operations[id] = { ...structuredClone(prototype.operations["op-1"]), id, phase: "superseded", createdAt: at };
+        state.items["issue:7"].attempts.push({ operation: id, automatic: true, kind: "coding", at });
+        state.items["issue:7"].activeOperation = id;
+      }
+    }
+    await store.transact(() => state);
+    const requests = [];
+    const measured = stateStore({ repositoryId: "42", git: githubData({ token: "read-only", repo: "ntodd/project", fetch: async (url, init) => {
+      assert.equal(init.method, "GET"); requests.push(url);
+      const path = new URL(url).pathname.split("/git/")[1];
+      const [kind, id] = path.split("/");
+      const value = kind === "ref" ? { object: { sha: git.refs.get("factory-state") } }
+        : kind === "commits" ? git.commits.get(id) : kind === "trees" ? git.trees.get(id)
+          : kind === "blobs" ? { encoding: "base64", content: git.blobs.get(id).toString("base64") } : assert.fail(path);
+      return Response.json(value);
+    } }) });
+    assert.equal(Object.keys((await measured.load()).state.operations).length, operations);
+    const loadCount = requests.length;
+    assert.equal(loadCount, 5 + operations);
+    requests.length = 0;
+    await measured.transact((s) => s);
+    assert.equal(requests.length, loadCount);
+    t.diagnostic(`1 item, ${operations} operations: load=${loadCount} GETs; no-op transact=${requests.length} GETs`);
+  }
+});
+
 test("setup makes an independent data branch; load never recreates lost state", async () => {
   const git = fakeGit(), store = stateStore({ git, repositoryId: "42" });
   await assert.rejects(store.load(), (e) => e.code === "corrupt");
