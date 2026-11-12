@@ -130,6 +130,18 @@ test("object size limits apply before a proposal can be pushed", async (t) => {
   await assert.rejects(writer.validate(proposal.effects[0], f.op), /limits/);
 });
 
+test("reachable base history does not count against proposal object limits", async (t) => {
+  const f = fixture(t), base = f.commit("history.txt", "x".repeat(8192));
+  f.git(["push", "--quiet", f.remote, "HEAD:refs/heads/main", "HEAD:refs/heads/factory/issue-7"]);
+  f.op.base.sha = base; f.op.target.head = base;
+  f.commit(); const proposal = f.exportIt();
+  const writer = cleanGitWriter({ remote: f.remote, allowLocal: true, bundleFile: join(f.artifact, "proposal.bundle"),
+    limits: { maxBlobBytes: 1024, maxObjectBytes: 4096 } });
+  t.after(() => writer.dispose());
+  await writer.validate(proposal.effects[0], f.op);
+  assert.equal((await writer.apply(proposal.effects[0], f.op)).outcome, "applied");
+});
+
 test("clean update merges two recorded histories in a fresh bare repository without executing project hooks", (t) => {
   const f = fixture(t), prHead = f.commit("pr.txt", "PR change\n");
   f.git(["push", "--quiet", f.remote, "HEAD:refs/heads/factory/issue-7"]);

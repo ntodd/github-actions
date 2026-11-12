@@ -57,7 +57,7 @@ export function cleanGitWriter({ remote, readToken, writeToken, bundleFile, allo
   function fetchRemote(commits) {
     const distinct = [...new Set(commits)];
     if (!distinct.every((s) => SHA.test(s))) throw new Error("Invalid fetch target");
-    run(["fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", remote, ...distinct], { token: readToken, remote });
+    run(["fetch", "--quiet", "--depth=256", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", remote, ...distinct], { token: readToken, remote });
   }
   function head(branch) {
     if (!validBranch(branch)) throw new Error("Invalid branch");
@@ -70,14 +70,21 @@ export function cleanGitWriter({ remote, readToken, writeToken, bundleFile, allo
   function entry(commit, path) {
     return run(["ls-tree", "-z", commit, "--", path]).stdout.toString("hex");
   }
-  function validateObjects() {
+  function validateObjects(op, effect) {
+    const objects = text(run(["rev-list", "--objects", "--no-object-names", effect.commit, "--not", op.target.head ?? op.base.sha, op.base.sha]));
     let total = 0, count = 0;
-    for (const line of text(run(["cat-file", "--batch-all-objects", "--batch-check=%(objecttype) %(objectsize)"])).split("\n")) {
+    for (const line of text(run(["cat-file", "--batch-check=%(objecttype) %(objectsize)"], { input: `${objects}\n` })).split("\n")) {
       if (!line) continue;
       const [kind, rawSize] = line.split(" "), size = Number(rawSize);
       if (!Number.isSafeInteger(size) || size < 0 || !["blob", "tree", "commit", "tag"].includes(kind)) throw new Error("Invalid Git object");
       total += size; count++;
       if (count > 100000 || total > maxTotal || (kind === "blob" && size > maxBlob)) throw new Error("Proposal exceeds Git object limits");
+    }
+    total = 0; count = 0;
+    for (const line of text(run(["cat-file", "--batch-all-objects", "--batch-check=%(objectsize)"])).split("\n")) {
+      if (!line) continue;
+      const size = Number(line);
+      if (!Number.isSafeInteger(size) || size < 0 || ++count > 1000000 || (total += size) > (limits.maxHistoryObjectBytes ?? 2 * 1024 * 1024 * 1024)) throw new Error("Fetched history exceeds Git object limits");
     }
   }
   function importBundle(op, effect) {
@@ -90,7 +97,7 @@ export function cleanGitWriter({ remote, readToken, writeToken, bundleFile, allo
     run(["bundle", "verify", resolve(bundleFile)]);
     run(["fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", resolve(bundleFile), `${ref}:refs/factory/imported`]);
     run(["fsck", "--strict", "--no-reflogs"]);
-    validateObjects();
+    validateObjects(op, effect);
     imported = effect.commit;
   }
   return {
