@@ -44,11 +44,11 @@ export function verifyAncestry(run, ancestor, descendant) {
 }
 
 export function cleanGitWriter({ remote, readToken, writeToken, bundleFile, allowLocal = false,
-  limits = {}, temporaryRoot = tmpdir() }) {
+  limits = {}, temporaryRoot = tmpdir(), binary = "/usr/bin/git" }) {
   const url = new URL(remote, "file:///");
   if (!(url.protocol === "https:" && !url.username && !url.password) && !(allowLocal && (remote.startsWith("/") || url.protocol === "file:"))) throw new Error("Unsupported Git remote");
   const directory = mkdtempSync(join(temporaryRoot, "factory-publisher-"));
-  const run = (args, options = {}) => gitCommand(directory, args, options);
+  const run = (args, options = {}) => gitCommand(directory, args, { binary, ...options });
   run(["init", "--bare", "--quiet", "."]);
   const maxBlob = limits.maxBlobBytes ?? 25 * 1024 * 1024;
   const maxTotal = limits.maxObjectBytes ?? 200 * 1024 * 1024;
@@ -137,8 +137,8 @@ export function cleanGitWriter({ remote, readToken, writeToken, bundleFile, allo
       if (result.status === 0) return { outcome: "applied", evidence: { kind: "branch-head", commit: effect.commit } };
       // A Git protocol rejection is definitive for this request. A disconnected
       // transport may have applied the write; preserve its unknown outcome.
-      if (result.stdout.toString("utf8").split("\n").some((line) => line.startsWith("!\t"))) {
-        return { outcome: "rejected", evidence: { kind: "git-rejection", status: 409 } };
+      if (/\[(?:remote )?rejected\]/.test(`${result.stdout}\n${result.stderr}`)) {
+        return { outcome: "rejected", evidence: { kind: "git-rejection" } };
       }
       return { outcome: "unknown" };
     },

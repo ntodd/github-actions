@@ -55,6 +55,27 @@ test("a human push after validation is protected by the expected-head lease", as
   assert.notEqual(human, proposed);
 });
 
+test("only explicit Git rejection reports prove a push was rejected", async (t) => {
+  const f = fixture(t); f.commit(); const proposal = f.exportIt();
+  const binary = join(f.root, "git"), stderr = join(f.root, "push-stderr");
+  writeFileSync(binary, `#!/bin/sh
+for arg in "$@"; do
+  if [ "$arg" = push ]; then
+    printf '!\\trefs/heads/x\\n'
+    cat '${stderr}' >&2
+    exit 1
+  fi
+done
+exec /usr/bin/git "$@"
+`, { mode: 0o755 });
+  const writer = cleanGitWriter({ remote: f.remote, allowLocal: true, bundleFile: join(f.artifact, "proposal.bundle"), binary });
+  t.after(() => writer.dispose());
+  writeFileSync(stderr, "! [remote failure] remote failed to report status\n");
+  assert.equal((await writer.apply(proposal.effects[0], f.op)).outcome, "unknown");
+  writeFileSync(stderr, "! [remote rejected] hook declined\n");
+  assert.deepEqual(await writer.apply(proposal.effects[0], f.op), { outcome: "rejected", evidence: { kind: "git-rejection" } });
+});
+
 test("rewritten ancestry, a wrong advertised commit and workflow changes are rejected", async (t) => {
   const f = fixture(t);
   f.commit(".github/workflows/unsafe.yml", "name: unsafe\n");

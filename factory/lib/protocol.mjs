@@ -272,7 +272,8 @@ export function validateLedger(s) {
         && (effect.status !== "applied" || validReceipt(effect, effect.receipt)), "corrupt", `Malformed publish effect ${id}`);
       requireThat(effect.status !== "pending" || op.phase === "publishing", "corrupt", `Unresolved write lost ownership: ${id}`);
       if (effect.lastRejection !== undefined) requireThat(object(effect.lastRejection)
-        && ["http-rejection", "git-rejection"].includes(effect.lastRejection.kind) && [400, 401, 403, 404, 409, 410, 422].includes(effect.lastRejection.status)
+        && (effect.lastRejection.kind === "git-rejection" || effect.lastRejection.kind === "http-rejection"
+          && [400, 401, 403, 404, 409, 410, 422].includes(effect.lastRejection.status))
         && effect.requests.some((r) => r.id === effect.lastRejection.requestId) && Number.isFinite(Date.parse(effect.lastRejection.at)),
         "corrupt", `Invalid publish rejection receipt for ${id}`);
     }
@@ -825,10 +826,10 @@ export function evolve(ledger, key, event) {
             acceptedClosure: false, mergedSha: event.evidence.state === "merged" ? event.evidence.mergedSha : null });
         }
       } else {
-        requireThat(event.outcome === "rejected" && ["http-rejection", "git-rejection"].includes(event.evidence?.kind)
-          && [400, 401, 403, 404, 409, 410, 422].includes(event.evidence.status), "unknown", "A timeout or unchanged head does not establish rejection");
+        requireThat(event.outcome === "rejected" && (event.evidence?.kind === "git-rejection" || event.evidence?.kind === "http-rejection"
+          && [400, 401, 403, 404, 409, 410, 422].includes(event.evidence.status)), "unknown", "A timeout or unchanged head does not establish rejection");
         effect.status = "rejected";
-        effect.lastRejection = { kind: event.evidence.kind, status: event.evidence.status, requestId: event.requestId, at: time(event.at) };
+        effect.lastRejection = { kind: event.evidence.kind, ...(event.evidence.status === undefined ? {} : { status: event.evidence.status }), requestId: event.requestId, at: time(event.at) };
       }
       break;
     }
