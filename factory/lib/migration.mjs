@@ -110,10 +110,11 @@ export async function planMigration({ api, state, context, toolingSha, items = [
         || !validBranch(pr.head?.ref) || !validBranch(pr.base?.ref) || pr.head?.repo?.full_name?.toLowerCase() !== context.repo.toLowerCase()
         || pr.head.ref === "factory-state" || pr.head.ref === context.defaultBranch
         || choice.issue && pr.user?.login?.toLowerCase() !== state.factoryApp.login
-        || pr.base.ref !== context.defaultBranch || pr.merged_at && !sha(pr.merge_commit_sha)) throw new Error(`PR #${number} is not verified same-repository legacy work into the current default branch; retarget unsupported work before import`);
+        || pr.merged_at && !sha(pr.merge_commit_sha)) throw new Error(`PR #${number} is not verified same-repository legacy work with valid branch and commit identities`);
       const closes = choice.issue ? await api.closingIssues(number, pr.head.sha) : [];
       if (!Array.isArray(closes) || closes.some((i) => i.number !== choice.issue || i.repository?.toLowerCase() !== context.repo.toLowerCase())) throw new Error(`PR #${number} would close work outside issue #${choice.issue}; correct its legacy references before migration`);
-      prs.push({ number, required: true, state: pr.merged_at ? "merged" : pr.state, mergedSha: pr.merged_at ? pr.merge_commit_sha : null, acceptedClosure: false });
+      prs.push({ number, required: true, state: pr.merged_at ? "merged" : pr.state, mergedSha: pr.merged_at ? pr.merge_commit_sha : null,
+        ...(pr.merged_at ? { mergeBase: pr.base.ref } : {}), acceptedClosure: false });
       snapshots.push({ number, head: pr.head.sha, branch: pr.head.ref, base: pr.base.ref, baseSha: pr.base.sha,
         contentRevision: revisionOf(pr), state: pr.merged_at ? "merged" : pr.state, mergedSha: pr.merged_at ? pr.merge_commit_sha : null });
     }
@@ -126,7 +127,7 @@ export async function planMigration({ api, state, context, toolingSha, items = [
     const blocked = labels.some((l) => ["agent-blocked", "agent-conflict", "agent-working"].includes(l.name ?? l));
     const unsupported = snapshots.some((p) => p.base !== context.defaultBranch) || snapshots.filter((p) => p.state === "open").length > 1;
     const disposition = choice.disposition === "continue" && unsupported ? "question" : choice.disposition;
-    const reason = choice.reason ?? (unsupported ? `Legacy PRs ${snapshots.map((p) => `#${p.number}`).join(", ")} need explicit stack/base handling before work resumes.`
+    const reason = choice.reason ?? (unsupported ? `Legacy PRs ${snapshots.map((p) => `#${p.number} (base ${p.base})`).join(", ")} need explicit stack/base handling before work resumes.`
       : disposition === "continue" ? "Existing PR membership was explicitly accepted for reconciliation. Migration started no worker or replacement build."
       : blocked ? "Legacy work was blocked or interrupted. Its label does not establish whether it needs a decision or a retry; clarify before continuing the recorded PRs."
         : choice.pr ? "Legacy maintenance is recorded. Request a fresh /agent update or /agent resolve if more work is needed."

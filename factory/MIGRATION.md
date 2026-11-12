@@ -26,10 +26,12 @@ Each selected issue must still pass admission using its original trusted
 label or build/restart command. `source` can select a specific source such
 as `label:123`. The importer verifies App authorship and repository/head
 identity for each mapped PR. Closing references to another issue must be
-corrected before import. PRs targeting another branch require explicit
-retargeting before this importer accepts them. Multiple PRs into the default
-branch are represented together and held for clarification while stack
-maintenance remains unavailable.
+corrected before import. Existing App PRs targeting another branch are
+recorded with their actual head and base snapshots. Multiple open PRs or
+off-default bases turn `continue` into a question; import never retargets
+them or starts stack maintenance. A reviewed `stop` remains a pause. Merged
+PRs retain their actual merge SHA and base; completion still needs verified
+default-branch coverage or an explicit accepted alternative.
 
 Choose a disposition for each item:
 

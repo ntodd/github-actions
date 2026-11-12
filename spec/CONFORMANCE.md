@@ -418,6 +418,11 @@ and protected state are reobserved. A trusted operator's explicit cutover
 retains legacy commands as history, preserves merged outcomes and records
 pauses or questions without allocating an operation. Existing factory history
 is preserved; uncertain legacy ownership is not reconstructed from PR prose.
+Existing App stacks retain off-default bases in their snapshots and import
+as questions rather than requiring a retarget before they can be represented.
+An explicit pause remains paused; actual merged bases do not certify default
+landing. Stack import, stale-base plans and unsupported-command consumption
+have JavaScript regressions; bottom-up stack execution remains unavailable.
 Migration and entry-process scenarios cover stale facts, state conflicts,
 response loss, legacy isolation, human PR maintenance, provenance and the
 absence of worker outputs. The entry process requests only contents write

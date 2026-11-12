@@ -83,11 +83,45 @@ test("migration with missing PRs or ambiguous legacy labels asks instead of star
   assert.equal(next.action, null); assert.deepEqual(f.state.operations, {});
 });
 
-test("a reviewed stop disposition persists a pause with the existing membership", async () => {
-  const f = fixture(), plan = await f.plan([{ issue: 7, prs: [9], disposition: "stop" }]);
+test("existing off-default stacks import as visible questions without starting work or requiring a retarget", async () => {
+  const f = fixture(); f.human.user.login = app.login; f.human.base = { ref: f.pr.head.ref, sha: B };
+  const plan = await f.plan([{ issue: 7, prs: [9, 12], disposition: "continue" }]);
+  assert.equal(f.writes, 0); assert.equal(plan.selected[0].disposition, "question");
+  assert.match(plan.selected[0].reason, /#12.*base agent-ready\/issue-7/);
+  assert.equal((await f.execute(plan.applyRequest)).status, "imported");
+  const item = f.state.items["issue:7"];
+  assert.deepEqual(item.prs.map((p) => p.number), [9, 12]);
+  assert.deepEqual(item.migration.prs.map((p) => [p.number, p.branch, p.base, p.head, p.baseSha]),
+    [[9, "agent-ready/issue-7", "main", B, A], [12, "human", "agent-ready/issue-7", C, B]]);
+  assert.equal(item.question.reason, plan.selected[0].reason);
+  assert.deepEqual(item.attempts, []); assert.deepEqual(f.state.operations, {}); assert.equal(item.activeOperation, null);
+  assert.match(projectItem(f.state, "issue:7")[0].body, /#12.*base agent-ready\/issue-7/);
+  const next = decideItem(f.state, "issue:7", { authorization: { valid: true, revision: item.revision }, feedback: [], unsupportedStack: true,
+    main: { ref: "main", sha: A }, prs: [{ number: 9, state: "open", headSha: B, baseRef: "main" },
+      { number: 12, state: "open", headSha: C, baseRef: f.pr.head.ref, unsupported: true }] }, f.context.config, { now: at });
+  assert.equal(next.action, null); assert.equal(next.status.state, "agent-needs-you"); assert.equal(f.writes, 1);
+});
+
+test("retargeted merged legacy work retains its actual merge base and cannot claim default-branch completion", async () => {
+  const f = fixture(); f.pr.base.ref = "feature"; f.pr.state = "closed"; f.pr.merged_at = at; f.pr.merge_commit_sha = C;
+  const plan = await f.plan(); assert.equal(plan.selected[0].disposition, "question");
   await f.execute(plan.applyRequest);
-  assert.equal(f.state.items["issue:7"].paused, true); assert.equal(f.state.items["issue:7"].generation, 1);
-  assert.equal(f.state.items["issue:7"].prs[0].number, 9); assert.equal(f.state.items["issue:7"].attempts.length, 0);
+  const item = f.state.items["issue:7"], pr = item.prs[0];
+  assert.equal(pr.mergeBase, "feature"); assert.equal(pr.mergedSha, C); assert.equal(pr.defaultLanding, undefined);
+  assert.equal(item.complete, false); assert.deepEqual(item.attempts, []);
+  const next = decideItem(f.state, "issue:7", { authorization: { valid: true, revision: item.revision }, feedback: [],
+    main: { ref: "main", sha: A }, prs: [{ number: 9, state: "merged", mergedSha: C, baseRef: "feature" }] }, f.context.config, { now: at });
+  assert.equal(next.action.type, "ask"); assert.match(next.action.reason, /feature.*default-branch coverage is unverified/);
+});
+
+test("a reviewed stop disposition persists a pause with the existing membership", async () => {
+  for (const base of ["main", "feature"]) {
+    const f = fixture(); f.pr.base.ref = base;
+    const plan = await f.plan([{ issue: 7, prs: [9], disposition: "stop" }]);
+    await f.execute(plan.applyRequest);
+    assert.equal(f.state.items["issue:7"].paused, true); assert.equal(f.state.items["issue:7"].generation, 1);
+    assert.equal(f.state.items["issue:7"].prs[0].number, 9); assert.equal(f.state.items["issue:7"].attempts.length, 0);
+  }
 });
 
 test("migration recovers a lost state response without repeating the import or changing later work", async () => {
@@ -101,6 +135,7 @@ test("migration recovers a lost state response without repeating the import or c
 test("stale migration digests cannot accept changed heads, prose, issue revisions, sources or conversation", async () => {
   for (const change of [
     (f) => { f.pr.head.sha = C; }, (f) => { f.pr.body = "Changed PR scope"; }, (f) => { f.issue.body = "Revised task"; },
+    (f) => { f.pr.base.ref = "feature"; }, (f) => { f.pr.base.sha = C; },
     (f) => { f.env.FACTORY_TOOLING_SHA = C; },
     (f) => { f.events[0].actor.login = "untrusted"; },
     (f) => { f.comments.get(7).push({ id: 51, body: "/agent stop", user: { login: "ntodd" }, created_at: at, updated_at: at }); },
@@ -124,7 +159,7 @@ test("untrusted edits, foreign branches, another App and unrelated closing refer
   for (const change of [
     (f) => { f.api.editors = async () => ["untrusted"]; }, (f) => { f.pr.head.repo.full_name = "someone/fork"; },
     (f) => { f.pr.user.login = "another-app[bot]"; },
-    (f) => { f.pr.base.ref = "feature-stack"; },
+    (f) => { f.pr.base.ref = "../invalid"; },
     (f) => { f.pr.head.ref = "factory-state"; },
     (f) => { f.api.closingIssues = async () => [{ number: 8, repository: "ntodd/project" }]; },
     (f) => { f.api.closingIssues = async () => [{ number: 7, repository: "someone/project" }]; },
