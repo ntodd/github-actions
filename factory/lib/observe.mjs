@@ -163,7 +163,7 @@ export async function observeItem({ api, actions, ledger, key, context, rules })
     try { baseline = pr.base.ref === context.defaultBranch ? await baseChecks(api, base, required, context, cache) : null; }
     catch { baseline = null; }
     for (const bot of context.config.reviewBots) if (!prFeedback.some((f) => f.authority === "signal" && f.sourceId.startsWith("review:")
-      && f.author.replace(/\[bot\]$/, "") === bot.replace(/\[bot\]$/, "") && f.head === head)) pending.push(`review:${bot}`);
+      && f.author === bot && f.head === head)) pending.push(`review:${bot}`);
     const apiReruns = [];
     for (const effect of Object.values(item.apiEffects ?? {}).filter((e) => e.definition.kind === "ci-rerun"
       && e.definition.target === pr.number && e.definition.payload.head === head && e.status !== "superseded")) {

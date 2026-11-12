@@ -66,6 +66,13 @@ test("trusted unedited text is instructions; configured bot reviews remain signa
   assert.equal(classifyText({ id: 1, body: "fix", author: "ntodd", lastEditedAt: null }, "review-comment", config).authority, "instruction");
 });
 
+test("a review bot's exact login cannot authorize a similarly named human", () => {
+  for (const kind of ["issue-comment", "review"]) {
+    assert.equal(classifyText(comment(1, "fix", "reviewer"), kind, config).authority, "data");
+    assert.equal(classifyText(comment(1, "fix", "reviewer[bot]"), kind, config).authority, "signal");
+  }
+});
+
 test("the verified factory App is always data even when configured as a review bot or accidentally trusted", () => {
   const identity = "actual-factory[bot]";
   const bound = { ...withFactoryApp(parseConfig("trusted-users: [ntodd]\nhandle: unrelated\nreview-bots: ['actual-factory[bot]', 'reviewer[bot]']"), identity),

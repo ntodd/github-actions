@@ -11,6 +11,16 @@ const config = parseConfig("trusted-users: [ntodd]\nsignals:\n  - check: scan\n 
 const rules = [{ type: "required_status_checks", parameters: { required_status_checks: [{ context: "CI", integration_id: 1 }] } }];
 const check = (extra = {}) => ({ id: 1, name: "CI", app: { id: 1 }, head_sha: B, started_at: at, status: "completed", conclusion: "success", ...extra });
 const raw = (sha, checks = []) => ({ sha, checkRuns: checks, statuses: [] });
+
+test("a human review cannot satisfy a configured App review gate", async () => {
+  const f = fixture();
+  f.context.config = { ...config, reviewBots: ["reviewer[bot]"] };
+  f.api.fileAt = async () => ({ content: "trusted-users: [ntodd]\nreview-bots: ['reviewer[bot]']" });
+  f.api.reviews = async (n) => n === 9 ? [{ id: 9, body: "looks fine", author: "reviewer", state: "APPROVED", commit_id: B, lastEditedAt: null, created_at: at }] : [];
+  assert.ok((await f.observe()).prs[0].signals.pending.includes("review:reviewer[bot]"));
+  f.api.reviews = async (n) => n === 9 ? [{ id: 9, body: "looks fine", author: "reviewer[bot]", state: "APPROVED", commit_id: B, lastEditedAt: null, created_at: at }] : [];
+  assert.equal((await f.observe()).prs[0].signals.pending.includes("review:reviewer[bot]"), false);
+});
 function fixture() {
   let comments = [];
   const ledger = claimed();

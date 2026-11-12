@@ -55,7 +55,7 @@ export function classifyText(fact, kind, config, { target, thread, state, head }
   const author = actor(fact);
   const trustedEdits = Array.isArray(fact.editors) && fact.editors.length > 0 && fact.editors.every((editor) => trustedHuman(config, editor));
   const trusted = trustedHuman(config, author) && (unedited(fact) || trustedEdits);
-  const bot = author !== config.factoryAppLogin && config.reviewBots.some((b) => b.replace(/\[bot\]$/, "") === author.replace(/\[bot\]$/, ""));
+  const bot = author !== config.factoryAppLogin && config.reviewBots.some((b) => b === author);
   const revision = fingerprint([body, state ?? fact.state ?? null, head ?? fact.commit_id ?? null,
     fact.lastEditedAt ?? fact.updated_at ?? fact.updatedAt ?? fact.created_at ?? null]);
   return { sourceId: `${kind}:${sourceId}`, revision, body, author, target, thread,
