@@ -205,24 +205,25 @@ export function surfaceService({ api, write, store, repo, appLogin, run, now = (
   }
   async function handover({ key, number, head, context, readyOnly = false }) {
     const item = await currentItem(key);
-    if (item.evidence.own) return { status: "applied" };
     const binding = { generation: item.generation, revision: item.revision };
     const pr = await preflightRead({ store, key, item, kind: "ready", target: number, stage: "plan", guard: binding, now, read: () => api.pull(number) });
-    if (!own(pr) || pr.state !== "open" || pr.head.sha !== head) return { status: "superseded" };
+    if ((!item.evidence.own && !own(pr)) || pr.state !== "open" || pr.head.sha !== head) return { status: "superseded" };
     const definition = { kind: "ready", target: number, payload: { head, nodeId: pr.node_id },
       guard: { generation: item.generation, revision: item.revision } };
     const guard = async () => {
-      if (!await workGuard(key, definition)) return false;
+      // Human maintenance needs a work observation, without a metadata intent.
+      if (!await workGuard(key, item.evidence.own ? { target: number, payload: { head }, guard: binding } : definition)) return false;
       const { state } = await store.load(), latest = { ...await loadConfig(api), repo };
       const active = state.operations[state.items[key].activeOperation];
       if (active && !["done", "failed", "superseded"].includes(active.phase)) return false;
       const facts = await observeItem({ api, actions: null, ledger: state, key, context: latest, rules: await api.branchRules(latest.defaultBranch), now, landingLimit: 0 });
       const current = facts.prs.find((p) => p.number === number);
       return !current?.unsupported && current?.headSha === head && current.checks?.state === "success" && current.mergeable === "MERGEABLE"
-        && (readyOnly || !current.signals?.pending?.length) && !(current.feedback ?? []).some((f) => f.requiresResponse
-          && ["instruction", "signal"].includes(f.authority) && state.items[key].feedback?.[f.sourceId] !== f.revision);
+        && (item.evidence.own || (readyOnly || !current.signals?.pending?.length) && !(current.feedback ?? []).some((f) => f.requiresResponse
+          && ["instruction", "signal"].includes(f.authority) && state.items[key].feedback?.[f.sourceId] !== f.revision));
     };
     if (!await preflightRead({ store, key, item, kind: "ready", target: number, stage: "guard", guard: binding, now, read: guard })) return { status: "superseded" };
+    if (item.evidence.own) return { status: "applied" };
     const ready = await execute(key, `ready:${number}:${head}:${item.generation}`, definition, guard);
     if (ready.status !== "applied" || readyOnly) return ready;
     return requestReview(key, number, head, `handover-review:${number}:${head}:${item.generation}`, context, guard);

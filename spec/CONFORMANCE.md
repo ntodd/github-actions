@@ -199,6 +199,12 @@ command acknowledgements, question occurrences, draft hand-over, review
 requests and revalidation before close-out. None of these API effects is in
 the bounded Quint model. They must not be presented as formally modeled or
 as live GitHub integration evidence.
+Handover scenarios bind both readiness actions to the head observed during
+planning. A later push cannot be substituted by the action runner. Human-PR
+maintenance revalidates authorization, current-head CI, the default branch
+and terminal ownership before recording handover, without acting on the
+person's review threads or creating metadata effects. These checks are also
+outside the model's merge-policy abstraction and need live sandbox validation.
 CI-rerun scenarios bind the original run, attempt and commit, recover a lost
 response from the next observed attempt, and keep queued/running reruns as
 external waits. These also remain outside the bounded model.

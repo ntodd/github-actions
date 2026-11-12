@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { surfaceService, projectItem } from "../lib/surfaces.mjs";
-import { validateLedger, evolve } from "../lib/protocol.mjs";
+import { validateLedger, evolve, revisionOf } from "../lib/protocol.mjs";
 import { ingestCommands, applyControls, resolveRoute } from "../lib/commands.mjs";
 import { classifyText, classifyLabel } from "../lib/admission.mjs";
 import { parseConfig } from "../lib/config.mjs";
@@ -290,6 +290,34 @@ test("handover marks an agent PR ready and requests review once, while an own PR
   await own.store.transact((s) => { s.items["issue:7"].evidence.own = true; return s; });
   await own.service().handover({ ...args, context: own.context });
   assert.equal(own.writes.length, 0); assert.equal(own.pr.draft, true);
+});
+
+test("human PR handover revalidates authority, head and CI without changing its metadata or review threads", async () => {
+  for (const change of ["none", "head", "checks", "authority", "default", "active"]) {
+    const f = fixture();
+    Object.assign(f.pr, { title: "Fix it", body: "Accepted task", user: { login: "ntodd" } });
+    const command = await f.command("/agent update");
+    await f.store.transact((state) => {
+      const item = state.items["issue:7"]; delete state.items["issue:7"];
+      item.key = "pr:9"; item.revision = revisionOf(f.pr);
+      item.evidence = { own: true, sourceId: command.sourceId, revision: command.revision, actor: "ntodd" };
+      state.items["pr:9"] = item; return state;
+    });
+    f.api.reviews = async () => [{ id: 77, body: "Please revise", user: { login: "ntodd" }, state: "CHANGES_REQUESTED", commitSha: B }];
+    const thread = { id: "T1", isResolved: false, comments: [{ id: 78, nodeId: "RC_78", body: "Discuss this", user: { login: "ntodd" }, created_at: at, updated_at: at }] };
+    const originalThread = structuredClone(thread); f.api.threads = async () => [thread];
+    if (change === "head") f.pr.head.sha = C;
+    if (change === "checks") f.api.checks = async (sha) => ({ sha, statuses: [], checkRuns: [{ id: 1, head_sha: sha, name: "CI", app: { id: 1 }, status: "completed", conclusion: "failure" }] });
+    if (change === "authority") f.api.fileAt = async () => ({ content: "trusted-users: [someone-else]" });
+    if (change === "default") f.api.repository = async () => ({ id: 42, default_branch: "release" });
+    if (change === "active") await f.store.transact((state) => evolve(state, "pr:9", { type: "reserve", id: "op-1", mode: "update",
+      revision: state.items["pr:9"].revision, target: { number: 9, branch: f.pr.head.ref, head: B }, base: { ref: "main", sha: A },
+      toolingSha: A, configSha: A, commandIds: [command.id], automatic: false, at }));
+    const before = structuredClone(f.pr);
+    const result = await f.service().handover({ key: "pr:9", number: 9, head: B, context: f.context });
+    assert.equal(result.status, change === "none" ? "applied" : "superseded", change);
+    assert.deepEqual(f.writes, []); assert.deepEqual(f.pr, before); assert.deepEqual(thread, originalThread);
+  }
 });
 
 test("a PR on a former default is not handed over or admitted for another CI rerun", async () => {

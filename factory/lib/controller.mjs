@@ -250,6 +250,10 @@ export async function runController({ api, write, store, actions, repo, toolingS
         }
         case "handover": {
           const pr = await api.pull(action.pr);
+          if (pr.state !== "open" || pr.head.sha !== action.head) {
+            outcomes.push({ key, action: action.type, status: "waiting", reason: "The PR state or head changed after planning; reobserve before handover" });
+            continue;
+          }
           const handed = !surfaces || (await surfaces.handover({ key, number: action.pr, head: pr.head.sha, context })).status === "applied";
           if (handed && pr.state === "open") await save(key, { type: "hand-over", number: pr.number, head: pr.head.sha });
           break;
@@ -257,6 +261,10 @@ export async function runController({ api, write, store, actions, repo, toolingS
         case "ready-for-bots": {
           if (!surfaces) throw new Error("The ready-for-review adapter is required");
           const pr = await api.pull(action.pr);
+          if (pr.state !== "open" || pr.head.sha !== action.head) {
+            outcomes.push({ key, action: action.type, status: "waiting", reason: "The PR state or head changed after planning; reobserve before requesting review bots" });
+            continue;
+          }
           await surfaces.handover({ key, number: action.pr, head: pr.head.sha, context, readyOnly: true });
           break;
         }

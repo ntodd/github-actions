@@ -402,7 +402,7 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
       && item.feedback?.[f.sourceId] !== f.revision);
     if (feedback.length) return reserve("respond", pr, null, feedback);
     if (!item.evidence.own && pr.signals?.pending?.length) {
-      if (pr.draft && pr.signals.pending.some((s) => s.startsWith("review:"))) return finish({ type: "ready-for-bots", pr: pr.number }, "agent-waiting", "CI passed; mark the PR ready so its configured review bots can run");
+      if (pr.draft && pr.signals.pending.some((s) => s.startsWith("review:"))) return finish({ type: "ready-for-bots", pr: pr.number, head: pr.headSha }, "agent-waiting", "CI passed; mark the PR ready so its configured review bots can run");
       const due = pr.signalDeadline ?? (item.status?.wait?.kind === "signals" && item.status.wait.target === pr.number ? item.status.wait.deadline : null)
         ?? new Date(instant + config.timeouts.reviewMinutes * minute).toISOString();
       if (instant >= Date.parse(due)) return ask("A blocking review/check signal exceeded its wait deadline");
@@ -412,7 +412,7 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
       if (integration && integration.item !== key) return wait("agent-waiting", "Another PR is being integrated first", "integration", integration.item);
       return reserve("update", pr);
     }
-    return finish(item.handover?.pr === pr.number && item.handover?.head === pr.headSha ? null : { type: "handover", pr: pr.number }, "agent-review", pr.approvalRequired ? "Checks passed; approval covering the latest push is required" : "Checks passed; waiting for your review and merge decision");
+    return finish(item.handover?.pr === pr.number && item.handover?.head === pr.headSha ? null : { type: "handover", pr: pr.number, head: pr.headSha }, "agent-review", pr.approvalRequired ? "Checks passed; approval covering the latest push is required" : "Checks passed; waiting for your review and merge decision");
   }
   if (item.evidence.own) return wait("agent-review", "Only explicitly requested maintenance is authorized", "work-command", key);
   return reserve("build");

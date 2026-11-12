@@ -11,7 +11,7 @@ import { preparationOutcome } from "../lib/project-setup.mjs";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { A, B, C, at, run } from "./fixtures.mjs";
+import { A, B, C, D, at, run } from "./fixtures.mjs";
 
 function fixture() {
   let state = emptyLedger("42"), branch = null, pr = null, owner = null, available = false;
@@ -78,6 +78,30 @@ test("one issue traverses reservation, exclusive admission, terminal artifact, p
   await f.pass();
   assert.equal(f.state.items["issue:7"].complete, true);
   assert.deepEqual(f.effects.at(-1), ["close", 7]);
+});
+
+test("handover and review-bot readiness keep the observed head when a push races the controller action", async () => {
+  for (const readyOnly of [false, true]) {
+    const f = fixture(); await f.pass();
+    await claimOperation({ api: f.api, store: f.store, repo: "ntodd/project", itemKey: "issue:7", operationId: "op-1", run,
+      context: { sha: A, defaultBranch: "main", config: {} } });
+    f.finish(); await f.pass({ maxPasses: 1 }); await f.pass({ maxPasses: 1 });
+    assert.equal(f.state.operations["op-1"].phase, "done");
+    let calls = 0, changed = false;
+    const surfaces = { acknowledge: async () => [], render: async () => {
+      if (!changed) { f.pr.head.sha = D; changed = true; }
+    }, handover: async () => { calls++; return { status: "applied" }; } };
+    let extra = {};
+    if (readyOnly) extra = { observe: async () => ({ authorization: { valid: true, revision: f.state.items["issue:7"].revision },
+      feedback: [], prs: [{ number: 9, state: "open", headSha: C, baseSha: A, mergeable: "MERGEABLE", draft: true,
+        checks: { state: "success", headSha: C, failed: [] }, signals: { pending: ["review:reviewer[bot]"] } }] }) };
+    const result = await f.pass({ maxPasses: 1, surfaces, ...extra });
+    const plan = result.plans.find((p) => p.action?.type === (readyOnly ? "ready-for-bots" : "handover"));
+    assert.equal(calls, 0); assert.equal(f.state.items["issue:7"].handover, undefined);
+    assert.equal(plan.action.head, C);
+    assert.equal(result.outcomes.some((o) => o.status === "interrupted"), false);
+    assert.equal(result.outcomes.some((o) => o.status === "waiting" && /head changed/.test(o.reason)), true);
+  }
 });
 
 test("revoked admission retires an unclaimed reservation and needs a fresh trusted source even after trust returns", async () => {
