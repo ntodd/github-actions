@@ -6,6 +6,7 @@ import { inflateSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { validBranch } from "./protocol.mjs";
+import { ReadUnavailable } from "./recovery.mjs";
 const SHA = /^[a-f0-9]{40}$/;
 export class GitError extends Error {
   constructor(command, status) { super(`Git ${command} failed (status ${status ?? "unknown"})`); this.name = "GitError"; this.status = status; }
@@ -58,11 +59,15 @@ export function cleanGitWriter({ remote, readToken, writeToken, bundleFile, allo
   function fetchRemote(commits) {
     const distinct = [...new Set(commits)];
     if (!distinct.every((s) => SHA.test(s))) throw new Error("Invalid fetch target");
-    run(["fetch", "--quiet", "--depth=256", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", remote, ...distinct], { token: readToken, remote });
+    try { run(["fetch", "--quiet", "--depth=256", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", remote, ...distinct], { token: readToken, remote }); }
+    catch (error) { throw new ReadUnavailable(error); }
   }
   function head(branch) {
     if (!validBranch(branch)) throw new Error("Invalid branch");
-    const lines = text(run(["ls-remote", "--refs", remote, `refs/heads/${branch}`], { token: readToken, remote })).split("\n").filter(Boolean);
+    let result;
+    try { result = run(["ls-remote", "--refs", remote, `refs/heads/${branch}`], { token: readToken, remote }); }
+    catch (error) { throw new ReadUnavailable(error); }
+    const lines = text(result).split("\n").filter(Boolean);
     if (lines.length > 1) throw new Error("Ambiguous branch lookup");
     const sha = lines.length ? lines[0].split(/\s+/)[0] : null;
     if (sha !== null && !SHA.test(sha)) throw new Error("Invalid remote head");

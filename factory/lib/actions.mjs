@@ -9,6 +9,7 @@ import { GitHubError } from "./store.mjs";
 import { readProposal } from "./artifact.mjs";
 import { validExecution } from "./usage.mjs";
 import { MAX_ATTACHMENT_PACK } from "./attachments.mjs";
+import { ReadUnavailable } from "./recovery.mjs";
 const digest = (bytes) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 const positive = (n) => /^[1-9]\d*$/.test(String(n));
 export class InvalidResult extends Error {
@@ -88,7 +89,7 @@ export function actionsClient({ token, repo, apiUrl = "https://api.github.com", 
   async function response(path) {
     const url = path.startsWith("https://") ? path : `${root}${path}`;
     if (new URL(url).origin !== origin || !url.startsWith(`${root}/`)) throw new Error("Unexpected Actions API target");
-    const res = await fetch(url, { headers, redirect: "manual", signal: AbortSignal.timeout(20_000) });
+    const res = await fetch(url, { headers, redirect: "manual", signal: AbortSignal.timeout(20_000) }).catch((error) => { throw new ReadUnavailable(error); });
     if (!res.ok && res.status !== 302) throw new GitHubError(res.status, "GET", new URL(url).pathname);
     return res;
   }
@@ -98,7 +99,7 @@ export function actionsClient({ token, repo, apiUrl = "https://api.github.com", 
     while (next) {
       if (seen.has(next) || seen.size >= 10000) throw new Error("Invalid artifact pagination");
       seen.add(next);
-      const res = await response(next), data = await res.json();
+      const res = await response(next), data = await res.json().catch((error) => { throw new ReadUnavailable(error); });
       const values = pick(data);
       if (!Array.isArray(values)) throw new Error("Incomplete Actions listing");
       all.push(...values);
@@ -110,7 +111,7 @@ export function actionsClient({ token, repo, apiUrl = "https://api.github.com", 
     // Supported operations record the default branch as their base. Historical
     // ownership remains bound to that branch after repository policy changes.
     const defaultBranch = op.base.ref;
-    const run = await (await response(`/actions/runs/${op.owner.id}/attempts/${op.owner.attempt}`)).json();
+    const run = await (await response(`/actions/runs/${op.owner.id}/attempts/${op.owner.attempt}`)).json().catch((error) => { throw new ReadUnavailable(error); });
     const owner = runProvenance(run, op, repositoryId, defaultBranch);
     if (owner.status === "in_progress") {
       const jobs = await list(`/actions/runs/${op.owner.id}/attempts/${op.owner.attempt}/jobs?per_page=100`, (d) => d.jobs);
@@ -141,14 +142,17 @@ export function actionsClient({ token, repo, apiUrl = "https://api.github.com", 
     if (res.status !== 302) throw new Error("Artifact service did not return a signed download");
     const location = new URL(res.headers.get("location"));
     if (location.protocol !== "https:" || location.username || location.password) throw new Error("Invalid artifact download URL");
-    const archive = await fetch(location.href, { redirect: "error", signal: AbortSignal.timeout(20_000) });
-    if (!archive.ok || Number(archive.headers.get("content-length") ?? 0) > maxBytes) throw new Error("Artifact download failed or is too large");
+    const archive = await fetch(location.href, { redirect: "error", signal: AbortSignal.timeout(20_000) }).catch((error) => { throw new ReadUnavailable(error); });
+    if (!archive.ok) throw new GitHubError(archive.status, "GET", "artifact download");
+    if (Number(archive.headers.get("content-length") ?? 0) > maxBytes) throw new InvalidResult("Artifact download is too large");
     const chunks = []; let size = 0;
-    for await (const chunk of archive.body) {
-      size += chunk.length;
-      if (size > maxBytes) throw new Error("Artifact download exceeds its limit");
-      chunks.push(chunk);
-    }
+    try {
+      for await (const chunk of archive.body) {
+        size += chunk.length;
+        if (size > maxBytes) throw new InvalidResult("Artifact download exceeds its limit");
+        chunks.push(chunk);
+      }
+    } catch (error) { if (error.code === "invalid-result") throw error; throw new ReadUnavailable(error); }
     const bytes = Buffer.concat(chunks);
     if (digest(bytes) !== artifact.digest) throw new InvalidResult("Artifact archive digest does not match GitHub metadata");
     return bytes;

@@ -96,8 +96,23 @@ export async function publishOperation({ store, itemKey, operationId, publisherR
     }
     // Validate commit ancestry, tree changes and forbidden paths before the
     // durable intent. The worker's test report alone authorizes no writes.
-    try { await writer.validate(effect, op); }
+    let invalid;
+    try {
+      invalid = await preflightRead({ store, key: itemKey, item, kind: "publish", target: op.target.number ?? Number(itemKey.split(":")[1]),
+        stage: "inspect", operation: op.id, guard: { generation: op.generation, revision: op.revision }, now, read: async () => {
+          try { await writer.validate(effect, op); }
+          catch (error) {
+            if (error?.code === "read-unavailable" || Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599) throw error;
+            return { error };
+          }
+        } });
+    }
     catch (error) {
+      if (error?.code === "preflight-wait") return { status: "waiting", operationId, reason: "Waiting before reading publication data again" };
+      throw error;
+    }
+    if (invalid) {
+      const { error } = invalid;
       await save({ type: "publish-blocked", effectId: effect.id, reason: String(error.message || "Publisher validation failed").slice(0, 2000) });
       throw error;
     }

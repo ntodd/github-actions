@@ -7,7 +7,7 @@ import { attachmentUploader } from "./attachments.mjs";
 // The controller invokes this in its own clean job, after the Crew workflow is
 // terminal. Expired artifacts do not prevent recovery of already-sent effects.
 export function cleanPublisher({ api, write, store, actions, repo, readToken, writeToken, appLogin,
-  serverUrl = "https://github.com", gitWriter = cleanGitWriter, assertRuntime = async () => {}, attachmentToken, attachmentFetch }) {
+  serverUrl = "https://github.com", gitWriter = cleanGitWriter, assertRuntime = async () => {}, attachmentToken, attachmentFetch, now = () => new Date().toISOString() }) {
   return async ({ key, operationId, context, run }) => {
     const { state } = await store.load(), op = state.operations[operationId];
     let result = null, git = null;
@@ -39,7 +39,7 @@ export function cleanPublisher({ api, write, store, actions, repo, readToken, wr
       readBytes: async (effect) => (await getResult()).attachmentFiles.get(effect.file) });
     const writer = publisherWriter({ git: proxy, api: write, read: api, repo, appLogin, attachments });
     try {
-      return await publishOperation({ store, itemKey: key, operationId, publisherRun: run,
+      return await publishOperation({ store, itemKey: key, operationId, publisherRun: run, now,
         observe: async (item, current) => { await assertRuntime(); return publishObservation(api, item, current, repo, appLogin); }, writer });
     } finally { writer.dispose(); result?.dispose(); }
   };

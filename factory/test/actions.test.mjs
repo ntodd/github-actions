@@ -38,6 +38,32 @@ test("a terminal failed run can supply its recorded artifact and redirects recei
   } finally { result.dispose(); }
 });
 
+test("Actions transport and incomplete JSON are read failures rather than invalid worker results", async () => {
+  for (const fetch of [async () => { throw new Error("connection interrupted"); }, async () => new Response('{"id":')]) {
+    const client = actionsClient({ token: "secret", repo: "ntodd/project", fetch });
+    await assert.rejects(client.inspect(op, context), (e) => e.code === "read-unavailable");
+  }
+  const client = actionsClient({ token: "secret", repo: "ntodd/project", fetch: async () => new Response(null, { status: 503 }) });
+  await assert.rejects(client.inspect(op, context), (e) => e.status === 503 && e.code !== "invalid-result");
+});
+
+test("signed artifact transport failures stay retryable while size and digest violations remain invalid", async () => {
+  const artifact = { id: "200", digest: `sha256:${"a".repeat(64)}` };
+  for (const mode of ["fetch", "status", "stream", "size", "digest"]) {
+    const client = actionsClient({ token: "secret", repo: "ntodd/project", fetch: async (url, options) => {
+      if (url.endsWith("/zip")) return new Response(null, { status: 302, headers: { location: "https://objects.example/result" } });
+      assert.equal(options.headers, undefined);
+      if (mode === "fetch") throw new Error("connection interrupted");
+      if (mode === "status") return new Response(null, { status: 503 });
+      if (mode === "stream") return new Response(new ReadableStream({ start(controller) { controller.error(new Error("connection interrupted")); } }));
+      if (mode === "size") return new Response("", { headers: { "content-length": String(100 * 1024 * 1024) } });
+      return new Response("wrong digest");
+    } });
+    await assert.rejects(client.downloadArchive(artifact), (e) => mode === "status" ? e.status === 503
+      : e.code === (["size", "digest"].includes(mode) ? "invalid-result" : "read-unavailable"));
+  }
+});
+
 test("foreign workflows, repository heads and rerun attempts cannot provide a result", async () => {
   for (const run of [{ path: ".github/workflows/ci.yml" }, { run_attempt: 2 }, { head_sha: "b".repeat(40) },
     { event: "pull_request" }, { head_repository: { id: 99 } }, { head_branch: "feature" }]) {

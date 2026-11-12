@@ -25,7 +25,7 @@ function fixture() {
     if (loseResponse) throw new Error("lost response after PR creation");
     return pr;
   } };
-  return { store, writer: publisherWriter({ git, api, repo: "ntodd/repo", appLogin: "ntodd-agent[bot]" }),
+  return { store, api, writer: publisherWriter({ git, api, repo: "ntodd/repo", appLogin: "ntodd-agent[bot]" }),
     itemKey: "issue:7", operationId: "op-1", publisherRun: { id: "900", attempt: 1 }, now: () => at,
     observe: async () => ({ ...observation, head: remoteHead }),
     creations: () => creates, loseResponse() { loseResponse = true; }, prs: () => prs };
@@ -45,6 +45,29 @@ test("a PR created before a lost response is recovered without opening another",
   assert.equal((await publishOperation(f)).status, "waiting");
   assert.equal((await publishOperation(f)).status, "done");
   assert.equal(f.creations(), 1);
+});
+
+test("a PR lookup outage preserves the applied push and retries the read before one PR create", async () => {
+  const f = fixture(), lookup = f.api.pullsForBranch; let time = at, reads = 0;
+  f.now = () => time;
+  f.api.pullsForBranch = async () => { reads++; throw new Error("connection interrupted"); };
+  await assert.rejects(publishOperation(f), (e) => e.code === "read-unavailable");
+  let op = operation((await f.store.load()).state);
+  assert.equal(op.effects[0].status, "applied"); assert.equal(op.effects[1].requests.length, 0);
+  assert.equal(op.publishError, undefined); assert.equal(f.creations(), 0);
+  assert.equal((await publishOperation(f)).status, "waiting"); assert.equal(reads, 1);
+  time = "2026-11-12T12:01:00Z"; f.api.pullsForBranch = lookup;
+  assert.equal((await publishOperation(f)).status, "done"); assert.equal(f.creations(), 1);
+  op = operation((await f.store.load()).state);
+  assert.equal(op.effects[0].requests.length, 1); assert.equal(op.effects[1].requests.length, 1);
+});
+
+test("an unrelated PR remains a validation defect rather than a retryable lookup outage", async () => {
+  const f = fixture(); f.api.pullsForBranch = async () => [{ state: "open", head: { ref: "unrelated" } }];
+  await assert.rejects(publishOperation(f), /unrelated PR/);
+  const state = (await f.store.load()).state;
+  assert.match(operation(state).publishError.reason, /unrelated PR/);
+  assert.equal(state.items["issue:7"].preflights, undefined); assert.equal(f.creations(), 0);
 });
 
 test("PR membership cannot be established from an unrequested PR or an effect before its push", () => {

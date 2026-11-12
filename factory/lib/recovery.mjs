@@ -12,6 +12,12 @@ const obsoleteRead = (item, read, operations) => read.operation && (read.operati
 export class PreflightWait extends Error {
   constructor(read) { super(`Waiting before observing ${read.kind} on #${read.target} again (${read.nextAt})`); this.code = "preflight-wait"; }
 }
+export class ReadUnavailable extends Error {
+  constructor(cause) {
+    super("Remote data could not be read", { cause }); this.code = "read-unavailable";
+    if (Number.isInteger(cause?.status) && cause.status >= 400 && cause.status <= 599) this.status = cause.status;
+  }
+}
 
 // Only failed read/guard attempts create records. Healthy observations add no
 // ledger writes. These records grant no authority and never represent a write.

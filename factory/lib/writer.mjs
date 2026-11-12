@@ -1,5 +1,6 @@
 import { effectMarker, validEffect } from "./effects.mjs";
 import { renderAttachments } from "./attachments.mjs";
+import { ReadUnavailable } from "./recovery.mjs";
 const positive = (n) => Number.isSafeInteger(n) && n > 0;
 export function publisherWriter({ git, api, read, repo, appLogin, attachments }) {
   const matches = (p, effect, op) => p.head?.ref === effect.head && p.base?.ref === effect.base
@@ -13,7 +14,7 @@ export function publisherWriter({ git, api, read, repo, appLogin, attachments })
   }
   const thread = async (effect) => {
     if (!read) throw new Error("Thread publication requires the read-only API adapter");
-    const found = (await read.threads(effect.number)).find((t) => t.id === effect.thread);
+    const found = (await read.threads(effect.number).catch((error) => { throw new ReadUnavailable(error); })).find((t) => t.id === effect.thread);
     if (!found) throw new Error("The assigned thread no longer belongs to the recorded PR");
     return found;
   };
@@ -38,12 +39,12 @@ export function publisherWriter({ git, api, read, repo, appLogin, attachments })
       if (effect.body) renderAttachments(effect.body, op);
       if (["thread-reply", "thread-resolve"].includes(effect.type)) {
         await thread(effect);
-        const pr = await read.pull(effect.number);
+        const pr = await read.pull(effect.number).catch((error) => { throw new ReadUnavailable(error); });
         if (pr.state !== "open" || pr.user?.login?.toLowerCase() !== appLogin.toLowerCase()
           || pr.head?.ref !== op.target.branch || pr.head?.repo?.full_name?.toLowerCase() !== repo.toLowerCase()) throw new Error("The assigned PR is no longer an open App-owned branch");
         return;
       }
-      const prs = await api.pullsForBranch(effect.head, effect.base);
+      const prs = await api.pullsForBranch(effect.head, effect.base).catch((error) => { throw new ReadUnavailable(error); });
       if (prs.some((p) => p.state === "open" && !matches(p, effect, op))) throw new Error("The reserved branch already has an unrelated PR");
     },
     async inspect(effect, op) {
@@ -57,7 +58,7 @@ export function publisherWriter({ git, api, read, repo, appLogin, attachments })
       if (effect.type === "thread-resolve") return (await thread(effect)).isResolved
         ? { outcome: "applied", evidence: { kind: "thread-resolve", number: effect.number, thread: effect.thread, resolved: true } }
         : { outcome: "unknown" };
-      const prs = (await api.pullsForBranch(effect.head, effect.base)).filter((p) => matches(p, effect, op));
+      const prs = (await api.pullsForBranch(effect.head, effect.base).catch((error) => { throw new ReadUnavailable(error); })).filter((p) => matches(p, effect, op));
       if (prs.length > 1) throw new Error("Multiple PRs claim this publish effect");
       return prs.length ? receipt(prs[0], effect) : { outcome: "unknown" };
     },

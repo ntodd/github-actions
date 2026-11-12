@@ -40,7 +40,7 @@ function fixture({ code = true, own = false, images = [] } = {}) {
     } } }),
     itemKey: "issue:7", operationId: "op-1", publisherRun: { id: "900", attempt: 1 }, now: () => at,
     observe: async () => ({ ...observation, head, threadRevisions: { T1: threadRevision(facts) } }) };
-  return { store, result, calls, remote, args, get state() { return state; }, get posts() { return posts; }, get resolves() { return resolves; },
+  return { store, read, result, calls, remote, args, get state() { return state; }, get posts() { return posts; }, get resolves() { return resolves; },
     collect: async (extra = {}) => store.transact((s) => step(s, { type: "collect-result", artifact, proposal: result, feedback: facts, ...extra })),
     addFact(value = fact(102)) { facts.push(value); }, loseReply() { loseReply = true; }, loseResolve() { loseResolve = true; },
     afterReply(fn) { afterReply = fn; } };
@@ -70,6 +70,20 @@ test("a no-code response can reply and resolve without a bundle or code push", a
   const f = fixture({ code: false }); await f.collect();
   assert.equal((await publishOperation(f.args)).status, "done");
   assert.deepEqual(f.calls, ["reply", "resolve"]);
+});
+test("thread and PR validation read failures back off without recording a reply or discarding its proposal", async () => {
+  for (const method of ["threads", "pull"]) {
+    const f = fixture({ code: false }); await f.collect();
+    const original = f.read[method]; let time = at, reads = 0;
+    f.args.now = () => time; f.read[method] = async () => { reads++; throw new Error("connection interrupted"); };
+    await assert.rejects(publishOperation(f.args), (e) => e.code === "read-unavailable");
+    assert.equal(operation(f.state).publishError, undefined);
+    assert.equal(operation(f.state).effects[0].requests.length, 0); assert.equal(f.posts, 0);
+    assert.equal((await publishOperation(f.args)).status, "waiting"); assert.equal(reads, 1);
+    time = "2026-11-12T12:01:00Z"; f.read[method] = original;
+    assert.equal((await publishOperation(f.args)).status, "done");
+    assert.equal(f.posts, 1); assert.equal(f.resolves, 1);
+  }
 });
 test("a lost reply response is recovered from its exact App marker rather than posting another reply", async () => {
   const f = fixture(); await f.collect(); f.loseReply();

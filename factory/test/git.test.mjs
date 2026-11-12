@@ -43,6 +43,28 @@ test("a worker bundle is validated in a clean bare repository and only appends i
   assert.equal((await writer.inspect(proposal.effects[0])).outcome, "applied");
 });
 
+test("remote Git fetch and head-read failures are retryable while proposal validation still runs after recovery", async (t) => {
+  const f = fixture(t); f.commit(); const proposal = f.exportIt();
+  const binary = join(f.root, "git"), offline = join(f.root, "offline");
+  writeFileSync(binary, `#!/bin/sh
+command=
+for arg in "$@"; do
+  if [ "$arg" = fetch ] || [ "$arg" = ls-remote ]; then command=read; fi
+  if [ "$arg" = '${f.remote}' ] && [ "$command" = read ] && [ -f '${offline}' ]; then exit 128; fi
+done
+exec /usr/bin/git "$@"
+`, { mode: 0o755 });
+  const writer = cleanGitWriter({ remote: f.remote, allowLocal: true, bundleFile: join(f.artifact, "proposal.bundle"), binary });
+  t.after(() => writer.dispose());
+  writeFileSync(offline, "offline");
+  await assert.rejects(writer.validate(proposal.effects[0], f.op), (e) => e.code === "read-unavailable" && e.cause.name === "GitError");
+  await assert.rejects(writer.inspect(proposal.effects[0], f.op), (e) => e.code === "read-unavailable");
+  rmSync(offline);
+  await writer.validate(proposal.effects[0], f.op);
+  assert.equal((await writer.apply(proposal.effects[0], f.op)).outcome, "applied");
+  assert.equal(text(f.git(["ls-remote", "--refs", f.remote, "refs/heads/factory/issue-7"])).split("\t")[0], proposal.effects[0].commit);
+});
+
 test("a human push after validation is protected by the expected-head lease", async (t) => {
   const f = fixture(t), proposed = f.commit(), proposal = f.exportIt(), writer = f.writer();
   await writer.validate(proposal.effects[0], f.op);

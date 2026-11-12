@@ -67,6 +67,35 @@ test("incomplete publication observations are recoverable reads rather than evid
   }
 });
 
+test("publication validation read outages retain the proposal, back off, and recover without another worker", async () => {
+  const c = context(); let time = at, reads = 0;
+  c.now = () => time;
+  c.writer.validate = async () => { reads++; throw Object.assign(new Error("private transport detail"), { code: "read-unavailable", status: 503 }); };
+  await assert.rejects(publishOperation(c), /private transport detail/);
+  let state = (await c.store.load()).state;
+  assert.equal(operation(state).publishError, undefined);
+  assert.equal(operation(state).phase, "publishing");
+  assert.equal(Object.values(state.items["issue:7"].preflights)[0].stage, "inspect");
+  assert.equal((await publishOperation(c)).status, "waiting"); assert.equal(reads, 1);
+  time = "2026-11-12T12:16:00Z";
+  await c.store.transact((state) => {
+    const plan = decideItem(state, "issue:7", { authorization: observation.authorization, prs: [], feedback: [] },
+      parseConfig("trusted-users: [ntodd]"), { now: time });
+    return plan.events.reduce((s, event) => step(s, event), state);
+  });
+  state = (await c.store.load()).state;
+  assert.equal(state.items["issue:7"].question, null);
+  const alert = Object.values(state.items["issue:7"].apiAlerts)[0];
+  assert.equal(alert.source, "preflight"); assert.equal(JSON.stringify(state).includes("private transport detail"), false);
+  c.writer.validate = async () => { reads++; };
+  assert.equal((await publishOperation(c)).status, "done");
+  await c.store.transact((s) => step(s, { type: "sync-api-alerts", timeoutMinutes: 15, at: time }));
+  state = (await c.store.load()).state;
+  assert.equal(state.items["issue:7"].apiAlerts[alert.id].resolution, "observed");
+  assert.equal(state.items["issue:7"].attempts.length, 1);
+  assert.equal(c.calls.filter(([kind]) => kind === "apply").length, 1);
+});
+
 test("a failing last observation has its own backoff and cannot turn a read deadline into discarded code", async () => {
   const c = context(); let time = at, afterValidation = false, failures = 0;
   c.now = () => time;
