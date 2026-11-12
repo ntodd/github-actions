@@ -5,6 +5,7 @@ import { verifySetupRulesets, verifyStateSetupRules } from "./setup.mjs";
 import { recordFactoryApp } from "./protocol.mjs";
 import { parseConfig } from "./config.mjs";
 import { selectProjectSecrets } from "./project-environment.mjs";
+import { assertRuntimeIsolation } from "./runtime-guard.mjs";
 const digest = (v) => createHash("sha256").update(typeof v === "string" ? v : canonical(v)).digest("hex");
 const sha = (v) => /^[a-f\d]{40}$/.test(v ?? "");
 const positive = (v) => Number.isSafeInteger(v) && v > 0;
@@ -60,9 +61,7 @@ export async function applySetupPlan({ plan, api, store, journal, secrets = {}, 
       throw new Error("Activation requires SETUP_SECRETS for the declared project secret names");
     }
     if (!names.has("CLAUDE_CODE_OAUTH_TOKEN") && !names.has("ANTHROPIC_API_KEY")) throw new Error("Activation requires a worker model credential");
-    const legacy = (await api.workflows()).filter((w) => w.path === ".github/workflows/agent-ready.yml");
-    if (legacy.some((w) => w.state === "active")) throw new Error("Migrate existing work and disable the old agent-ready workflow before activation");
-    if (legacy.length && (await api.liveLegacyRuns()).length) throw new Error("The old runtime still has live runs; observe their terminal outcomes before activation");
+    await assertRuntimeIsolation(api);
     const known = new Set(Object.values(before?.state.items ?? {}).flatMap((item) => item.prs.map((pr) => pr.number)));
     const unknown = (await api.openPulls()).filter((pr) => pr.user?.login?.toLowerCase() === plan.appLogin && !known.has(pr.number));
     if (unknown.length) throw new Error(`Migrate App PR membership before activation: ${unknown.map((p) => `#${p.number}`).join(", ")}`);

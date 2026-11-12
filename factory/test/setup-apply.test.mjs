@@ -33,7 +33,7 @@ function fixture({ active = false } = {}) {
       calls.push(["pr"]); const p = { number: 19, html_url: "https://github.com/ntodd/project/pull/19", state: "open", body: data.body,
         head: { ref: data.head, sha: C }, base: { ref: data.base } }; pulls.push(p); return p;
     },
-    workflows: async () => [], liveLegacyRuns: async () => [], openPulls: async () => [],
+    workflows: async () => [], liveWorkflowRuns: async () => [], openPulls: async () => [],
     branchRules: async () => rules.filter((r) => r.name.startsWith("factory-state-")).flatMap((r) => r.rules.map((rule) => ({ ...rule, ruleset_id: r.id }))),
   };
   const store = { load: async () => ({ state: structuredClone(state) }), initialize: async () => { calls.push(["state-read"]); return { state }; },
@@ -197,8 +197,12 @@ test("upgrading a managed approval rule preserves stronger review requirements",
 
 test("activation rejects legacy owners and unrecorded App PRs before any mutation", async () => {
   for (const configure of [
-    (f) => { f.api.workflows = async () => [{ path: ".github/workflows/agent-ready.yml", state: "active" }]; },
-    (f) => { f.api.workflows = async () => [{ path: ".github/workflows/agent-ready.yml", state: "disabled_manually" }]; f.api.liveLegacyRuns = async () => [{ id: 123, status: "queued" }]; },
+    (f) => { f.api.workflows = async () => [{ id: 1, path: ".github/workflows/agent-ready.yml", state: "active" }]; },
+    (f) => { f.api.workflows = async () => [{ id: 1, path: ".github/workflows/agent-ready.yml", state: "disabled_manually" }]; f.api.liveWorkflowRuns = async () => [{ id: 123, status: "queued" }]; },
+    (f) => {
+      f.api.workflows = async () => [{ id: 2, path: ".github/workflows/agent-ready-caller.yml", state: "active" }];
+      f.api.fileAt = async () => "jobs:\n  agent:\n    uses: ntodd/github-actions/.github/workflows/agent-ready.yml@main\n";
+    },
     (f) => { f.api.openPulls = async () => [{ number: 7, user: { login: "factory-app[bot]" } }]; },
   ]) {
     const f = fixture({ active: true }); configure(f);

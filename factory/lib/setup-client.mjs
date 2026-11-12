@@ -3,6 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { GitHubError } from "./store.mjs";
 import { appJwt } from "../../agent-ready/lib/app-token.mjs";
+import { LIVE_RUN_STATUSES } from "./runtime-guard.mjs";
 
 export function runGh(args, input = undefined) {
   const result = spawnSync("gh", args, { input, encoding: "utf8", timeout: 60_000, maxBuffer: 8 * 1024 * 1024,
@@ -74,8 +75,16 @@ export function setupClient({ token, repo, fetchImpl = fetch, gh = runGh }) {
     },
     workflows: () => list("/actions/workflows?per_page=100", "workflows"),
     branchRules: (branch) => list(`/rules/branches/${encodeURIComponent(branch)}?per_page=100`),
-    liveLegacyRuns: async () => (await list("/actions/workflows/agent-ready.yml/runs?per_page=100", "workflow_runs"))
-      .filter((run) => run.status !== "completed"),
+    liveWorkflowRuns: async (id) => {
+      if (!Number.isSafeInteger(id) || id < 1) throw new Error("Invalid workflow identity");
+      const rows = await Promise.all(LIVE_RUN_STATUSES.map(async (status) => {
+        const data = await api("GET", `/actions/workflows/${id}/runs?status=${status}&per_page=1`);
+        if (!Number.isSafeInteger(data.total_count) || data.total_count < 0 || !Array.isArray(data.workflow_runs)
+          || data.total_count === 0 && data.workflow_runs.length || data.total_count > 0 && !data.workflow_runs.length) throw new Error("Incomplete live workflow-run count");
+        return data.total_count ? data.workflow_runs.slice(0, 1) : [];
+      }));
+      return rows.flat();
+    },
     openPulls: () => list("/pulls?state=open&per_page=100"),
     branchSha: async (branch) => (await api("GET", `/git/ref/heads/${ref(branch)}`)).object.sha,
     resolveRef: async (value) => (await api("GET", `/commits/${encodeURIComponent(value)}`)).sha,

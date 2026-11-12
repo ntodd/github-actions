@@ -4,6 +4,22 @@ import { assertRuntimeIsolation, LIVE_RUN_STATUSES, LEGACY_WORKFLOW, RuntimeConf
 import { readClient } from "../lib/github.mjs";
 
 const legacy = { id: 123, path: LEGACY_WORKFLOW, state: "disabled_manually" };
+
+test("legacy reusable callers must also be disabled with no live runs", async () => {
+  const caller = { id: 124, path: ".github/workflows/agent-ready-caller.yml", state: "active" };
+  const seen = [];
+  const api = { workflows: async () => [legacy, caller], repository: async () => ({ default_branch: "main" }),
+    branchSha: async () => "a".repeat(40), fileAt: async (_path, sha) => {
+      assert.equal(sha, "a".repeat(40));
+      return { content: "on: issue_comment\njobs:\n  agent:\n    uses: ntodd/github-actions/.github/workflows/agent-ready.yml@main\n" };
+    }, liveWorkflowRuns: async (id) => { seen.push(id); return []; } };
+  await assert.rejects(assertRuntimeIsolation(api), /agent-ready-caller.yml.*disable/);
+  caller.state = "disabled_manually"; seen.length = 0;
+  await assertRuntimeIsolation(api);
+  assert.deepEqual(seen, [123, 124]);
+  api.liveWorkflowRuns = async (id) => id === 124 ? [{ id: 99, status: "queued" }] : [];
+  await assert.rejects(assertRuntimeIsolation(api), /still has live/);
+});
 test("an enabled, unknown or malformed legacy runtime cannot coexist with active factory work", async () => {
   for (const rows of [[{ ...legacy, state: "active" }], [{ ...legacy, state: "new-state" }], [{ ...legacy, id: null }], [legacy, legacy], null]) {
     await assert.rejects(assertRuntimeIsolation({ workflows: async () => rows,
