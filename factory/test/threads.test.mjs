@@ -8,14 +8,14 @@ import { initial, step, reserve, run, provenance, observation, artifact, proposa
 
 const fact = (id = 101) => ({ sourceId: `review-comment:${id}`, revision: String(id % 10).repeat(64), author: "ntodd",
   authority: "instruction", target: 9, thread: "T1", requiresResponse: true, body: "Fix the boundary condition" });
-function fixture({ code = true, own = false } = {}) {
+function fixture({ code = true, own = false, images = [] } = {}) {
   let facts = [fact()], head = B, posts = 0, resolves = 0, loseReply = false, loseResolve = false, afterReply;
   let state = step(initial(), reserve("op-1", { threadTargets: threadTargets(facts, 9), feedbackInputs: facts.map(({ sourceId, revision }) => ({ sourceId, revision })) }));
   if (own) state.items["issue:7"].evidence.own = true;
   state = step(state, { type: "claim", run, provenance, observation });
   state = step(state, { type: "owner-observed", run, status: "completed", conclusion: "success" });
-  const result = { ...proposal, outcome: code ? "ready" : "no-change", effects: code ? proposal.effects : [],
-    replies: [{ thread: "T1", revision: threadRevision(facts), body: "Fixed the boundary case and added a regression test.", resolve: true }] };
+  const result = { ...proposal, outcome: code ? "ready" : "no-change", effects: code ? proposal.effects : [], attachments: images,
+    replies: [{ thread: "T1", revision: threadRevision(facts), body: "Fixed the boundary case and added a regression test." + (images.length ? "\n![Phone](./screenshots/ui.png)" : ""), resolve: true }] };
   const store = { load: async () => ({ state: structuredClone(state) }), transact: async (fn) => {
     state = validateLedger(await fn(structuredClone(state))); return { state: structuredClone(state) };
   } };
@@ -33,7 +33,11 @@ function fixture({ code = true, own = false } = {}) {
     resolveThread: async () => { resolves++; calls.push("resolve"); remote.isResolved = true;
       if (loseResolve) throw new Error("resolve response lost"); return { id: "T1", isResolved: true, pullRequest: { number: 9 } }; },
   };
-  const args = { store, writer: publisherWriter({ git, api, read, repo: "ntodd/project", appLogin: "ntodd-agent[bot]" }),
+  const args = { store, writer: publisherWriter({ git, api, read, repo: "ntodd/project", appLogin: "ntodd-agent[bot]",
+    attachments: { validate: async () => {}, inspect: async () => ({ outcome: "unknown" }), apply: async (e) => {
+      calls.push("attachment"); return { outcome: "applied", evidence: { kind: "attachment", repositoryId: "42", digest: e.digest, size: e.size,
+        url: "https://github.com/user-attachments/assets/12345678-abcd-1234-abcd-123456789abc" } };
+    } } }),
     itemKey: "issue:7", operationId: "op-1", publisherRun: { id: "900", attempt: 1 }, now: () => at,
     observe: async () => ({ ...observation, head, threadRevisions: { T1: threadRevision(facts) } }) };
   return { store, result, calls, remote, args, get state() { return state; }, get posts() { return posts; }, get resolves() { return resolves; },
@@ -41,6 +45,18 @@ function fixture({ code = true, own = false } = {}) {
     addFact(value = fact(102)) { facts.push(value); }, loseReply() { loseReply = true; }, loseResolve() { loseResolve = true; },
     afterReply(fn) { afterReply = fn; } };
 }
+
+test("review screenshots upload before reply and resolution with or without a code push", async () => {
+  const images = [{ file: `screenshot-${"e".repeat(64)}.png`, digest: `sha256:${"e".repeat(64)}`, size: 100,
+    paths: ["./screenshots/ui.png"], contentType: "image/png" }];
+  for (const code of [true, false]) {
+    const f = fixture({ code, images }); await f.collect();
+    assert.equal((await publishOperation(f.args)).status, "done");
+    assert.deepEqual(f.calls, [...(code ? ["push"] : []), "attachment", "reply", "resolve"]);
+    assert.match(f.remote.comments[0].body, /!\[Phone\]\(https:\/\/github.com\/user-attachments\/assets\//);
+    assert.equal(f.remote.comments[0].body.includes("./screenshots/"), false);
+  }
+});
 
 test("code publishes before its reply, which publishes before resolution and feedback consumption", async () => {
   const f = fixture(); await f.collect();

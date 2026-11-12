@@ -59,3 +59,15 @@ test("caller generation rejects YAML/expression injection and missing CI names",
     assert.throws(() => callerWorkflow({ defaultBranch: "main", ciWorkflows: ["CI"], ...extra }));
   }
 });
+
+test("attachment credentials are forwarded only to the trusted entry and stay out of Crew/update jobs", () => {
+  const args = { defaultBranch: "main", ciWorkflows: ["CI"] };
+  const old = parseDocument(callerWorkflow(args)).toJS(), current = parseDocument(callerWorkflow({ ...args, attachments: true })).toJS();
+  assert.equal(old.jobs.factory.secrets.AGENT_ATTACH_TOKEN, undefined);
+  assert.equal(current.jobs.factory.secrets.AGENT_ATTACH_TOKEN, "${{ secrets.AGENT_ATTACH_TOKEN }}");
+  assert.equal(current.jobs["wake-up"].secrets, undefined);
+  const shared = parseDocument(readFileSync(new URL("../../.github/workflows/factory-runtime.yml", import.meta.url), "utf8")).toJS();
+  assert.deepEqual(shared.on.workflow_call.secrets.AGENT_ATTACH_TOKEN, { required: false });
+  assert.equal(shared.jobs.control.steps.find((s) => s.id === "control").env.AGENT_ATTACH_TOKEN, "${{ secrets.AGENT_ATTACH_TOKEN }}");
+  for (const role of ["worker", "update"]) assert.equal(JSON.stringify(shared.jobs[role]).includes("AGENT_ATTACH_TOKEN"), false);
+});

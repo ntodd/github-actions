@@ -20,6 +20,8 @@ import { main, setOutput, summary, mask } from "../../agent-ready/lib/action.mjs
 
 main(async () => {
   const env = process.env, repo = env.GITHUB_REPOSITORY, apiUrl = env.GITHUB_API_URL;
+  const attachmentToken = env.AGENT_ATTACH_TOKEN;
+  if (attachmentToken) { mask(attachmentToken); delete env.AGENT_ATTACH_TOKEN; }
   const api = readClient({ token: env.GITHUB_TOKEN, repo, apiUrl });
   const context = { ...await loadConfig(api), repo };
   await verifyEntry({ api, env, context });
@@ -93,7 +95,7 @@ main(async () => {
     continueIssue: dryRun ? null : continueService({ api, store, effects: surfaces }),
     target: request.target ?? event.issue?.number ?? event.pull_request?.number ?? null,
     publish: cleanPublisher({ api, write, store, actions, repo, readToken: env.GITHUB_TOKEN, writeToken: token,
-      appLogin, serverUrl: env.GITHUB_SERVER_URL, assertRuntime }),
+      appLogin, serverUrl: env.GITHUB_SERVER_URL, assertRuntime, attachmentToken }),
   });
   summary(`Factory ${dryRun ? "read-only plan" : "controller pass"}\n\n${JSON.stringify(result, null, 2)}`);
 });

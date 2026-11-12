@@ -102,7 +102,7 @@ export function verifyStateSetupRules(rules, rulesets) {
 }
 
 export function setupPlan({ repository, app, configText, checks, ciWorkflows,
-  toolingRepository = "ntodd/github-actions", ref = "main", dryRun = true }) {
+  toolingRepository = "ntodd/github-actions", ref = "main", dryRun = true, attachments = false }) {
   if (!positive(repository?.id) || !/^[\w.-]+\/[\w.-]+$/.test(repository.full_name ?? "")
     || repository.permissions?.admin !== true || repository.archived || repository.disabled) fail("Setup requires administrator access to an active repository");
   const config = parseConfig(configText);
@@ -120,7 +120,7 @@ export function setupPlan({ repository, app, configText, checks, ciWorkflows,
     variable: { name: "AGENT_APP_ID", value: String(app.id) }, settings: { allow_auto_merge: true },
     rulesets: setupRulesets(app.id, checks), labels: Object.entries(descriptions).map(([name, [color, description]]) => ({ name, color, description })),
     files: [
-      { path: ".github/workflows/factory.yml", content: callerWorkflow({ defaultBranch: repository.default_branch, ciWorkflows, toolingRepository, ref, dryRun }) },
+      { path: ".github/workflows/factory.yml", content: callerWorkflow({ defaultBranch: repository.default_branch, ciWorkflows, toolingRepository, ref, dryRun, attachments }) },
       { path: ".github/factory.yml", content: configText.endsWith("\n") ? configText : `${configText}\n` },
     ],
   };

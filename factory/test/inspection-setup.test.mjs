@@ -57,6 +57,16 @@ test("administrator setup verifies App inspection provenance and uses public met
   assert.equal(f.downloads[1].options.headers, undefined);
 });
 
+test("inspection accepts the optional attachment credential contract while rejecting a substituted secret", async () => {
+  const f = fixture(), original = f.api.fileAt;
+  f.api.fileAt = async (path, sha) => path === ".github/workflows/factory.yml"
+    ? callerWorkflow({ defaultBranch: "main", ciWorkflows: ["CI"], ref: B, attachments: true }) : original(path, sha);
+  assert.equal((await f.execute()).app.id, 123);
+  const caller = f.api.fileAt;
+  f.api.fileAt = async (path, sha) => (await caller(path, sha)).replace("AGENT_ATTACH_TOKEN }}", "AGENT_APP_PRIVATE_KEY }}");
+  await assert.rejects(f.execute(), /current generated read-only caller/);
+});
+
 test("inspection identity requires the owner, current caller commit and actual pinned reusable workflow", async () => {
   for (const change of [
     (f) => { f.repository.permissions.admin = false; }, (f) => { f.repository.owner.type = "Organization"; },

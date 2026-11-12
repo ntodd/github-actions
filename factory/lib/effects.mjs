@@ -1,6 +1,7 @@
 // Effect schemas are deliberately small. Worker output is a proposal; only
 // effects confined to the recorded operation may enter the publish journal.
 import { nodeId, threadEffectId } from "./threads.mjs";
+import { attachmentManifest, attachmentDescriptor, assetUrl, referencedAttachments, screenshotRefs } from "./attachments.mjs";
 const SHA = /^[a-f0-9]{40}$/;
 export const effectId = (v) => typeof v === "string" && /^[a-z0-9][a-z0-9-]{0,79}$/.test(v);
 export function pullRequestText(value) {
@@ -15,18 +16,32 @@ export function validEffect(effect, op) {
   if (!effectId(effect?.id)) return false;
   if (effect.type === "push") return effect.id === "push" && effect.branch === op.target.branch && effect.expectedHead === op.target.head
     && SHA.test(effect.commit) && effect.baseSha === op.base.sha;
+  const attachments = op.effects.filter((e) => e.type === "attachment"), push = op.effects.find((e) => e.type === "push");
+  const dependency = attachments.at(-1)?.id ?? push?.id ?? null;
+  if (effect.type === "attachment") {
+    try { attachmentManifest(attachments.map(attachmentDescriptor)); } catch { return false; }
+    try { if (!op.effects.some((e) => ["pull-request", "thread-reply"].includes(e.type) && screenshotRefs(e.body).some((p) => effect.paths.includes(p)))) return false; } catch { return false; }
+    const index = attachments.findIndex((a) => a.id === effect.id);
+    return index >= 0 && effect.id === `attachment-${effect.digest.slice(7)}` && /^[1-9]\d*$/.test(effect.repositoryId)
+      && SHA.test(effect.commit) && effect.commit === (push?.commit ?? op.target.head) && ["build", "respond", "resolve"].includes(op.mode)
+      && effect.dependsOn === (attachments[index - 1]?.id ?? push?.id ?? null);
+  }
   if (effect.type === "pull-request") {
     try { pullRequestText(effect); } catch { return false; }
+    try { referencedAttachments(effect.body, attachments.map(attachmentDescriptor)); } catch { return false; }
     return op.mode === "build" && op.target.number === null && effect.head === op.target.branch
-      && effect.base === op.base.ref && SHA.test(effect.commit) && effect.dependsOn === "push";
+      && effect.base === op.base.ref && SHA.test(effect.commit) && effect.dependsOn === dependency && Boolean(push);
   }
   if (["thread-reply", "thread-resolve"].includes(effect.type)) {
-    const target = op.threadTargets?.find((t) => t.id === effect.thread), push = op.effects.find((e) => e.type === "push");
+    const target = op.threadTargets?.find((t) => t.id === effect.thread);
     if (!target || !nodeId(effect.thread) || effect.number !== op.target.number || target.revision !== effect.revision
       || effect.commit !== (push?.commit ?? op.target.head) || !["respond", "resolve"].includes(op.mode)) return false;
-    if (effect.type === "thread-reply") return effect.id === threadEffectId("reply", effect.thread)
+    if (effect.type === "thread-reply") {
+      try { referencedAttachments(effect.body, attachments.map(attachmentDescriptor)); } catch { return false; }
+      return effect.id === threadEffectId("reply", effect.thread)
       && typeof effect.body === "string" && effect.body.trim().length > 0 && effect.body.length <= 60000
-      && effect.dependsOn === (push?.id ?? null);
+      && effect.dependsOn === dependency;
+    }
     return effect.id === threadEffectId("resolve", effect.thread) && effect.dependsOn === threadEffectId("reply", effect.thread)
       && op.effects.some((e) => e.id === effect.dependsOn && e.type === "thread-reply" && e.thread === effect.thread);
   }
@@ -35,6 +50,8 @@ export function validEffect(effect, op) {
 export function validReceipt(effect, evidence) {
   if (!evidence) return false;
   if (effect.type === "push") return evidence.commit === effect.commit && ["branch-head", "commit-ancestor"].includes(evidence.kind);
+  if (effect.type === "attachment") return evidence.kind === "attachment" && evidence.repositoryId === effect.repositoryId
+    && evidence.digest === effect.digest && evidence.size === effect.size && assetUrl(evidence.url);
   if (effect.type === "pull-request") return evidence.kind === "pull-request" && evidence.commit === effect.commit
     && Number.isSafeInteger(evidence.number) && evidence.number > 0 && ["open", "closed", "merged"].includes(evidence.state)
     && evidence.head === effect.head && evidence.base === effect.base && (evidence.state !== "merged" || SHA.test(evidence.mergedSha));
@@ -45,4 +62,4 @@ export function validReceipt(effect, evidence) {
   return false;
 }
 export const effectMarker = (op, effect) => `<!-- factory:effect=${op.id}/${effect.id} -->`;
-export const expectedEffectHead = (op, effect) => ["pull-request", "thread-reply", "thread-resolve"].includes(effect.type) ? effect.commit : op.target.head;
+export const expectedEffectHead = (op, effect) => ["attachment", "pull-request", "thread-reply", "thread-resolve"].includes(effect.type) ? effect.commit : op.target.head;

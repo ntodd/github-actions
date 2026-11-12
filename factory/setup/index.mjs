@@ -56,12 +56,16 @@ async function configureRepository(options) {
     checks = resolveSetupChecks(options.check, { checks: runs.check_runs, statuses });
   } else checks = (await api.branchRules(repository.default_branch)).filter((r) => r.type === "required_status_checks")
     .flatMap((r) => r.parameters.required_status_checks);
-  const plan = setupPlan({ repository, app: inspected.app, configText, checks, ciWorkflows: ci, ref: options.ref, dryRun: !options.activate });
-  if (inspected.provenance) plan.appInspection = inspected.provenance;
   const shared = setupClient({ token, repo: "ntodd/github-actions" }), sharedSha = await shared.resolveRef(options.ref);
-  for (const name of ["factory-runtime", "factory-wakeup"]) validateSharedSetupWorkflow(await shared.fileAt(`.github/workflows/${name}.yml`, sharedSha), name);
+  let attachments = false;
+  for (const name of ["factory-runtime", "factory-wakeup"]) {
+    const contract = validateSharedSetupWorkflow(await shared.fileAt(`.github/workflows/${name}.yml`, sharedSha), name);
+    if (name === "factory-runtime") attachments = Object.hasOwn(contract?.secrets ?? {}, "AGENT_ATTACH_TOKEN");
+  }
+  const plan = setupPlan({ repository, app: inspected.app, configText, checks, ciWorkflows: ci, ref: options.ref, dryRun: !options.activate, attachments });
+  if (inspected.provenance) plan.appInspection = inspected.provenance;
   const secrets = privateKey ? { AGENT_APP_PRIVATE_KEY: privateKey } : {};
-  for (const name of ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "SETUP_SECRETS"]) {
+  for (const name of ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "SETUP_SECRETS", "AGENT_ATTACH_TOKEN"]) {
     if (process.env[name]) secrets[name] = process.env[name];
   }
   const store = stateStore({ repositoryId: String(repository.id), git: githubData({ token, repo: options.repo }) });

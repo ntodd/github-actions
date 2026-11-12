@@ -1,10 +1,10 @@
 // Setup renders this file into the target repository. Triggers and permission
 // ceilings live there; authorization, execution and recovery remain shared.
 export function callerWorkflow({ toolingRepository = "ntodd/github-actions", ref = "main", defaultBranch,
-  ciWorkflows, dryRun = true } = {}) {
+  ciWorkflows, dryRun = true, attachments = false } = {}) {
   if (!/^[\w.-]+\/[\w.-]+$/.test(toolingRepository) || !/^[a-z\d][\w./-]{0,199}$/i.test(ref) || ref.includes("..")
     || typeof defaultBranch !== "string" || !/^[a-z\d][\w./-]{0,199}$/i.test(defaultBranch) || defaultBranch.includes("..")
-    || typeof dryRun !== "boolean" || !Array.isArray(ciWorkflows) || !ciWorkflows.length || ciWorkflows.length > 50
+    || typeof dryRun !== "boolean" || typeof attachments !== "boolean" || !Array.isArray(ciWorkflows) || !ciWorkflows.length || ciWorkflows.length > 50
     || ciWorkflows.some((s) => typeof s !== "string" || !s.trim() || s.length > 100 || /[\x00-\x1f]|\$\{\{/.test(s))) {
     throw new Error("Caller needs a valid shared ref, default branch and explicit CI workflow names");
   }
@@ -70,5 +70,5 @@ jobs:
       ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
       OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
       SETUP_SECRETS: \${{ secrets.SETUP_SECRETS }}
-`;
+${attachments ? "      AGENT_ATTACH_TOKEN: ${{ secrets.AGENT_ATTACH_TOKEN }}\n" : ""}`;
 }

@@ -10,6 +10,9 @@ test("setup secret encryption uses gh stdin, with no secret or administrator tok
   assert.equal(calls[0].input, "model-credential");
   assert.equal(JSON.stringify(calls[0].args).includes("credential"), false);
   await assert.rejects(client.setSecret("UNRELATED_SECRET", "value"));
+  await client.setSecret("AGENT_ATTACH_TOKEN", "attachment-credential");
+  assert.equal(calls[1].input, "attachment-credential");
+  assert.equal(JSON.stringify(calls[1].args).includes("attachment-credential"), false);
 });
 
 test("setup reads complete check pagination and rejects credential-bearing pagination outside its repository", async () => {

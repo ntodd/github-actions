@@ -68,7 +68,7 @@ export function setupClient({ token, repo, fetchImpl = fetch, gh = runGh }) {
     createVariable: (data) => api("POST", "/actions/variables", data), updateVariable: (name, data) => api("PATCH", `/actions/variables/${name}`, data),
     secretNames: async () => (await list("/actions/secrets?per_page=100", "secrets")).map((s) => s.name),
     setSecret: async (name, value) => {
-      if (!["AGENT_APP_PRIVATE_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "SETUP_SECRETS"].includes(name)
+      if (!["AGENT_APP_PRIVATE_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "SETUP_SECRETS", "AGENT_ATTACH_TOKEN"].includes(name)
         || typeof value !== "string" || !value || Buffer.byteLength(value) > 48 * 1024) throw new Error("Invalid setup secret");
       await gh(["secret", "set", name, "--repo", repo], value);
       return { name, written: true };

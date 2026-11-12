@@ -45,7 +45,7 @@ export async function applySetupPlan({ plan, api, store, journal, secrets = {}, 
     || repository.archived || repository.disabled) throw new Error("Repository identity, default branch or administrator permission changed");
   if (!["read-only", "active"].includes(plan.mode) || plan.stateBranch !== "factory-state"
     || plan.files?.length !== 2 || plan.files[0].path !== ".github/workflows/factory.yml" || plan.files[1].path !== ".github/factory.yml") throw new Error("Invalid setup plan");
-  for (const [name, value] of Object.entries(secrets)) if (!["AGENT_APP_PRIVATE_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "SETUP_SECRETS"].includes(name)
+  for (const [name, value] of Object.entries(secrets)) if (!["AGENT_APP_PRIVATE_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "SETUP_SECRETS", "AGENT_ATTACH_TOKEN"].includes(name)
     || typeof value !== "string" || !value || Buffer.byteLength(value) > 48 * 1024) throw new Error("Invalid setup secret input (maximum 48 KiB)");
   const config = parseConfig(plan.files[1].content);
   if (secrets.SETUP_SECRETS !== undefined) selectProjectSecrets(config.environment, secrets.SETUP_SECRETS);

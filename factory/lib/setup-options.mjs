@@ -84,4 +84,5 @@ export function validateSharedSetupWorkflow(source, name) {
   if (doc.errors.length) throw new Error(`Shared workflow ${name} could not be parsed`);
   const workflow = doc.toJS({ maxAliasCount: 100 });
   if (!workflow?.on || typeof workflow.on !== "object" || !Object.hasOwn(workflow.on, "workflow_call")) throw new Error(`Shared workflow ${name} is not reusable`);
+  return workflow.on.workflow_call;
 }

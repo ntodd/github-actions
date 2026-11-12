@@ -23,6 +23,8 @@ on:
         required: false
       SETUP_SECRETS:
         required: false
+      AGENT_ATTACH_TOKEN:
+        required: false
 
 permissions: {}
 
@@ -77,6 +79,7 @@ jobs:
           FACTORY_TOOLING_REPOSITORY: ${{ job.workflow_repository }}
           FACTORY_APP_ID: ${{ inputs.app-id }}
           FACTORY_APP_PRIVATE_KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+          AGENT_ATTACH_TOKEN: ${{ secrets.AGENT_ATTACH_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: node factory/control/index.mjs
       - name: Upload public App inspection metadata

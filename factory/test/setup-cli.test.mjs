@@ -50,6 +50,7 @@ globalThis.fetch = async (input, options = {}) => {
   const output = JSON.parse(result.stdout);
   assert.equal(output.status, "preview"); assert.equal(output.plan.mode, "read-only");
   assert.equal(output.state, "initialize"); assert.equal(output.plan.files.length, 2);
+  assert.equal(output.plan.files[0].content.includes("AGENT_ATTACH_TOKEN"), false);
   assert.equal(result.stdout.includes("test-administrator-token"), false);
   assert.equal(result.stdout.includes("BEGIN PRIVATE KEY"), false);
   assert.equal(existsSync(journal), false); assert.equal(existsSync(`${journal}.lock`), false);
@@ -99,7 +100,7 @@ globalThis.fetch = async (input, options = {}) => {
   else if (p.endsWith("/check-runs")) value = {check_runs:[{name:"test",app:{id:15368}}]};
   else if (p.endsWith("/statuses")) value = [];
   else if (p === "/repos/ntodd/github-actions/commits/"+B) value = {sha:B};
-  else if (/^\\/repos\\/ntodd\\/github-actions\\/contents\\/\\.github\\/workflows\\/factory-(runtime|wakeup)\\.yml$/.test(p)) value = file("on:\\n  workflow_call:\\n");
+  else if (/^\\/repos\\/ntodd\\/github-actions\\/contents\\/\\.github\\/workflows\\/factory-(runtime|wakeup)\\.yml$/.test(p)) value = file("on:\\n  workflow_call:\\n    secrets:\\n      AGENT_ATTACH_TOKEN: {required: false}\\n");
   else if (p.endsWith("/git/ref/heads/factory-state")) return new Response("{}",{status:404});
   else throw new Error("Unexpected inspection setup read: "+p);
   return Response.json(value);
@@ -112,6 +113,7 @@ globalThis.fetch = async (input, options = {}) => {
   const output = JSON.parse(result.stdout);
   assert.equal(output.status, "preview"); assert.equal(output.plan.appId, 123);
   assert.equal(output.plan.appInspection.artifact.digest, digest); assert.equal(output.plan.appInspection.run.id, "100");
+  assert.equal(output.plan.files[0].content.includes("AGENT_ATTACH_TOKEN: \${{ secrets.AGENT_ATTACH_TOKEN }}"), true);
   assert.equal(result.stdout.includes("test-administrator-token"), false);
   assert.deepEqual(output.secrets, []);
   assert.equal(existsSync(journal), false); assert.equal(existsSync(`${journal}.lock`), false);

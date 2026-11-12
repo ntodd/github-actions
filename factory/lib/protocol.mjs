@@ -2,6 +2,7 @@
 // commit the returned ledger before executing an effect. Observations must come
 // from the controller's API adapter, never from event payloads or worker claims.
 import { createHash } from "node:crypto";
+import { attachmentManifest, referencedAttachments, attachmentDescriptor } from "./attachments.mjs";
 import { validEffect, validReceipt, pullRequestText, expectedEffectHead } from "./effects.mjs";
 import { validApiJournal } from "./api-journal.mjs";
 import { nodeId, replyProposal, threadRevision, threadEffectId } from "./threads.mjs";
@@ -261,7 +262,7 @@ export function validateLedger(s) {
     requireThat(Array.isArray(op.threadTargets ?? []) && new Set((op.threadTargets ?? []).map((t) => t.id)).size === (op.threadTargets ?? []).length
       && (op.threadTargets ?? []).every((t) => nodeId(t.id) && /^[a-f\d]{64}$/.test(t.revision) && Array.isArray(t.anchors) && t.anchors.length
         && t.anchors.every((a) => /^review-comment:[1-9]\d*$/.test(a.sourceId) && /^[a-f\d]{64}$/.test(a.revision))), "corrupt", `Invalid thread targets for ${id}`);
-    requireThat(!(s.items[op.item].evidence.own && op.effects.some((e) => ["thread-reply", "thread-resolve"].includes(e.type))),
+    requireThat(!(s.items[op.item].evidence.own && op.effects.some((e) => ["attachment", "thread-reply", "thread-resolve"].includes(e.type))),
       "corrupt", `Own-PR maintenance cannot change review threads: ${id}`);
     requireThat(Array.isArray(op.inputs ?? []) && (op.inputs ?? []).every((id) => s.items[op.item].commands[id]?.operation === op.id),
       "corrupt", `Missing operation input for ${id}`);
@@ -271,7 +272,7 @@ export function validateLedger(s) {
     }
     requireThat(new Set(op.effects.map((e) => e.id)).size === op.effects.length, "corrupt", `Duplicate effects for ${id}`);
     for (const effect of op.effects) {
-      requireThat(validEffect(effect, op)
+      requireThat(validEffect(effect, op) && (effect.type !== "attachment" || effect.repositoryId === s.repositoryId)
         && ["prepared", "pending", "applied", "rejected"].includes(effect.status)
         && Array.isArray(effect.requests) && effect.requests.every((r, n) => r.id === `${id}/${effect.id}/${n + 1}`
           && integer(r.generation) && object(r.publisher) && typeof r.publisher.id === "string"
@@ -283,7 +284,7 @@ export function validateLedger(s) {
       requireThat(effect.status !== "pending" || op.phase === "publishing", "corrupt", `Unresolved write lost ownership: ${id}`);
       if (effect.lastRejection !== undefined) requireThat(object(effect.lastRejection)
         && (effect.lastRejection.kind === "git-rejection" || effect.lastRejection.kind === "http-rejection"
-          && [400, 401, 403, 404, 409, 410, 422].includes(effect.lastRejection.status))
+          && [400, 401, 403, 404, 409, 410, 413, 415, 422].includes(effect.lastRejection.status))
         && effect.requests.some((r) => r.id === effect.lastRejection.requestId) && Number.isFinite(Date.parse(effect.lastRejection.at)),
         "corrupt", `Invalid publish rejection receipt for ${id}`);
     }
@@ -727,12 +728,26 @@ export function evolve(ledger, key, event) {
         return { id: e.id, type: e.type, branch: e.branch, expectedHead: e.expectedHead,
           commit: e.commit, baseSha: e.baseSha, status: "prepared", requests: [], receipt: null };
       });
+      let attachments;
+      try {
+        const manifest = attachmentManifest(p.attachments);
+        const body = op.mode === "build" && p.outcome === "ready" && op.effects.length ? p.pullRequest?.body : "";
+        attachments = referencedAttachments([body, ...(Array.isArray(p.replies) ? p.replies.map((r) => r?.body) : [])].filter(Boolean).join("\n"), manifest);
+      } catch { throw new ProtocolError("invalid-result", "Screenshot references need a bounded, verified attachment manifest"); }
+      requireThat(!attachments.length || !item.evidence.own && ["ready", "no-change"].includes(p.outcome), "invalid-result", "Screenshot publication exceeds the assigned work");
+      let dependency = op.effects[0]?.id ?? null;
+      for (const attachment of attachments) {
+        const id = `attachment-${attachment.digest.slice(7)}`;
+        op.effects.push({ id, type: "attachment", ...attachmentDescriptor(attachment), repositoryId: s.repositoryId,
+          commit: op.effects[0]?.commit ?? op.target.head, dependsOn: dependency, status: "prepared", requests: [], receipt: null });
+        dependency = id;
+      }
       if (op.mode === "build" && op.target.number === null && p.outcome === "ready" && op.effects.length) {
         let prose;
         try { prose = pullRequestText(p.pullRequest); }
         catch { throw new ProtocolError("invalid-result", "Invalid pull request prose"); }
         op.effects.push({ id: "pull-request", type: "pull-request", head: op.target.branch, base: op.base.ref,
-          commit: op.effects[0].commit, dependsOn: "push", ...prose, status: "prepared", requests: [], receipt: null });
+          commit: op.effects[0].commit, dependsOn: dependency, ...prose, status: "prepared", requests: [], receipt: null });
       }
       const replies = p.replies ?? [];
       requireThat(Array.isArray(replies) && replies.length <= 50 && (!replies.length || !item.evidence.own
@@ -761,7 +776,7 @@ export function evolve(ledger, key, event) {
         const push = op.effects.find((e) => e.type === "push"), commit = push?.commit ?? op.target.head;
         const id = threadEffectId("reply", reply.thread);
         op.effects.push({ id, type: "thread-reply", thread: reply.thread, revision: reply.revision, number: op.target.number,
-          body: reply.body, commit, dependsOn: push?.id ?? null, status: "prepared", requests: [], receipt: null });
+          body: reply.body, commit, dependsOn: dependency, status: "prepared", requests: [], receipt: null });
         if (reply.resolve) op.effects.push({ id: threadEffectId("resolve", reply.thread), type: "thread-resolve", thread: reply.thread,
           revision: reply.revision, number: op.target.number, commit, dependsOn: id, status: "prepared", requests: [], receipt: null });
       }
@@ -837,7 +852,7 @@ export function evolve(ledger, key, event) {
         }
       } else {
         requireThat(event.outcome === "rejected" && (event.evidence?.kind === "git-rejection" || event.evidence?.kind === "http-rejection"
-          && [400, 401, 403, 404, 409, 410, 422].includes(event.evidence.status)), "unknown", "A timeout or unchanged head does not establish rejection");
+          && [400, 401, 403, 404, 409, 410, 413, 415, 422].includes(event.evidence.status)), "unknown", "A timeout or unchanged head does not establish rejection");
         effect.status = "rejected";
         effect.lastRejection = { kind: event.evidence.kind, ...(event.evidence.status === undefined ? {} : { status: event.evidence.status }), requestId: event.requestId, at: time(event.at) };
       }

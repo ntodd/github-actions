@@ -69,7 +69,7 @@ export async function readAppInspection({ api, actions, repository, runId, attem
     || repository.archived || repository.disabled) throw new Error("Inspection setup requires administrator access, a personal repository, a run/attempt and an immutable shared SHA");
   const head = await api.branchSha(repository.default_branch);
   const caller = await api.fileAt(workflow, head);
-  if (!sha(head) || caller !== callerWorkflow({ defaultBranch: repository.default_branch, ciWorkflows, ref: toolingSha, dryRun: true })) {
+  if (!sha(head) || ![false, true].some((attachments) => caller === callerWorkflow({ defaultBranch: repository.default_branch, ciWorkflows, ref: toolingSha, dryRun: true, attachments }))) {
     throw new Error("Inspection setup requires the current generated read-only caller pinned to --ref; inspect the installed caller and dispatch again");
   }
   const run = await api.run(runId, attempt), started = Date.parse(run.run_started_at), finished = Date.parse(run.updated_at);

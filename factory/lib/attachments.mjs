@@ -35,6 +35,24 @@ export function attachmentManifest(value = []) {
   return value;
 }
 
+export const attachmentDescriptor = ({ file, paths, digest, size, contentType }) => ({ file, paths: [...paths], digest, size, contentType });
+export const assetUrl = (value) => typeof value === "string" && /^https:\/\/github\.com\/user-attachments\/assets\/[a-f0-9-]{8,100}$/.test(value);
+export function referencedAttachments(text, manifest) {
+  attachmentManifest(manifest);
+  const refs = screenshotRefs(text);
+  if (refs.some((path) => !manifest.some((a) => a.paths.includes(path)))) fail();
+  return manifest.filter((a) => a.paths.some((path) => refs.includes(path)));
+}
+export function renderAttachments(text, op) {
+  const rendered = String(text).replace(/(!\[[^\]]*\]\()(\.\/screenshots\/[^)\s]+)(\))/g, (_whole, before, path, after) => {
+    const effect = op.effects.find((e) => e.type === "attachment" && e.paths.includes(path));
+    if (!source.test(path) || effect?.status !== "applied" || !assetUrl(effect.receipt?.url)) fail();
+    return `${before}${effect.receipt.url}${after}`;
+  });
+  if (rendered.length > 60000) throw new Error("Screenshot references exceed the published text limit");
+  return rendered;
+}
+
 function fileBytes(path, limit = MAX_ATTACHMENT_BYTES) {
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
@@ -88,4 +106,38 @@ export function exportAttachments({ stateDir, directory, text, secrets = [] }) {
   const manifest = attachmentManifest([...byFile.values()].map((a) => a.manifest));
   writeFileSync(join(directory, "screenshots.json"), JSON.stringify([...byFile].map(([file, { bytes }]) => ({ file, base64: bytes.toString("base64") }))), { mode: 0o600, flag: "wx" });
   return manifest;
+}
+
+// GitHub CLI v2.103.3 uses this upload-only endpoint (internal/attachments/client.go).
+// The attachment credential never edits a PR; the App publishes the saved URL.
+export function attachmentUploader({ token, repositoryId, readBytes, fetchImpl = fetch, serverUrl = "https://github.com" }) {
+  const bytesFor = async (effect) => {
+    if (serverUrl !== "https://github.com") throw new Error("Screenshot upload is supported only on GitHub.com");
+    if (!token || typeof token !== "string" || /[\r\n]/.test(token) || token.length > 48 * 1024) throw new Error("Screenshot publication requires AGENT_ATTACH_TOKEN in the clean controller job");
+    attachmentManifest([attachmentDescriptor(effect)]);
+    if (!/^[1-9]\d*$/.test(repositoryId) || effect.repositoryId !== repositoryId) fail();
+    const bytes = await readBytes(effect);
+    if (!Buffer.isBuffer(bytes) || bytes.length !== effect.size || digestOf(bytes) !== effect.digest || types[rasterType(bytes)] !== effect.contentType) fail();
+    return bytes;
+  };
+  return {
+    validate: async (effect) => { await bytesFor(effect); },
+    // The upload API has no lookup by client request identity. A lost response
+    // stays uncertain and escalates through the ordinary publish deadline.
+    inspect: async () => ({ outcome: "unknown" }),
+    async apply(effect) {
+      const bytes = await bytesFor(effect);
+      const url = new URL("https://uploads.github.com/user-attachments/assets");
+      url.search = new URLSearchParams({ name: effect.file, content_type: effect.contentType, repository_id: repositoryId }).toString();
+      const response = await fetchImpl(url.href, { method: "POST", redirect: "error", signal: AbortSignal.timeout(20000),
+        headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "content-type": "application/octet-stream", "content-length": String(bytes.length) }, body: bytes });
+      if ([400, 401, 403, 404, 409, 410, 413, 415, 422].includes(response.status)) return { outcome: "rejected", evidence: { kind: "http-rejection", status: response.status } };
+      if (response.status !== 201) return { outcome: "unknown" };
+      const chunks = []; let size = 0;
+      for await (const chunk of response.body) { if ((size += chunk.length) > 16384) return { outcome: "unknown" }; chunks.push(chunk); }
+      let result;
+      try { result = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { return { outcome: "unknown" }; }
+      return assetUrl(result.url) ? { outcome: "applied", evidence: { kind: "attachment", repositoryId, digest: effect.digest, size: effect.size, url: result.url } } : { outcome: "unknown" };
+    },
+  };
 }
