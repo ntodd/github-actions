@@ -6,9 +6,10 @@ import { readFeedback } from "./admission.mjs";
 import { observeAuthorization, observeItem } from "./observe.mjs";
 import { pendingControls } from "./commands.mjs";
 import { pendingWrites, pendingText, preflightRead, preflightId } from "./recovery.mjs";
-import { evolve } from "./protocol.mjs";
+import { evolve, TERMINAL } from "./protocol.mjs";
 import { factoryReadApi } from "./identity.mjs";
 import { itemUsage, usageText } from "./usage.mjs";
+import { publicationGaps, publishedPushes } from "./effects.mjs";
 const hash = (v) => createHash("sha256").update(v).digest("hex");
 const ownNumber = (item) => Number(item.key.split(":")[1]);
 const hidden = (value) => JSON.stringify(value).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
@@ -18,6 +19,7 @@ const nextText = (status) => ({ answer: "Answer the question with /agent answer 
   "main-green": "Work resumes after the default branch's required checks pass.", "owner-terminal": "The worker's completion wakes the controller.",
   "publish-outcome": "A later event or backstop pass inspects the original request; an unknown write is never resent.",
   "issue-reopen": "The recorded reopen request is inspected before existing work resumes.",
+  landing: "The next controller pass rechecks the recorded commits; missing evidence has a bounded deadline.",
   handover: "Review the PR and enable auto-merge when you want it to land.", "close-out": "Record completion of the required work.",
   none: "The next relevant GitHub event or backstop pass checks this item again." })[status.next]
   ?? `Next: ${status.next.replaceAll("-", " ")}.`;
@@ -27,15 +29,17 @@ export function projectItem(ledger, key) {
   const pending = pendingWrites(ledger, key);
   const usage = itemUsage(ledger, key);
   const alerts = Object.values(item.apiAlerts ?? {}).filter((a) => a.status === "active");
+  const gaps = publicationGaps(ledger, key);
   const fallback = { state: "agent-ready", reason: "Accepted work is queued", next: "dispatch", wait: null };
   const summary = item.paused ? { state: "agent-stopped", reason: "Automatic work is paused", next: "work-command", wait: null }
     : item.question ? { state: item.status?.state === "agent-failed" ? "agent-failed" : "agent-needs-you", reason: item.question.reason, next: "answer", wait: null }
     : item.status ?? fallback;
-  const prs = item.prs.map((pr) => ({ number: pr.number, state: pr.state === "merged" ? "agent-complete"
+  const prs = item.prs.map((pr) => ({ number: pr.number, state: gaps.some((g) => g.number === pr.number && !g.accepted) ? item.question ? "agent-needs-you" : "agent-waiting" : pr.state === "merged" ? "agent-complete"
     : pr.state === "closed" ? pr.acceptedClosure || !pr.required ? "agent-complete" : "agent-needs-you" : summary.state,
   reason: pr.state === "merged" ? `Merged at ${pr.mergedSha}` : pr.state === "closed" ? pr.acceptedClosure || !pr.required
     ? "Closed with an accepted disposition" : "Closed without merging; an explicit disposition is needed" : summary.reason,
-  next: pr.state === "merged" || pr.state === "closed" && (pr.acceptedClosure || !pr.required) ? "none" : summary.next,
+  next: gaps.some((g) => g.number === pr.number && !g.accepted) ? summary.next
+    : pr.state === "merged" || pr.state === "closed" && (pr.acceptedClosure || !pr.required) ? "none" : summary.next,
   terminal: pr.state !== "open" }));
   const targets = [...prs.map((p) => ({ target: p.number, status: p }))];
   if (!item.evidence.own) targets.unshift({ target: ownNumber(item), status: summary });
@@ -51,6 +55,13 @@ export function projectItem(ledger, key) {
       lines.push("", ...prs.map((p) => `- #${p.number}: ${p.state} — ${p.reason}`));
     }
     if (status.wait?.deadline) lines.push("", `Wait deadline: ${status.wait.deadline}.`);
+    const publications = publishedPushes(ledger, key).reverse().filter((r) => r.pr.required && r.pr.state === "merged"
+      && (target === ownNumber(item) || r.number === target)).slice(0, 10);
+    if (publications.length) lines.push("", ...publications.map((r) => {
+      const gap = gaps.find((g) => g.request === r.id);
+      return `Published \`${r.commit}\` on #${r.number}; recorded merge \`${r.pr.mergedSha}\`. ${!gap ? "Landing is verified." : gap.accepted
+        ? "The merged outcome was explicitly accepted." : "Landing is not verified; completion waits for evidence or a decision."}`;
+    }));
     if (item.attempts.length || usage.routingRequests) lines.push("", usageText(usage));
     const marker = `<!-- factory:status=${key}/${target} -->`;
     lines.push("", marker, `<!-- agent-ready:state ${hidden(data)} -->`);
@@ -154,7 +165,7 @@ export function surfaceService({ api, write, store, repo, appLogin, run, now = (
         : "Reopening the issue before continuing its existing work.";
     const disposition = item.prs.find((p) => p.acceptedClosure && p.dispositions?.some((d) => d.commandId === command.id));
     if (disposition) return `The closure of PR #${disposition.number} is accepted. Completion still requires every other required PR to be accounted for.`;
-    if (command.action === "answer" && item.completionAcceptance?.sourceId === command.sourceId) return "The recorded PRs cover the revised issue; recording completion.";
+    if (command.action === "answer" && item.completionAcceptance?.sourceId === command.sourceId) return "The recorded merged work was explicitly accepted; recording completion.";
     return ({ stop: `Work is paused. A request already sent may still finish.${pendingText(pendingWrites(ledger, item.key))}`,
       status: `${item.status?.state ?? "Queued"}: ${item.status?.reason ?? "Accepted work is queued"}. ${nextText(item.status ?? { next: "dispatch" })}`,
       effort: `Using ${command.effort} effort for subsequent runs.`, answer: "Resuming the existing work with your answer.",
@@ -205,7 +216,7 @@ export function surfaceService({ api, write, store, repo, appLogin, run, now = (
       const { state } = await store.load(), latest = { ...await loadConfig(api), repo };
       const active = state.operations[state.items[key].activeOperation];
       if (active && !["done", "failed", "superseded"].includes(active.phase)) return false;
-      const facts = await observeItem({ api, actions: null, ledger: state, key, context: latest, rules: await api.branchRules(latest.defaultBranch) });
+      const facts = await observeItem({ api, actions: null, ledger: state, key, context: latest, rules: await api.branchRules(latest.defaultBranch), now, landingLimit: 0 });
       const current = facts.prs.find((p) => p.number === number);
       return !current?.unsupported && current?.headSha === head && current.checks?.state === "success" && current.mergeable === "MERGEABLE"
         && (readyOnly || !current.signals?.pending?.length) && !(current.feedback ?? []).some((f) => f.requiresResponse
@@ -297,14 +308,14 @@ export function surfaceService({ api, write, store, repo, appLogin, run, now = (
     return outcomes;
   }
   async function closeOut({ key }) {
-    const item = await currentItem(key);
-    if (item.evidence.own || !item.complete) return { status: "superseded" };
+    const { state } = await store.load(), item = state.items[key];
+    if (item.evidence.own || !item.complete || publicationGaps(state, key).some((g) => !g.accepted)) return { status: "superseded" };
     const definition = { kind: "issue-close", target: ownNumber(item), payload: { revision: item.revision },
       guard: { generation: item.generation, revision: item.revision } };
     return execute(key, `close-out:${key}:${item.generation}:${item.revision}`, definition, async () => {
       if (!await workGuard(key, definition)) return false;
-      const current = await currentItem(key), required = current.prs.filter((p) => p.required);
-      if (!current.complete || !required.length) return false;
+      const { state: latest } = await store.load(), current = latest.items[key], required = current.prs.filter((p) => p.required), op = latest.operations[current.activeOperation];
+      if (!current.complete || !required.length || op && !TERMINAL.has(op.phase) || publicationGaps(latest, key).some((g) => !g.accepted)) return false;
       for (const recorded of required) {
         const actual = await api.pull(recorded.number);
         if (recorded.state === "merged" ? !actual.merged_at || actual.merge_commit_sha !== recorded.mergedSha

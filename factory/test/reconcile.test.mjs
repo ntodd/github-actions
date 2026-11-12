@@ -409,6 +409,31 @@ test("a merge while publication is uncertain still recovers its effect before is
   assert.equal(decide(recovered, f).action.type, "close-out");
 });
 
+test("a branch write recovered after merge cannot count as landed revised work", () => {
+  const revision = "f".repeat(64), fresh = { ...observation, authorization: { valid: true, revision } };
+  let state = step(initial(), { type: "revise", revision });
+  state = step(state, reserve("op-1", { revision }));
+  state = step(state, { type: "claim", run, provenance: { repositoryId: "42", workflowPath: ".github/workflows/factory.yml", headSha: "a".repeat(40) }, observation: fresh });
+  state = step(state, { type: "owner-observed", run, status: "completed", conclusion: "success" });
+  state = step(state, { type: "collect-result", proposal, artifact });
+  state = step(state, { type: "authorize-publish", observation: fresh });
+  state = step(state, { type: "request-effect", effectId: "push", observation: fresh });
+  const merged = facts({ authorization: fresh.authorization, prs: [pr({ state: "merged", mergedSha: B }), pr({ number: 10, state: "merged", mergedSha: D })] });
+  state = apply(state, decide(state, merged));
+  state = step(state, { type: "effect-observed", effectId: "push", requestId: "op-1/push/1", outcome: "applied", evidence: { kind: "branch-head", commit: C } });
+  state = step(state, { type: "finish-publish" });
+  const waiting = decide(state, merged);
+  assert.equal(waiting.status.next, "landing");
+  state = apply(state, waiting);
+  const plan = decide(state, merged, "2026-11-12T12:16:00Z");
+  assert.equal(plan.action.type, "ask");
+  assert.equal(apply(state, plan).items["issue:7"].question.kind, "completion-revision");
+  assert.match(plan.action.reason, new RegExp(C));
+  assert.equal(operation(state).effects[0].receipt.commit, C);
+  assert.equal(state.items["issue:7"].prs.find((p) => p.number === 9).mergedSha, B);
+  assert.equal(apply(state, plan).items["issue:7"].complete, false);
+});
+
 test("a revised issue cannot close on PRs for its previous accepted revision without an explicit decision", () => {
   const f = facts({ authorization: { valid: true, revision: "f".repeat(64) }, prs: [pr({ state: "merged", mergedSha: C }), pr({ number: 10, state: "merged", mergedSha: D })] });
   const first = decide(initial(), f);

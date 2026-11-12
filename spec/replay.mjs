@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { admit, emptyLedger, evolve, revisionOf } from "../factory/lib/protocol.mjs";
+import { publicationGaps, publicationDigest, landedCommits } from "../factory/lib/effects.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), "factory-replay-"));
@@ -65,6 +66,15 @@ function replay(file) {
         event("admit-request", { commandId, authorization: { valid: true, revision,
           evidence: { kind: "command", sourceId, revision, actor: "ntodd" } } });
       }
+      else if (b.acceptedWork.length > a.acceptedWork.length) {
+        const gaps = publicationGaps(ledger, "issue:7").filter((r) => !r.accepted), sourceId = `issue-comment:${20000 + n}`;
+        event("ask", { kind: "completion-revision", revision, publicationDigest: publicationDigest(gaps), reason: "Decide whether the recorded merged work is sufficient" });
+        const answeredAt = "2026-11-12T12:00:01Z";
+        ledger = ingestCommands(ledger, "issue:7", [{ authority: "instruction", sourceId, revision,
+          author: "ntodd", createdAt: answeredAt, target: 7, command: { action: "answer", text: "accept-completion" } }]);
+        const commandId = Object.values(ledger.items["issue:7"].commands).find((c) => c.sourceId === sourceId).id;
+        event("accept-completion", { commandId, at: answeredAt, authorization: { valid: true, revision } });
+      }
       else if (b.generation !== a.generation) event("stop");
       else if (b.paused !== a.paused) event("resume");
       else if (a.live.length > 0 && b.live.length === 0) event("owner-observed", {
@@ -106,6 +116,10 @@ function replay(file) {
       } else if (b.merged.length > a.merged.length) {
         const pr = b.merged.find((p) => !a.merged.includes(p));
         event("pr-observed", { number: pr, state: "merged", mergedSha: sha(a.heads[pr]) });
+      } else if (b.verifiedWork.length > a.verifiedWork.length) {
+        const op = b.verifiedWork.find((value) => !a.verifiedWork.includes(value)), merged = b.merges.find((m) => m.work.includes(op));
+        update({ type: "record-landing", operationId: `op-${op}`, effectId: "push", landing: { status: "landed", commit: sha(100 + op),
+          at, checks: 1, source: "pr", number: merged.pr, destination: sha(merged.head), method: merged.head === 100 + op ? "commit" : "ancestor" } });
       } else if (b.complete !== a.complete) event("close-out");
 
       const item = ledger.items["issue:7"], op = ledger.operations[id];
@@ -115,6 +129,9 @@ function replay(file) {
       assert.equal(item.complete, b.complete);
       assert.equal(item.attempts.length, b.attempts);
       assert.deepEqual(item.prs.filter((p) => p.state === "merged").map((p) => p.number).sort(), [...b.merged].sort());
+      for (const merged of b.merges) assert.equal(item.prs.find((p) => p.number === merged.pr).mergedSha, sha(merged.head));
+      const landed = landedCommits(ledger, "issue:7");
+      for (const work of b.verifiedWork.filter((op) => b.receipts.includes(op))) assert(landed.has(sha(100 + work)), "Verified model work needs runtime landing evidence");
       if (b.op) {
         assert.equal(item.activeOperation, id);
         assert.equal(op.phase, b.phase);

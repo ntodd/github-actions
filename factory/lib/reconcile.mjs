@@ -5,6 +5,7 @@ import { evolve, TERMINAL } from "./protocol.mjs";
 import { queuedCommands, WORK_ACTIONS, routeNextAt } from "./commands.mjs";
 import { answerText, closureAnswer, issueClosureAnswer, issueClosureChoice } from "./answers.mjs";
 import { failureKeys } from "./failure-report.mjs";
+import { publicationGaps, publicationDigest } from "./effects.mjs";
 import { repairRegistration, repairCandidates, mainRepairRole } from "./main-repair.mjs";
 const minute = 60_000;
 const identity = (a, b) => a?.id === b?.id && a?.attempt === b?.attempt;
@@ -32,7 +33,9 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
     return finish(null, label, reason, { kind, target, deadline });
   };
   const ask = (reason, label = "agent-needs-you", extra = {}) => {
-    if (!item.question || item.question.reason !== reason || extra.consumeCommand) observe({ type: "ask", reason, ...extra });
+    if (!item.question || item.question.reason !== reason || extra.consumeCommand
+      || extra.revision && item.question.revision !== extra.revision
+      || extra.publicationDigest && item.question.publicationDigest !== extra.publicationDigest) observe({ type: "ask", reason, ...extra });
     return finish({ type: "ask", reason, questionId: item.question.id }, label, reason);
   };
   const observe = (event) => { event = { at: now, ...event }; events.push(event); state = evolve(state, key, event); item = state.items[key]; };
@@ -58,6 +61,7 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
       observe({ type: "pr-observed", number: current.number, state: current.state, mergedSha: current.mergedSha });
     }
   }
+  for (const landing of facts.landings ?? []) observe({ type: "record-landing", ...landing });
   const workIsFinal = () => {
     const required = item.prs.filter((p) => p.required);
     return required.length > 0 && required.every((p) => p.state === "merged" || p.state === "closed" && p.acceptedClosure);
@@ -199,7 +203,15 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
     else return ask("There is no closed required PR to accept. Request work on an open PR, or use /agent restart for replacement work.", "agent-needs-you", { consumeCommand: command.id });
   }
   if (allFinal) {
-    if (!item.evidence.own && facts.authorization?.valid !== true) return facts.authorization?.valid === false
+    const gaps = publicationGaps(state, key).filter((r) => !r.accepted), digest = publicationDigest(gaps);
+    if (gaps.length && !command && !item.question && gaps.every((g) => g.reason !== "unverified")) {
+      const started = gaps.map((g) => Date.parse(g.firstAt)).filter(Number.isFinite);
+      const deadline = item.status?.wait?.kind === "landing" ? item.status.wait.deadline
+        : new Date((started.length ? Math.min(...started) : instant) + (config.timeouts.publishMinutes ?? 15) * minute).toISOString();
+      if (instant < Date.parse(deadline)) return finish(null, "agent-waiting", "Publication reached the branch; whether it landed could not yet be verified",
+        { kind: "landing", target: key, deadline });
+    }
+    if ((!item.evidence.own || gaps.length) && facts.authorization?.valid !== true) return facts.authorization?.valid === false
       ? ask(facts.authorization.reason ?? "Revalidate authorization before closing the issue")
       : wait("agent-waiting", "Authorization could not be observed before issue completion", "authorization", key);
     if (command?.action === "restart") {
@@ -207,12 +219,14 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
       if (facts.authorization.revision !== item.revision) observe({ type: "revise", revision: facts.authorization.revision });
       return finish({ type: "restart", commandId: command.id }, "agent-working", "Retire the recorded work before admitting a replacement build");
     }
-    if (!item.evidence.own && (item.revisionPending || facts.authorization.revision !== item.revision)) {
+    if (gaps.length || !item.evidence.own && (item.revisionPending || facts.authorization.revision !== item.revision)) {
       const text = command && answerText(command).toLowerCase();
-      const accepts = command?.action === "answer" && (text === "accept-completion" || text === "1"
-        && previousQuestion?.kind === "completion-revision" && Date.parse(command.at) >= Date.parse(previousQuestion.at));
+      const currentQuestion = previousQuestion?.kind === "completion-revision" && previousQuestion.revision === facts.authorization.revision
+        && Date.parse(command?.at) > Date.parse(previousQuestion.at) && (!gaps.length || previousQuestion.publicationDigest === digest);
+      const accepts = command?.action === "answer" && (text === "accept-completion" && (!gaps.length || currentQuestion) || text === "1" && currentQuestion);
       if (accepts) observe({ type: "accept-completion", commandId: command.id, questionKind: previousQuestion?.kind, authorization: facts.authorization });
-      else return ask("The issue changed after its recorded PRs finished.\n\n1. Accept those PRs as covering the revised issue: /agent answer accept-completion.\n2. Request replacement work with /agent restart.", "agent-needs-you", { kind: "completion-revision", ...(command ? { consumeCommand: command.id } : {}) });
+      else return ask(`${gaps.length ? `Published branch commits are not yet verified as landed:\n${gaps.slice(0, 10).map((r) => `- #${r.number}: ${r.commit}; recorded merge ${r.mergedSha} (${r.request}).`).join("\n")}${gaps.length > 10 ? `\nAnd ${gaps.length - 10} more recorded publications.` : ""}` : "The issue changed after its recorded PRs finished."}\n\n1. Accept the recorded merged work as complete: /agent answer accept-completion.\n2. ${item.evidence.own ? "Reopen this PR and request /agent update or /agent resolve if further maintenance is needed." : "Request replacement work with /agent restart."}`, "agent-needs-you",
+        { kind: "completion-revision", revision: facts.authorization.revision, ...(gaps.length ? { publicationDigest: digest } : {}), ...(command ? { consumeCommand: command.id } : {}) });
     }
     if (command?.action === "answer" && previousQuestion?.kind === "issue-closure") observe({ type: "complete-issue-answer", commandId: command.id });
     if (!item.complete) observe({ type: "close-out" });

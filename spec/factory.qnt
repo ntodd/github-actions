@@ -9,14 +9,14 @@ module factory {
   pure val BUDGET = 3
 
   type Publication = {
-    op: int, generation: int, expectedGeneration: int, paused: bool, admitted: bool,
+    op: int, target: int, generation: int, expectedGeneration: int, paused: bool, admitted: bool,
     head: int, expectedHead: int, base: int, expectedBase: int,
     defaultRef: int, expectedDefaultRef: int,
     owner: int, resultOwner: int
   }
   type Merge = {
     pr: int, head: int, base: int, approval: int, checkHead: int,
-    checkBase: int, integratedBase: int
+    checkBase: int, integratedBase: int, work: Set[int]
   }
   type State = {
     generation: int, paused: bool, admitted: bool, op: int, opGeneration: int,
@@ -27,6 +27,8 @@ module factory {
     requested: bool, pending: bool, rejected: bool, requests: List[Publication],
     applied: Set[int], receipts: Set[int], recovered: Set[int],
     publications: List[Publication],
+    headWork: int -> Set[int], baseWork: int -> Set[int],
+    landedWork: Set[int], verifiedWork: Set[int], acceptedWork: Set[int],
     heads: int -> int, integrated: int -> int,
     approvals: int -> int, checkHeads: int -> int, checkBases: int -> int,
     checks: Set[(int, int, int)], main: int, humanVersion: int,
@@ -44,6 +46,8 @@ module factory {
     artifacts: Set(), result: false, resultOp: 0, resultOwner: 0, locked: false,
     requested: false, pending: false, rejected: false, requests: List(),
     applied: Set(), receipts: Set(), recovered: Set(), publications: List(),
+    headWork: Set(0).mapBy(_ => Set()), baseWork: Set(0).mapBy(_ => Set()),
+    landedWork: Set(), verifiedWork: Set(), acceptedWork: Set(),
     heads: PRS.mapBy(_ => 0), integrated: PRS.mapBy(_ => 0),
     approvals: PRS.mapBy(_ => -1), checkHeads: PRS.mapBy(_ => -1),
     checkBases: PRS.mapBy(_ => -1), checks: Set(), main: 0, humanVersion: 1000,
@@ -205,7 +209,7 @@ module factory {
     s.locked, s.phase == "publishing", currentResult,
     not(s.requested), not(s.applied.contains(s.op)),
     s' = { ...s, requested: true, pending: true,
-      requests: s.requests.append({ op: s.op,
+      requests: s.requests.append({ op: s.op, target: s.target,
         generation: s.generation, expectedGeneration: s.opGeneration,
         paused: s.paused, admitted: s.admitted, head: s.heads.get(s.target), expectedHead: s.expectedHead,
         base: s.main, expectedBase: s.expectedBase,
@@ -222,10 +226,11 @@ module factory {
     val newHead = 100 + s.op
     s' = { ...s, pending: false,
       heads: s.heads.set(s.target, newHead),
+      headWork: s.headWork.put(newHead, s.headWork.get(s.expectedHead).union(s.baseWork.get(s.expectedBase)).union(Set(s.op))),
       integrated: s.integrated.set(s.target, s.expectedBase),
       applied: s.applied.union(Set(s.op)),
       checks: s.checks.union(Set((s.target, newHead, s.expectedBase))),
-      publications: s.publications.append({ op: s.op,
+      publications: s.publications.append({ op: s.op, target: s.target,
         generation: s.generation, expectedGeneration: s.opGeneration,
         paused: s.paused, admitted: s.admitted, head: s.heads.get(s.target), expectedHead: s.expectedHead,
         base: s.main, expectedBase: s.expectedBase,
@@ -279,11 +284,19 @@ module factory {
   action humanPush(pr: int): bool = all {
     not(s.merged.contains(pr)),
     s' = { ...s, heads: s.heads.set(pr, s.humanVersion),
+      headWork: s.headWork.put(s.humanVersion, s.headWork.get(s.heads.get(pr))),
       humanVersion: s.humanVersion + 1,
       checks: s.checks.union(Set((pr, s.humanVersion, s.integrated.get(pr)))) }
   }
 
-  action mainMoves = s' = { ...s, main: s.main + 1 }
+  action humanRewrite(pr: int): bool = all {
+    not(s.merged.contains(pr)),
+    s' = { ...s, heads: s.heads.set(pr, s.humanVersion),
+      headWork: s.headWork.put(s.humanVersion, Set()), humanVersion: s.humanVersion + 1,
+      checks: s.checks.union(Set((pr, s.humanVersion, s.integrated.get(pr)))) }
+  }
+
+  action mainMoves = s' = { ...s, main: s.main + 1, baseWork: s.baseWork.put(s.main + 1, s.baseWork.get(s.main)) }
 
   // Repository policy can change while a publisher holds its own lock. The
   // branch name may change independently of the base commit's identity.
@@ -312,13 +325,31 @@ module factory {
     s.checkHeads.get(pr) == s.heads.get(pr),
     s.checkBases.get(pr) == s.main, s.integrated.get(pr) == s.main,
     s' = { ...s, merged: s.merged.union(Set(pr)), main: s.main + 1,
+      landedWork: s.landedWork.union(s.headWork.get(s.heads.get(pr))),
+      baseWork: s.baseWork.put(s.main + 1, s.baseWork.get(s.main).union(s.headWork.get(s.heads.get(pr)))),
+      verifiedWork: s.verifiedWork.union(s.applied.filter(op => 100 + op == s.heads.get(pr))),
       merges: s.merges.append({ pr: pr, head: s.heads.get(pr), base: s.main,
         approval: s.approvals.get(pr), checkHead: s.checkHeads.get(pr),
-        checkBase: s.checkBases.get(pr), integratedBase: s.integrated.get(pr) }) }
+        checkBase: s.checkBases.get(pr), integratedBase: s.integrated.get(pr), work: s.headWork.get(s.heads.get(pr)) }) }
+  }
+
+  // A successful read can establish landing; failed reads remain idle. A
+  // branch receipt alone cannot add work to the verified landing set.
+  action verifyLanding(op: int): bool = all {
+    not(s.locked), s.receipts.contains(op), s.landedWork.contains(op), not(s.verifiedWork.contains(op)),
+    s' = { ...s, verifiedWork: s.verifiedWork.union(Set(op)) }
+  }
+
+  // Abstracts a fresh human answer about the current completion snapshot.
+  action acceptCompletion = all {
+    not(s.locked), s.admitted, not(s.paused), terminal, s.live.size() == 0,
+    s.merged == PRS, not(s.applied.subseteq(s.verifiedWork.union(s.acceptedWork))),
+    s' = { ...s, acceptedWork: s.applied, generation: s.generation + 1 }
   }
 
   action closeOut = all {
-    not(s.locked), s.admitted, s.merged == PRS,
+    not(s.locked), s.admitted, terminal, not(s.pending), s.live.size() == 0, s.merged == PRS,
+    s.applied.subseteq(s.verifiedWork.union(s.acceptedWork)),
     s' = { ...s, complete: true }
   }
 
@@ -344,7 +375,7 @@ module factory {
     crashPublisher, recoverPublished, recoverUnpublished, finishRejectedPublish,
     rejectRacedPublish,
     nondet pr = PRS.oneOf()
-    humanPush(pr),
+    any { humanPush(pr), humanRewrite(pr) },
     mainMoves, defaultBranchChanges,
     nondet pr = PRS.oneOf()
     approve(pr),
@@ -352,7 +383,9 @@ module factory {
     observeCI(check._1, check._2, check._3),
     nondet pr = PRS.oneOf()
     merge(pr),
-    closeOut, idle
+    nondet op = s.applied.oneOf()
+    verifyLanding(op),
+    acceptCompletion, closeOut, idle
   }
 
   // A second exploration profile keeps inputs stable while retaining lost
@@ -376,7 +409,9 @@ module factory {
     observeCI(check._1, check._2, check._3),
     nondet pr = PRS.oneOf()
     merge(pr),
-    closeOut, idle
+    nondet op = s.applied.oneOf()
+    verifyLanding(op),
+    acceptCompletion, closeOut, idle
   }
 
   val oneOwner = all {
@@ -402,13 +437,15 @@ module factory {
     m.approval == m.head, m.checkHead == m.head,
     m.checkBase == m.base, m.integratedBase == m.base
   })
-  val completeMeansAllMerged = not(s.complete) or s.merged == PRS
+  val completeMeansAllMerged = not(s.complete) or all { s.merged == PRS, terminal, not(s.pending),
+    s.applied.subseteq(s.verifiedWork.union(s.acceptedWork)) }
+  val verifiedLandingIsReal = s.verifiedWork.subseteq(s.landedWork) and s.acceptedWork.subseteq(s.applied)
   val waitsReleaseCrew = Set("result-ready", "publishing", "done", "failed", "superseded").contains(s.phase)
     implies (s.running.size() == 0)
   val safety = all { oneOwner, boundedAttempts, authorizedPublishRequests,
     noHeadOverwrite, acceptedResultHasOwner, unresolvedPublishKeepsOperation,
     noDuplicatePush, receiptsHaveEffects, reviewedIntegration,
-    completeMeansAllMerged, waitsReleaseCrew }
+    completeMeansAllMerged, verifiedLandingIsReal, waitsReleaseCrew }
 
   val duplicateDelivery = s.duplicateSeen
   val recoveredPush = not((s.recovered.size() == 0))
@@ -599,4 +636,22 @@ module factory {
   run publishGuardOutageRecoveryTest = init.then(resultFor(1)).then(authorizePublish)
     .then(idle).then(idle).then(idle).then(push).then(applyPush).then(persistReceipt)
     .expect(s.receipts == Set(1) and s.requests.length() == 1 and s.attempts == 1 and safety)
+
+  run latePushCannotCompleteTest = init.then(resultFor(2)).then(publish).then(accept(2))
+    .then(resultFor(1)).then(publish).then(approve(1)).then(observeCI(1, 102, 1))
+    .then(resultFor(1)).then(authorizePublish).then(push).then(merge(1)).then(applyPush).then(persistReceipt)
+    .then(closeOut).fail()
+
+  run latePushNeedsDispositionTest = init.then(resultFor(2)).then(publish).then(accept(2))
+    .then(resultFor(1)).then(publish).then(approve(1)).then(observeCI(1, 102, 1))
+    .then(resultFor(1)).then(authorizePublish).then(push).then(merge(1)).then(applyPush).then(persistReceipt)
+    .then(acceptCompletion).then(closeOut)
+    .expect(s.complete and not(s.landedWork.contains(3)) and s.acceptedWork.contains(3) and safety)
+
+  run rewrittenPublicationNeedsDispositionTest = init.then(resultFor(1)).then(publish).then(humanRewrite(1))
+    .then(approve(1)).then(observeCI(1, 1000, 0)).then(merge(1)).then(verifyLanding(1)).fail()
+
+  run landingEvidenceWaitsForReceiptTest = init.then(resultFor(1)).then(authorizePublish).then(push).then(applyPush)
+    .then(crashPublisher).then(humanPush(1)).then(approve(1)).then(observeCI(1, 1000, 0)).then(merge(1))
+    .then(verifyLanding(1)).fail()
 }

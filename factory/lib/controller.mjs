@@ -111,7 +111,7 @@ export async function runController({ api, write, store, actions, repo, toolingS
   const snapshot = dryRun ? planned : (await store.load()).state;
   const observations = {};
   for (const key of Object.keys(snapshot.items)) {
-    try { observations[key] = await observe({ api, actions, ledger: snapshot, key, context, rules }); }
+    try { observations[key] = await observe({ api, actions, ledger: snapshot, key, context, rules, now }); }
     catch (error) {
       observations[key] = { authorization: null, feedback: [], prs: [], main: { ref: context.defaultBranch }, observationError: error.message };
       try {
@@ -173,7 +173,7 @@ export async function runController({ api, write, store, actions, repo, toolingS
           // Fresh reads immediately before reservation. Publishing will check
           // them again; a head change never permits overwriting someone else.
           const latest = { ...await loadConfig(api), repo };
-          const fresh = await observe({ api, actions, ledger: state, key, context: latest, rules });
+          const fresh = await observe({ api, actions, ledger: state, key, context: latest, rules, now, landingLimit: 0 });
           if (!fresh.authorization.valid || fresh.authorization.revision !== item.revision) break;
           const pr = action.pr ? fresh.prs.find((p) => p.number === action.pr && p.state === "open") : null;
           if (action.pr && !pr) break;

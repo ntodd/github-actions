@@ -3,7 +3,7 @@
 // from the controller's API adapter, never from event payloads or worker claims.
 import { createHash } from "node:crypto";
 import { attachmentManifest, referencedAttachments, attachmentDescriptor } from "./attachments.mjs";
-import { validEffect, validReceipt, pullRequestText, expectedEffectHead } from "./effects.mjs";
+import { validEffect, validReceipt, pullRequestText, expectedEffectHead, publicationGaps, publicationDigest } from "./effects.mjs";
 import { validApiJournal } from "./api-journal.mjs";
 import { nodeId, replyProposal, threadRevision, threadEffectId } from "./threads.mjs";
 import { syncApiAlerts, validApiAlerts, validPreflights } from "./recovery.mjs";
@@ -24,6 +24,17 @@ const KEY = /^(issue|pr):[1-9]\d*$/;
 const own = (o, k) => Object.hasOwn(o, k);
 const object = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const integer = (v) => Number.isSafeInteger(v) && v >= 0;
+function validLanding(value, effect, item) {
+  if (!object(value) || effect.type !== "push" || effect.status !== "applied" || value.commit !== effect.commit
+    || !Number.isFinite(Date.parse(value.at)) || !Number.isSafeInteger(value.checks) || value.checks < 1 || value.checks > 1000000) return false;
+  if (value.status === "unknown") return ["unavailable", "unverified"].includes(value.reason) && Number.isFinite(Date.parse(value.firstAt))
+    && Date.parse(value.firstAt) <= Date.parse(value.at) && Number.isFinite(Date.parse(value.nextAt))
+    && Date.parse(value.nextAt) > Date.parse(value.at) && Date.parse(value.nextAt) <= Date.parse(value.at) + 3600000;
+  return value.status === "landed" && SHA.test(value.destination) && ["commit", "ancestor", "tree"].includes(value.method)
+    && (value.method !== "commit" || value.destination === effect.commit) && (value.method !== "tree" || SHA.test(value.tree))
+    && (value.source === "pr" ? item.prs.some((p) => p.number === value.number && p.state === "merged" && p.mergedSha === value.destination)
+      : value.source === "main" && validBranch(value.ref));
+}
 export class ProtocolError extends Error {
   constructor(code, message) { super(message); this.name = "ProtocolError"; this.code = code; }
 }
@@ -161,6 +172,15 @@ export function validateLedger(s) {
         "corrupt", `Main failure question lost its commits for ${key}`);
     }
     requireThat(item.questionSequence === undefined || integer(item.questionSequence), "corrupt", `Malformed question sequence for ${key}`);
+    if (item.question?.kind === "completion-revision") requireThat((item.question.revision === undefined || /^[a-f\d]{64}$/.test(item.question.revision))
+      && (item.question.publicationDigest === undefined || /^[a-f\d]{64}$/.test(item.question.publicationDigest)), "corrupt", `Malformed completion question for ${key}`);
+    if (item.completionAcceptance !== undefined) {
+      const a = item.completionAcceptance;
+      requireThat(object(a) && /^[a-f\d]{64}$/.test(a.revision) && Number.isFinite(Date.parse(a.at))
+        && (a.generation === undefined || integer(a.generation) && a.generation < item.generation)
+        && Object.values(item.commands).some((c) => c.sourceId === a.sourceId && c.action === "answer" && c.status === "applied"),
+      "corrupt", `Completion acceptance lost its trusted decision for ${key}`);
+    }
     requireThat(item.respondBaseline === undefined || integer(item.respondBaseline)
       && item.respondBaseline <= Object.values(s.operations).filter((op) => op?.item === key && op.mode === "respond").length,
       "corrupt", `Malformed response baseline for ${key}`);
@@ -275,6 +295,7 @@ export function validateLedger(s) {
     }
     requireThat(new Set(op.effects.map((e) => e.id)).size === op.effects.length, "corrupt", `Duplicate effects for ${id}`);
     for (const effect of op.effects) {
+      requireThat(effect?.landing === undefined || validLanding(effect.landing, effect, s.items[op.item]), "corrupt", `Invalid landed-work evidence for ${id}`);
       requireThat(validEffect(effect, op) && (effect.type !== "attachment" || effect.repositoryId === s.repositoryId)
         && ["prepared", "pending", "applied", "rejected"].includes(effect.status)
         && Array.isArray(effect.requests) && effect.requests.every((r, n) => r.id === `${id}/${effect.id}/${n + 1}`
@@ -570,6 +591,8 @@ export function evolve(ledger, key, event) {
       item.questionSequence = (item.questionSequence ?? 0) + 1;
       requireThat(event.kind === undefined || ["completion-revision", "publish-outcome", "pr-closure", "issue-closure", "main-failure", "authorization"].includes(event.kind), "invalid", "Unknown question kind");
       if (event.kind === "authorization") requireThat(item.authorizationRevoked, "invalid", "Authorization questions require revoked admission");
+      if (event.kind === "completion-revision") requireThat((event.revision === undefined || /^[a-f\d]{64}$/.test(event.revision))
+        && (event.publicationDigest === undefined || /^[a-f\d]{64}$/.test(event.publicationDigest)), "invalid", "Completion questions need a recorded scope");
       if (event.kind === "publish-outcome") {
         const op = s.operations[event.recovery?.operation], effect = op?.effects.find((e) => e.id === event.recovery.effect);
         requireThat(op?.item === key && op.id === item.activeOperation && op.phase === "publishing" && effect?.status === "pending"
@@ -584,6 +607,10 @@ export function evolve(ledger, key, event) {
         ...(event.kind === "pr-closure" ? { number: event.number, revision: item.revision } : {}),
         ...(event.kind === "issue-closure" ? { revision: item.revision } : {}),
         ...(event.kind === "main-failure" ? { dependency: event.dependency } : {}) };
+      if (event.kind === "completion-revision") {
+        item.question.revision = event.revision ?? item.revision;
+        if (event.publicationDigest !== undefined) item.question.publicationDigest = event.publicationDigest;
+      }
       if (event.consumeCommand) {
         requireThat(item.commands[event.consumeCommand]?.status === "queued", "invalid", "Only a queued request can require clarification");
         item.commands[event.consumeCommand].status = "applied";
@@ -691,14 +718,19 @@ export function evolve(ledger, key, event) {
     }
     case "accept-completion": {
       const command = item.commands[event.commandId];
+      const op = s.operations[item.activeOperation], gaps = publicationGaps(s, key).filter((r) => !r.accepted), question = item.question ?? item.lastQuestion;
       const text = command ? answerText(command).toLowerCase() : "";
       requireThat(command?.status === "queued" && command.action === "answer" && ["accept-completion", "1"].includes(text),
         "invalid", "Completion acceptance needs an explicit pending answer");
       requireThat(text !== "1" || event.questionKind === "completion-revision", "invalid", "A numbered answer needs the completion question");
+      requireThat(!op || TERMINAL.has(op.phase), "busy", "Recover the current operation before accepting completion");
+      if (text === "1" || gaps.length) requireThat(question?.kind === "completion-revision" && question.revision === event.authorization?.revision
+        && Date.parse(command.at) > Date.parse(question.at) && (!gaps.length || question.publicationDigest === publicationDigest(gaps)),
+      "invalid", "Completion acceptance must answer the current revision and publication question");
       requireThat(!item.authorizationRevoked && event.authorization?.valid === true && /^[a-f\d]{64}$/.test(event.authorization.revision)
         && item.prs.some((p) => p.required) && item.prs.filter((p) => p.required).every((p) => p.state === "merged" || p.state === "closed" && p.acceptedClosure),
         "invalid", "Only fully accounted work and a fresh accepted revision can complete");
-      item.completionAcceptance = { sourceId: command.sourceId, revision: event.authorization.revision, at: time(event.at) };
+      item.completionAcceptance = { sourceId: command.sourceId, revision: event.authorization.revision, generation: item.generation, at: time(event.at) };
       item.revision = event.authorization.revision; item.revisionPending = false; item.generation++; item.question = null;
       command.status = "applied";
       break;
@@ -877,6 +909,15 @@ export function evolve(ledger, key, event) {
       }
       break;
     }
+    case "record-landing": {
+      const op = s.operations[event.operationId], effect = op?.effects.find((e) => e.id === event.effectId);
+      requireThat(op?.item === key && effect && validLanding(event.landing, effect, item), "invalid", "Landing evidence must identify this item's published commit");
+      if (effect.landing?.status === "landed") return ledger;
+      if (effect.landing && event.landing.status === "unknown" && (event.landing.checks <= effect.landing.checks
+        || Date.parse(event.landing.at) <= Date.parse(effect.landing.at))) return ledger;
+      effect.landing = event.landing;
+      break;
+    }
     case "recover-publish": {
       const op = current();
       requireThat(op.phase === "publishing" && op.effects.every((e) => ["prepared", "rejected"].includes(e.status)),
@@ -977,6 +1018,8 @@ export function evolve(ledger, key, event) {
       break;
     }
     case "close-out":
+      requireThat((!s.operations[item.activeOperation] || TERMINAL.has(s.operations[item.activeOperation].phase))
+        && !publicationGaps(s, key).some((r) => !r.accepted), "incomplete", "Published work must land or receive an explicit disposition before completion");
       requireThat(!item.authorizationRevoked && !item.revisionPending && item.prs.some((p) => p.required) && item.prs.filter((p) => p.required)
         .every((p) => p.state === "merged" || (p.state === "closed" && p.acceptedClosure)), "incomplete", "Required work is not all accounted for");
       item.complete = true;
