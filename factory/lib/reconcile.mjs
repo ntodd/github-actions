@@ -33,6 +33,9 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
     return finish(null, label, reason, { kind, target, deadline });
   };
   const ask = (reason, label = "agent-needs-you", extra = {}) => {
+    // This request ends in a question. Leaving it queued would resume and
+    // recreate that question on every pass, ahead of the human's later answer.
+    extra = { ...(command && item.commands[command.id]?.status === "queued" ? { consumeCommand: command.id } : {}), ...extra };
     if (!item.question || item.question.reason !== reason || extra.consumeCommand
       || extra.revision && item.question.revision !== extra.revision
       || extra.publicationDigest && item.question.publicationDigest !== extra.publicationDigest) observe({ type: "ask", reason, ...extra });

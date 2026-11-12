@@ -299,6 +299,12 @@ notify about notification failures. The bounded model covers uncertainty
 and receipt recovery, but omits these deadlines, questions, API effects
 and notification projections. Their coverage is in the protocol,
 reconcile, publish, publisher, API-journal, surface and new-PR tests.
+Reconciler questions consume the queued request they conclude, including an
+exhausted response round, an observation deadline and required-PR closure.
+Repeated passes retain the question identity and can reach a later answer.
+Ordinary external waits and uncertain publication recovery keep their queued
+requests; asking about a failure does not establish a remote outcome. These
+command/question distinctions remain outside the bounded model.
 
 Failed reads during pre-submission validation use the same durable read
 backoff as failed authorization observations. Actions transport/JSON/body

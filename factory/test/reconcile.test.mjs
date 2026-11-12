@@ -20,6 +20,33 @@ test("explicit respond cannot exceed the response-round limit", () => {
   assert.equal(plan.action.type, "ask");
   assert.equal(plan.action.reason, "The response-round limit was reached");
   assert.equal(plan.events.some((e) => e.type === "reserve"), false);
+  let asked = apply(requested, plan);
+  assert.equal(Object.values(asked.items["issue:7"].commands)[0].status, "applied");
+  const question = asked.items["issue:7"].question.id;
+  const repeated = decideItem(asked, "issue:7", facts(), { ...config, maxRounds: 1 }, { now: "2026-11-12T12:01:00Z" });
+  assert.equal(repeated.events.some((e) => e.type === "ask"), false);
+  asked = apply(asked, repeated); assert.equal(asked.items["issue:7"].question.id, question);
+  asked = ingestCommands(asked, "issue:7", [{ authority: "instruction", sourceId: "issue-comment:1000", revision: "f".repeat(64),
+    author: "ntodd", createdAt: "2026-11-12T12:02:00Z", target: 9, command: { action: "update", text: "" } }]);
+  const update = decideItem(asked, "issue:7", facts(), { ...config, maxRounds: 1 }, { now: "2026-11-12T12:02:00Z" });
+  assert.equal(update.action.type, "reserve"); assert.equal(update.action.mode, "update");
+});
+
+test("an observation deadline consumes the request once while an ordinary wait keeps it queued", () => {
+  const unknown = facts({ authorization: null, observationError: "incomplete observation" });
+  let state = ingestCommands(initial(), "issue:7", [{ authority: "instruction", sourceId: "issue-comment:1001", revision: "e".repeat(64),
+    author: "ntodd", createdAt: at, target: 9, command: { action: "respond", text: "" } }]);
+  const waiting = decide(state, unknown);
+  assert.equal(waiting.action, null); state = apply(state, waiting);
+  assert.equal(Object.values(state.items["issue:7"].commands)[0].status, "queued");
+  const expiredAt = waiting.status.wait.deadline, expired = decide(state, unknown, expiredAt);
+  assert.equal(expired.action.type, "ask"); assert.match(expired.action.reason, /deadline was exceeded/);
+  state = apply(state, expired);
+  assert.equal(Object.values(state.items["issue:7"].commands)[0].status, "applied");
+  const question = state.items["issue:7"].question.id, again = decide(state, unknown, expiredAt);
+  assert.equal(again.events.some((e) => e.type === "ask"), false);
+  assert.equal(apply(state, again).items["issue:7"].question.id, question);
+  assert.equal(state.items["issue:7"].attempts.length, 0);
 });
 
 test("terminal PR facts are recorded before deciding and a lower merge cannot hide unfinished work", () => {
@@ -114,6 +141,7 @@ test("an uncertain publish becomes one request-bound question while recovery ret
     author: "ntodd", createdAt: "2026-11-12T12:17:00Z", target: 9, command: { action: "retry", text: "" } }]);
   state = apply(state, decide(state, facts(), "2026-11-12T12:18:00Z"));
   assert.equal(state.items["issue:7"].question.id, question.id);
+  assert.equal(Object.values(state.items["issue:7"].commands)[0].status, "queued");
   assert.equal(operation(state).effects[0].requests.length, 1);
 });
 
@@ -257,6 +285,24 @@ const answer = (s, text, id = 999, when = "2026-11-12T12:01:00Z") => ingestComma
   authority: "instruction", sourceId: `issue-comment:${id}`, revision: "e".repeat(64), author: "ntodd", createdAt: when,
   target: 7, command: { action: "answer", text },
 }]);
+
+test("closed-PR questions consume blocked work requests so a fresh disposition can be reached", () => {
+  const observed = facts({ prs: [pr({ state: "closed" }), pr({ number: 10 })] });
+  let state = ingestCommands(initial(), "issue:7", [{ authority: "instruction", sourceId: "issue-comment:998", revision: "e".repeat(64),
+    author: "ntodd", createdAt: at, target: 10, command: { action: "update", text: "" } }]);
+  const first = decide(state, observed);
+  assert.equal(first.action.type, "ask"); assert.match(first.action.reason, /#9 closed without merging/);
+  state = apply(state, first);
+  assert.equal(Object.values(state.items["issue:7"].commands)[0].status, "applied");
+  const question = state.items["issue:7"].question.id, again = decide(state, observed);
+  assert.equal(again.events.some((e) => e.type === "ask"), false);
+  state = apply(state, again); assert.equal(state.items["issue:7"].question.id, question);
+  state = answer(state, "accept-closure #9");
+  const accepted = decide(state, observed, "2026-11-12T12:02:00Z"); state = apply(state, accepted);
+  assert.equal(state.items["issue:7"].prs[0].acceptedClosure, true);
+  assert.equal(Object.values(state.items["issue:7"].commands).at(-1).status, "applied");
+  assert.equal(accepted.action.type, "handover"); assert.equal(accepted.action.pr, 10);
+});
 
 test("a fresh closure answer records the disposition and completes only the accounted work", () => {
   const f = facts({ prs: [pr({ state: "closed" }), pr({ number: 10, state: "merged", mergedSha: C })] });
