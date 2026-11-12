@@ -32,7 +32,7 @@ export function validMainRepair(item) {
 
 export function mainRepairRole(item, facts) {
   const spec = facts.repairSpec, r = item.mainRepair;
-  return Boolean(spec && facts.repairBaseline?.ancestor && facts.authorization?.valid === true
+  return Boolean(!item.authorizationRevoked && spec && facts.repairBaseline?.ancestor && facts.authorization?.valid === true
     && spec.revision === facts.authorization.revision && spec.sourceId === item.evidence.sourceId
     && (spec.baseSha === facts.main?.sha || r?.revision === facts.authorization.revision
       && failureKeys(facts.main?.checks).some((k) => r.keys.includes(k))));
@@ -48,7 +48,7 @@ export function repairCandidates(ledger, observations, keys, exclude, currentMai
     const currentDeclared = facts?.repairSpec?.baseSha === currentMainSha && facts.repairBaseline?.ancestor === true;
     const registered = r && keys.length > 0 && facts?.repairSpec?.baseSha === r.baseSha
       && facts.repairSpec.sourceId === r.sourceId && r.revision === item.revision && keys.every((key) => r.keys.includes(key));
-    return item.key !== exclude && !item.requestOnly && !item.evidence.own && !item.complete && !final && facts?.issueState === "open"
+    return item.key !== exclude && !item.requestOnly && !item.authorizationRevoked && !item.evidence.own && !item.complete && !final && facts?.issueState === "open"
       && facts.authorization?.valid === true && facts.authorization.revision === item.revision
       && (currentDeclared || registered);
   }).map((item) => ({ issue: Number(item.key.split(":")[1]), paused: item.paused, needsYou: Boolean(item.question) }))

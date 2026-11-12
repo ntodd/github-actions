@@ -335,6 +335,25 @@ test("close-out cannot rely on an old ledger's terminal claim or revoked authori
   }
 });
 
+test("surface recovery retires obsolete unsent metadata effects while preserving real pending requests", async () => {
+  const f = fixture(), service = f.service();
+  const def = (kind) => ({ kind, target: 9, payload: kind === "ready" ? { head: B, nodeId: "PR_9" } : { head: B, reviewers: ["ntodd"] },
+    guard: { generation: 0, revision: f.state.items["issue:7"].revision } });
+  f.write.ready = async () => { throw Object.assign(new Error("no permission"), { status: 403 }); };
+  assert.equal((await service.execute("issue:7", "old-ready", def("ready"))).status, "rejected");
+  f.write.requestReviewers = async () => { throw new Error("response lost"); };
+  assert.equal((await service.execute("issue:7", "old-review", def("review-request"))).status, "pending");
+  await f.store.transact((s) => evolve(s, "issue:7", { type: "revoke-admission", authorization: { valid: false } }));
+  await service.render(f.state, f.context);
+  const effects = Object.values(f.state.items["issue:7"].apiEffects);
+  assert.equal(effects.find((e) => e.slot === "old-ready").status, "superseded");
+  const pending = effects.find((e) => e.slot === "old-review");
+  assert.equal(pending.status, "pending"); assert.equal(pending.requests.length, 1);
+  f.pr.requested_reviewers = [{ login: "ntodd" }]; await service.render(f.state, f.context);
+  assert.equal(Object.values(f.state.items["issue:7"].apiEffects).find((e) => e.slot === "old-review").status, "applied");
+  assert.equal(await service.workGuard("issue:7", { kind: "review-request", target: 9, payload: { head: B } }), false);
+});
+
 test("an identified CI rerun is bound to its original run/commit and recovers a lost response without another rerun", async () => {
   const f = fixture(), ci = { id: 123, run_attempt: 1, status: "completed", head_sha: B, repository: { id: 42 }, head_repository: { id: 42 }, path: ".github/workflows/ci.yml" };
   f.api.run = async () => ci;

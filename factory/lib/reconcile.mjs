@@ -46,6 +46,9 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
     return repair?.paused ? " (paused)" : repair?.question ? " (needs your answer)" : "";
   };
   observe({ type: "sync-api-alerts", timeoutMinutes: config.timeouts.publishMinutes ?? 15 });
+  if (!item.requestOnly && facts.authorization?.valid === false && !facts.observationError) {
+    observe({ type: "revoke-admission", authorization: facts.authorization });
+  }
 
   // These observations are bookkeeping, including while stopped. Do not keep
   // returning the first merged PR and thereby hide unfinished upper levels.
@@ -155,7 +158,8 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
     if (op.cancel?.nextAt && instant < Date.parse(op.cancel.nextAt)) return wait("agent-waiting", reason, "owner-terminal", op.owner, op.cancel.nextAt);
     return finish({ type: "cancel-owner", operationId: op.id, run: op.owner }, "agent-waiting", reason);
   };
-  if (stale && op.owner && bad(op.owner.status)) return cancel("The operation was superseded; confirm its owner has stopped");
+  if (stale && op.owner && bad(op.owner.status)) return cancel(item.authorizationRevoked
+    ? "Work authorization was invalidated; confirm the previous owner has stopped" : "The operation was superseded; confirm its owner has stopped");
   if (stale && (!op.owner || op.owner.status === "completed")) return finish({ type: "supersede", operationId: op.id }, "agent-waiting", "Discard a result based on obsolete intent or head");
   if (item.restart && !["done", "superseded"].includes(item.restart.phase)) {
     const r = item.restart, origin = item.commands[r.commandId];
@@ -165,6 +169,15 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
     if (!item.paused && !item.question && instant >= Date.parse(r.createdAt) + config.timeouts.ciMinutes * minute) observe({ type: "ask", reason: "Restart did not reach known PR outcomes before its deadline; investigate the recorded requests before retrying" });
     return finish({ type: "restart", commandId: r.commandId }, item.paused ? "agent-stopped" : item.question ? "agent-needs-you" : "agent-working",
       item.question?.reason ?? "Recover restart effects before admitting replacement work");
+  }
+  if (item.authorizationRevoked) {
+    const eligible = queuedCommands(item).find((c) => c.target === Number(key.split(":")[1]) && c.sourceId !== item.evidence.sourceId
+      && (item.evidence.own ? ["update", "resolve"] : ["build", "restart"]).includes(c.action));
+    if (eligible) return finish({ type: "admit-request", commandId: eligible.id }, "agent-ready", "Revalidate a fresh source before restoring work authorization");
+    if (item.paused) return wait("agent-stopped", "Work authorization was invalidated and work is paused", "work-command", key);
+    return ask(item.question?.kind === "authorization" ? item.question.reason : `${facts.authorization?.reason ?? "The previous work authorization was invalidated"}. Restore trusted authorship and edits, then ${item.evidence.own
+      ? "post a fresh /agent update or /agent resolve on this PR" : "post a fresh /agent build or /agent restart on the issue, or add a fresh agent-ready label"}.`,
+    "agent-needs-you", { kind: "authorization", ...(command ? { consumeCommand: command.id } : {}) });
   }
   const closed = item.prs.find((p) => p.required && p.state === "closed" && !p.acceptedClosure);
   const closureQuestion = (number, prefix = "") => `${prefix}Required PR #${number} closed without merging.\n\n1. Accept its closure: /agent answer accept-closure #${number}.\n2. Replace the work: /agent restart (retires all recorded PRs and builds again).\n\nYou can also reopen the PR and request work on it.`;
@@ -392,7 +405,7 @@ export function decideRepository(ledger, observations, config, { now = new Date(
   observations = structuredClone(observations);
   for (const [key, facts] of Object.entries(observations)) {
     const item = state.items[key];
-    if (!item || item.requestOnly || item.evidence.own || item.complete) continue;
+    if (!item || item.requestOnly || item.authorizationRevoked || item.evidence.own || item.complete) continue;
     const registration = repairRegistration(item, facts);
     const required = item.prs.filter((p) => p.required), final = required.length && required.every((p) => {
       const actual = facts.prs?.find((pr) => pr.number === p.number);
@@ -421,7 +434,8 @@ export function decideRepository(ledger, observations, config, { now = new Date(
   if (selection) {
     const selected = state.items[selection.item];
     const pr = observations[selection.item]?.prs?.find((p) => p.number === selection.pr);
-    if (selected.paused || selected.question || (pr && pr.state !== "open") || Date.parse(now) >= Date.parse(selection.deadline)) {
+    if (selected.paused || selected.question || selected.authorizationRevoked || observations[selection.item]?.authorization?.valid === false
+      || (pr && pr.state !== "open") || Date.parse(now) >= Date.parse(selection.deadline)) {
       state = evolve(state, selection.item, { type: "release-integration" });
     }
   }

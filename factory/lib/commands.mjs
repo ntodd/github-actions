@@ -29,7 +29,7 @@ export function ingestCommands(ledger, itemKey, facts) {
     if (!/^(issue-comment|review-comment|label):[1-9]\d*$/.test(fact.sourceId) || !/^[a-f\d]{64}$/.test(fact.revision)
       || !Number.isFinite(Date.parse(fact.createdAt)) || !(ACTIONS.has(fact.command.action) || fact.command.action === "route")) throw new Error("Invalid API-derived command");
     item.commands[id] = { id, sourceId: fact.sourceId, revision: fact.revision, author: fact.author,
-      action: label && fact.command.action === "build" && item.question ? "answer" : fact.command.action,
+      action: label && fact.command.action === "build" && item.question && !item.authorizationRevoked ? "answer" : fact.command.action,
       text: fact.command.text ?? "", effort: fact.command.effort ?? null,
       at: fact.createdAt, target: fact.target ?? null, thread: fact.thread ?? null, status: "queued", acknowledgement: "pending" };
   }
@@ -155,7 +155,7 @@ export function applyControls(ledger, itemKey, { now } = {}) {
       current.commands[command.id].controlHandled = true;
     } else if (command.action === "status") command.status = "applied";
     else if (command.action === "effort") { item.effort = command.effort; command.status = "applied"; }
-    else if (command.action === "restart" && !item.requestOnly && !item.evidence.own
+    else if (command.action === "restart" && !item.requestOnly && !item.authorizationRevoked && !item.evidence.own
       && (!item.restart || ["done", "superseded"].includes(item.restart.phase)) && item.restart?.commandId !== command.id) {
       next = evolve(next, itemKey, { type: "begin-restart", commandId: command.id, at: now ?? command.at });
       const current = next.items[itemKey];

@@ -124,6 +124,9 @@ export async function runController({ api, write, store, actions, repo, toolingS
   const decide = (s) => {
     for (const [key, facts] of Object.entries(observations)) {
       if (!s.items[key]) continue;
+      if (!s.items[key].requestOnly && facts.authorization?.valid === false && !facts.observationError) {
+        s = evolve(s, key, { type: "revoke-admission", authorization: facts.authorization });
+      }
       if (!facts.observationError || facts.feedbackComplete) s = revalidateCommands(ingestCommands(s, key, facts.feedback ?? []), key, facts.feedback ?? []);
       s = applyControls(s, key, { now: now() });
     }
@@ -151,13 +154,14 @@ export async function runController({ api, write, store, actions, repo, toolingS
         case "admit-request": {
           const command = item.commands[action.commandId], latest = { ...await loadConfig(api), repo };
           const evidence = command.routed ? { kind: "routed-command", action: command.action, sourceId: command.sourceId,
-            revision: command.revision } : null;
+            revision: command.revision } : item.authorizationRevoked ? { sourceId: command.sourceId, revision: command.revision } : null;
           const number = Number(key.split(":")[1]);
           const auth = item.evidence.own
-            ? await inspectOwnPr(api, number, latest, { commandId: command.sourceId, evidence })
-            : await inspectIssue(api, number, latest.config, { commandId: command.sourceId, evidence });
+            ? await inspectOwnPr(api, number, latest, { commandId: command.sourceId, evidence, allowClosed: Boolean(item.authorizationRevoked) })
+            : await inspectIssue(api, number, latest.config, { commandId: command.sourceId, evidence, allowClosed: Boolean(item.authorizationRevoked) });
           if (auth.valid) await save(key, { type: "admit-request", commandId: command.id, authorization: auth });
-          else await save(key, { type: "ask", reason: auth.reason ?? "This request does not authorize work", consumeCommand: command.id });
+          else await save(key, { type: "ask", reason: auth.reason ?? "This request does not authorize work", consumeCommand: command.id,
+            ...(item.authorizationRevoked ? { kind: "authorization" } : {}) });
           break;
         }
         case "reserve": {

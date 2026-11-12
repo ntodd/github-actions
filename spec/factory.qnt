@@ -9,7 +9,7 @@ module factory {
   pure val BUDGET = 3
 
   type Publication = {
-    op: int, generation: int, expectedGeneration: int, paused: bool,
+    op: int, generation: int, expectedGeneration: int, paused: bool, admitted: bool,
     head: int, expectedHead: int, base: int, expectedBase: int,
     owner: int, resultOwner: int
   }
@@ -18,7 +18,7 @@ module factory {
     checkBase: int, integratedBase: int
   }
   type State = {
-    generation: int, paused: bool, op: int, opGeneration: int,
+    generation: int, paused: bool, admitted: bool, op: int, opGeneration: int,
     phase: str, target: int, owner: int, expectedHead: int,
     expectedBase: int, attempts: int,
     deliveries: Set[(int, int)], live: Set[(int, int)], running: Set[(int, int)],
@@ -36,7 +36,7 @@ module factory {
   var s: State
 
   action init = s' = {
-    generation: 0, paused: false, op: 0, opGeneration: 0,
+    generation: 0, paused: false, admitted: true, op: 0, opGeneration: 0,
     phase: "idle", target: 1, owner: 0, expectedHead: 0,
     expectedBase: 0, attempts: 0,
     deliveries: Set(), live: Set(), running: Set(),
@@ -54,13 +54,13 @@ module factory {
   val terminal = Set("idle", "done", "failed", "superseded").contains(s.phase)
   val currentResult = all {
     s.result, s.resultOp == s.op, s.resultOwner == s.owner, s.owner != 0,
-    s.opGeneration == s.generation, not(s.paused),
+    s.opGeneration == s.generation, not(s.paused), s.admitted,
     s.heads.get(s.target) == s.expectedHead,
     not(s.merged.contains(s.target))
   }
 
   action reserve(pr: int): bool = all {
-    not(s.locked), not(s.paused), not(s.complete), terminal,
+    not(s.locked), not(s.paused), s.admitted, not(s.complete), terminal,
     (s.live.size() == 0), s.attempts < BUDGET, not(s.merged.contains(pr)),
     s' = { ...s, op: s.op + 1, opGeneration: s.generation,
       phase: "prepared", target: pr, owner: 0,
@@ -79,7 +79,7 @@ module factory {
   action claim(op: int, runId: int): bool = all {
     not(s.locked), s.deliveries.contains((op, runId)),
     op == s.op, s.phase == "prepared", s.owner == 0,
-    not(s.paused), s.opGeneration == s.generation, (s.live.size() == 0),
+    not(s.paused), s.admitted, s.opGeneration == s.generation, (s.live.size() == 0),
     s.heads.get(s.target) == s.expectedHead, not(s.merged.contains(s.target)),
     s' = { ...s, owner: runId, phase: "claimed", live: Set((op, runId)) }
   }
@@ -157,6 +157,18 @@ module factory {
     s' = { ...s, paused: false }
   }
 
+  // A definitive loss of admission fences old work. Restored API trust alone
+  // cannot restore permission: readmission abstracts a fresh trusted source.
+  action revokeAdmission = all {
+    not(s.locked), s.admitted,
+    s' = { ...s, admitted: false, generation: s.generation + 1 }
+  }
+
+  action readmit = all {
+    not(s.locked), not(s.admitted), terminal, s.live.size() == 0,
+    s' = { ...s, admitted: true }
+  }
+
   action discardStale = all {
     not(s.locked), (s.live.size() == 0),
     Set("prepared", "result-ready").contains(s.phase),
@@ -190,7 +202,7 @@ module factory {
     s' = { ...s, requested: true, pending: true,
       requests: s.requests.append({ op: s.op,
         generation: s.generation, expectedGeneration: s.opGeneration,
-        paused: s.paused, head: s.heads.get(s.target), expectedHead: s.expectedHead,
+        paused: s.paused, admitted: s.admitted, head: s.heads.get(s.target), expectedHead: s.expectedHead,
         base: s.main, expectedBase: s.expectedBase,
         owner: s.owner, resultOwner: s.resultOwner }) }
   }
@@ -209,7 +221,7 @@ module factory {
       checks: s.checks.union(Set((s.target, newHead, s.expectedBase))),
       publications: s.publications.append({ op: s.op,
         generation: s.generation, expectedGeneration: s.opGeneration,
-        paused: s.paused, head: s.heads.get(s.target), expectedHead: s.expectedHead,
+        paused: s.paused, admitted: s.admitted, head: s.heads.get(s.target), expectedHead: s.expectedHead,
         base: s.main, expectedBase: s.expectedBase,
         owner: s.owner, resultOwner: s.resultOwner }) }
   }
@@ -295,7 +307,7 @@ module factory {
   }
 
   action closeOut = all {
-    not(s.locked), s.merged == PRS,
+    not(s.locked), s.admitted, s.merged == PRS,
     s' = { ...s, complete: true }
   }
 
@@ -315,7 +327,7 @@ module factory {
     collectResult(artifact._1, artifact._2),
     nondet runId = RUNS.oneOf()
     foreignArtifact(runId),
-    recoverDeadWorker, stop, resume, discardStale, abandonPrepared, expireResult,
+    recoverDeadWorker, stop, resume, revokeAdmission, readmit, discardStale, abandonPrepared, expireResult,
     recoverMissingResult, authorizePublish, push, applyPush, rejectPush, persistReceipt,
     crashPublisher, recoverPublished, recoverUnpublished, finishRejectedPublish,
     rejectRacedPublish,
@@ -361,7 +373,7 @@ module factory {
   }
   val boundedAttempts = s.attempts <= BUDGET and s.op == s.attempts
   val authorizedPublishRequests = s.requests.indices().map(i => s.requests.nth(i)).forall(p => all {
-    p.generation == p.expectedGeneration, not(p.paused),
+    p.generation == p.expectedGeneration, not(p.paused), p.admitted,
     p.head == p.expectedHead,
     p.owner == p.resultOwner, p.owner != 0
   })
@@ -535,4 +547,18 @@ module factory {
 
   run replacedDeliveryTest = init.then(reserve(1)).then(dispatch(1))
     .then(abandonPrepared).then(reserve(1)).then(claim(1, 1)).fail()
+
+  run revokedAdmissionCannotClaimTest = init.then(reserve(1)).then(dispatch(1))
+    .then(revokeAdmission).then(claim(1, 1)).fail()
+
+  run readmissionRetiresOldResultTest = init.then(resultFor(1)).then(revokeAdmission)
+    .then(discardStale).then(readmit).then(reserve(1)).then(dispatch(2)).then(claim(1, 1)).fail()
+
+  run revokedAdmissionCannotReserveTest = init.then(reserve(1)).then(revokeAdmission)
+    .then(discardStale).then(reserve(1)).fail()
+
+  run revokedAdmissionRecoversSentPushTest = init.then(resultFor(1))
+    .then(authorizePublish).then(push).then(crashPublisher).then(revokeAdmission)
+    .then(applyPush).then(recoverPublished)
+    .expect(not(s.admitted) and s.receipts == Set(1) and s.attempts == 1 and safety)
 }

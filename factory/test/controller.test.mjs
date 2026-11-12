@@ -78,6 +78,68 @@ test("one issue traverses reservation, exclusive admission, terminal artifact, p
   assert.deepEqual(f.effects.at(-1), ["close", 7]);
 });
 
+test("revoked admission retires an unclaimed reservation and needs a fresh trusted source even after trust returns", async () => {
+  const f = fixture(), events = f.api.events;
+  await f.pass();
+  f.api.events = async () => [];
+  await f.pass();
+  assert.equal(f.state.operations["op-1"].phase, "superseded");
+  assert.equal(f.state.items["issue:7"].authorizationRevoked, true);
+  const generation = f.state.items["issue:7"].generation;
+  const question = f.state.items["issue:7"].question.id;
+  await f.pass(); assert.equal(f.state.items["issue:7"].generation, generation);
+  f.api.events = events; await f.pass();
+  assert.equal(f.state.items["issue:7"].question.id, question);
+  assert.equal(f.effects.filter(([kind]) => kind === "dispatch").length, 1);
+  f.api.comments = async () => [{ id: 1001, body: "/agent build keep the existing scope", user: { login: "ntodd" }, created_at: at, updated_at: at }];
+  await f.pass({ operationId: () => "op-2" });
+  assert.equal(f.state.items["issue:7"].evidence.sourceId, "issue-comment:1001");
+  assert.equal(f.state.items["issue:7"].authorizationRevoked, undefined);
+  assert.equal(f.state.operations["op-2"].phase, "prepared");
+  assert.equal(f.state.items["issue:7"].attempts.length, 2);
+  assert.equal(f.effects.filter(([kind]) => kind === "dispatch").length, 2);
+});
+
+test("a fresh trusted relabel can replace revoked admission without resetting attempts", async () => {
+  const f = fixture(); await f.pass();
+  f.api.events = async () => []; await f.pass();
+  f.api.events = async () => [{ id: 124, event: "labeled", created_at: at, label: { name: "agent-ready" }, actor: { login: "ntodd" } }];
+  await f.pass({ operationId: () => "op-2" });
+  assert.equal(f.state.items["issue:7"].evidence.sourceId, "label:124");
+  assert.equal(f.state.items["issue:7"].authorizationRevoked, undefined);
+  assert.equal(f.state.operations["op-1"].phase, "superseded");
+  assert.equal(f.state.operations["op-2"].phase, "prepared");
+  assert.equal(f.state.items["issue:7"].attempts.length, 2);
+});
+
+test("a fresh command cannot override untrusted issue edits during readmission", async () => {
+  const f = fixture(); await f.pass();
+  f.api.fileAt = async () => ({ content: "trusted-users: [someone-else]" }); await f.pass();
+  assert.equal(f.state.operations["op-1"].phase, "superseded");
+  f.api.fileAt = async () => ({ content: "trusted-users: [ntodd]" });
+  f.api.editors = async () => ["outsider"];
+  f.api.comments = async () => [{ id: 1001, body: "/agent build", user: { login: "ntodd" }, created_at: at, updated_at: at }];
+  await f.pass({ operationId: () => "op-2" });
+  assert.equal(f.state.items["issue:7"].authorizationRevoked, true);
+  assert.match(f.state.items["issue:7"].question.reason, /untrusted actor/);
+  assert.equal(f.state.items["issue:7"].attempts.length, 1);
+  assert.equal(f.state.operations["op-2"], undefined);
+});
+
+test("a fresh restart on a closed issue can readmit first without losing its queued restart", async () => {
+  const f = fixture(); await f.pass();
+  f.api.events = async () => []; await f.pass(); f.source.state = "closed";
+  f.api.comments = async () => [{ id: 1001, body: "/agent restart", user: { login: "ntodd" }, created_at: at, updated_at: at }];
+  const starts = [];
+  const result = await f.pass({ maxPasses: 2, restart: async (args) => { starts.push(args); } });
+  assert.equal(f.state.items["issue:7"].authorizationRevoked, undefined);
+  assert.equal(f.state.items["issue:7"].evidence.sourceId, "issue-comment:1001");
+  assert.equal(f.state.items["issue:7"].restart.phase, "requested");
+  assert.equal(starts.length, 1);
+  assert.equal(result.outcomes.some((o) => o.status === "interrupted"), false);
+  assert.equal(f.state.items["issue:7"].attempts.length, 1);
+});
+
 test("runtime conflict prevents admission and new work, including a conflict first observed after planning", async () => {
   const f = fixture(), conflict = () => { throw new Error("Legacy runtime conflict"); };
   await assert.rejects(f.pass({ assertRuntime: conflict }), /Legacy runtime/);
@@ -375,6 +437,27 @@ test("a first review-thread mention authorizes only requested maintenance on a p
   assert.deepEqual(f.state.operations["op-1"].threadTargets, []);
   assert.equal((await claimOperation({ api: f.api, store: f.store, repo: "ntodd/project", itemKey: "pr:9", operationId: "op-1", run,
     context: { sha: A, defaultBranch: "main" } })).claimed, true);
+});
+
+test("own-PR readmission requires a new maintenance source and preserves the person's PR", async () => {
+  const f = fixture();
+  const pr = { number: 9, title: "My fix", body: "Intent", state: "open", user: { login: "ntodd" },
+    head: { sha: B, ref: "my-fix", repo: { full_name: "ntodd/project" } }, base: { ref: "main", sha: A } };
+  const rows = [{ id: 999, body: "/agent update", user: { login: "ntodd" }, created_at: at, updated_at: at }];
+  f.api.openIssues = async () => []; f.api.openPulls = async () => [pr]; f.api.pull = async () => pr;
+  f.api.branchSha = async (ref) => ref === "main" ? A : B; f.api.comments = async () => rows;
+  await f.pass(); rows.shift(); await f.pass();
+  assert.equal(f.state.items["pr:9"].authorizationRevoked, true);
+  assert.equal(f.state.operations["op-1"].phase, "superseded");
+  rows.push({ id: 1001, body: "/agent resolve", user: { login: "ntodd" }, created_at: at, updated_at: at });
+  await f.pass({ operationId: () => "op-2" });
+  assert.equal(f.state.items["pr:9"].authorizationRevoked, undefined);
+  assert.equal(f.state.items["pr:9"].evidence.sourceId, "issue-comment:1001");
+  assert.equal(f.state.operations["op-2"].mode, "resolve");
+  assert.equal(f.state.operations["op-2"].target.branch, "my-fix");
+  assert.equal(f.state.items["pr:9"].attempts.length, 2);
+  assert.equal(pr.body, "Intent");
+  assert.equal(f.effects.some(([kind]) => ["close", "push", "pull-request"].includes(kind)), false);
 });
 
 test("an untrusted edit between routing and initial admission is rejected before any coding reservation", async () => {

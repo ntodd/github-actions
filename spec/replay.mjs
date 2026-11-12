@@ -55,6 +55,15 @@ function replay(file) {
         target: { number: b.target, branch: `factory/pr-${b.target}`, head: sha(b.expectedHead) },
         base: { ref: "main", sha: sha(b.expectedBase) } });
       else if (b.owner !== a.owner) event("claim", { run: identity(b.owner), provenance, observation: obs(a) });
+      else if (a.admitted && !b.admitted) event("revoke-admission", { authorization: { valid: false } });
+      else if (!a.admitted && b.admitted) {
+        const sourceId = `issue-comment:${10000 + n}`;
+        ledger = ingestCommands(ledger, "issue:7", [{ authority: "instruction", sourceId, revision,
+          author: "ntodd", createdAt: at, target: 7, command: { action: "build", text: "" } }]);
+        const commandId = Object.values(ledger.items["issue:7"].commands).find((c) => c.sourceId === sourceId).id;
+        event("admit-request", { commandId, authorization: { valid: true, revision,
+          evidence: { kind: "command", sourceId, revision, actor: "ntodd" } } });
+      }
       else if (b.generation !== a.generation) event("stop");
       else if (b.paused !== a.paused) event("resume");
       else if (a.live.length > 0 && b.live.length === 0) event("owner-observed", {
@@ -101,6 +110,7 @@ function replay(file) {
       const item = ledger.items["issue:7"], op = ledger.operations[id];
       assert.equal(item.generation, b.generation);
       assert.equal(item.paused, b.paused);
+      assert.equal(!item.authorizationRevoked, b.admitted);
       assert.equal(item.complete, b.complete);
       assert.equal(item.attempts.length, b.attempts);
       assert.deepEqual(item.prs.filter((p) => p.state === "merged").map((p) => p.number).sort(), [...b.merged].sort());

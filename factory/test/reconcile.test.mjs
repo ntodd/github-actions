@@ -37,6 +37,43 @@ test("pending publishes are reconciled while paused or after authority is lost",
   assert.equal(decide(s, facts({ authorization: { valid: false } })).action.type, "publish");
 });
 
+test("known admission revocation fences a live owner, while an observation outage cannot revoke admission", () => {
+  const owner = { ...run, status: "in_progress", conclusion: null }, state = claimed();
+  const invalid = facts({ authorization: { valid: false, reason: "The issue author is not trusted" }, owner });
+  const plan = decide(state, invalid), fenced = apply(state, plan);
+  assert.equal(plan.action.type, "cancel-owner");
+  assert.equal(fenced.items["issue:7"].authorizationRevoked, true);
+  assert.equal(fenced.items["issue:7"].generation, 1);
+  assert.equal(operation(fenced).owner.id, run.id);
+  const terminal = decide(fenced, { ...invalid, owner: { ...owner, status: "completed", conclusion: "cancelled" } });
+  assert.equal(terminal.action.type, "supersede");
+  const unknown = apply(state, decide(state, facts({ authorization: null, observationError: "GitHub unavailable", owner })));
+  assert.equal(unknown.items["issue:7"].authorizationRevoked, undefined);
+  assert.equal(unknown.items["issue:7"].generation, 0);
+});
+
+test("revoked admission preserves a pending publication and cannot readmit before its outcome is known", () => {
+  const state = ingestCommands(pending(), "issue:7", [{ authority: "instruction", sourceId: "issue-comment:1001", revision: "e".repeat(64),
+    author: "ntodd", createdAt: at, target: 7, command: { action: "build", text: "" } }]);
+  const plan = decide(state, facts({ authorization: { valid: false } })), fenced = apply(state, plan);
+  assert.equal(plan.action.type, "publish"); assert.equal(operation(fenced).phase, "publishing");
+  assert.equal(fenced.items["issue:7"].authorizationRevoked, true);
+  assert.equal(operation(fenced).effects[0].status, "pending");
+  assert.equal(operation(fenced).effects[0].requests.length, 1);
+  assert.equal(fenced.items["issue:7"].evidence.sourceId, "label:123");
+});
+
+test("restored trust cannot let a closure answer bypass revoked admission", () => {
+  let s = step(step(initial(), { type: "pr-observed", number: 9, state: "closed" }), { type: "ask", kind: "pr-closure", number: 9, reason: "Accept its closure?" });
+  s = step(s, { type: "revoke-admission", authorization: { valid: false } });
+  s = ingestCommands(s, "issue:7", [{ authority: "instruction", sourceId: "issue-comment:1001", revision: "e".repeat(64),
+    author: "ntodd", createdAt: at, target: 9, command: { action: "answer", text: "accept-closure #9" } }]);
+  const plan = decide(s, facts({ prs: [pr({ state: "closed" })] })), next = apply(s, plan);
+  assert.equal(plan.action.type, "ask"); assert.equal(next.items["issue:7"].question.kind, "authorization");
+  assert.equal(next.items["issue:7"].prs.find((p) => p.number === 9).acceptedClosure, false);
+  assert.equal(plan.events.some((e) => e.type === "accept-closure"), false);
+});
+
 test("an uncertain publish becomes one request-bound question while recovery retains ownership", () => {
   let state = pending();
   const early = decide(state, facts(), "2026-11-12T12:10:00Z");

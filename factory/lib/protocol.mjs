@@ -94,6 +94,8 @@ export function validateLedger(s) {
       && typeof item.evidence.sourceId === "string" && item.evidence.sourceId.length > 0
       && Array.isArray(item.attempts) && object(item.commands) && Array.isArray(item.prs), "corrupt", `Malformed item ${key}`);
     requireThat(item.requestOnly === undefined || typeof item.requestOnly === "boolean", "corrupt", `Malformed admission state for ${key}`);
+    requireThat(item.authorizationRevoked === undefined || item.authorizationRevoked === true && !item.requestOnly,
+      "corrupt", `Malformed revoked admission for ${key}`);
     requireThat(!item.requestOnly || item.evidence.kind === "request" && !item.activeOperation && !item.attempts.length && !item.restart && !item.continuation && !item.complete
       && !Object.values(s.operations).some((op) => op.item === key), "corrupt", `An unadmitted request owns work: ${key}`);
     if (["request", "routed-command"].includes(item.evidence.kind)) requireThat(/^(issue-comment|review-comment):[1-9]\d*$/.test(item.evidence.sourceId)
@@ -138,13 +140,14 @@ export function validateLedger(s) {
     requireThat(item.question === null || (object(item.question) && typeof item.question.reason === "string"
       && item.question.reason.length > 0 && item.question.reason.length <= 16000
       && (item.question.id === undefined || /^[a-f\d]{64}$/.test(item.question.id))
-      && (item.question.kind == null || ["completion-revision", "publish-outcome", "pr-closure", "issue-closure", "main-failure"].includes(item.question.kind))
+      && (item.question.kind == null || ["completion-revision", "publish-outcome", "pr-closure", "issue-closure", "main-failure", "authorization"].includes(item.question.kind))
       && (item.question.at == null || Number.isFinite(Date.parse(item.question.at)))), "corrupt", `Malformed question for ${key}`);
     if (item.question?.kind === "publish-outcome") {
       const recovery = item.question.recovery, op = s.operations[recovery?.operation], effect = op?.effects.find((e) => e.id === recovery.effect);
       requireThat(object(recovery) && op?.item === key && effect?.requests.some((r) => r.id === recovery.request),
         "corrupt", `Recovery question lost its request identity for ${key}`);
     }
+    if (item.question?.kind === "authorization") requireThat(item.authorizationRevoked, "corrupt", `Authorization question lost its revocation for ${key}`);
     if (item.question?.kind === "pr-closure") requireThat(item.prs.some((p) => p.number === item.question.number)
       && /^[a-f\d]{64}$/.test(item.question.revision) && Number.isFinite(Date.parse(item.question.at)),
       "corrupt", `Closure question lost its PR or issue revision for ${key}`);
@@ -306,7 +309,7 @@ export function evolve(ledger, key, event) {
     return op;
   };
   const finish = () => validateLedger(s);
-  const isCurrent = (op, observation, { base = false, head = op.target.head } = {}) => !item.paused && !item.complete && !item.question && item.continuation?.phase !== "requested"
+  const isCurrent = (op, observation, { base = false, head = op.target.head } = {}) => !item.authorizationRevoked && !item.paused && !item.complete && !item.question && item.continuation?.phase !== "requested"
     && op.generation === item.generation && op.revision === item.revision
     && observation.authorization?.valid === true && observation.authorization.revision === item.revision
     && observation.head === head && observation.open === true
@@ -377,11 +380,24 @@ export function evolve(ledger, key, event) {
       op.publishError = { effect: event.effectId, reason: event.reason, at: time(event.at) };
       break;
     }
+    case "revoke-admission":
+      requireThat(!item.requestOnly && event.authorization?.valid === false, "invalid", "Admission revocation needs a definitive fresh observation");
+      if (item.authorizationRevoked) return ledger;
+      item.authorizationRevoked = true; item.generation++;
+      break;
     case "admit-request": {
       const command = item.commands[event.commandId], auth = event.authorization;
-      requireThat(item.requestOnly && command?.status === "queued"
+      requireThat((item.requestOnly || item.authorizationRevoked) && command?.status === "queued"
         && (item.evidence.own ? ["update", "resolve"] : ["build", "restart"]).includes(command.action),
         "invalid", "A pending request needs an authorized work action");
+      if (item.authorizationRevoked) {
+        const op = s.operations[item.activeOperation];
+        requireThat((!op || TERMINAL.has(op.phase)) && (!item.restart || ["done", "superseded"].includes(item.restart.phase))
+          && item.continuation?.phase !== "requested", "busy", "Recover the previous ownership and requests before readmission");
+        requireThat(command.sourceId !== item.evidence.sourceId && command.target === Number(key.split(":")[1]),
+          "invalid", "Revoked admission needs a fresh source on its subject");
+        if (item.revision !== auth?.revision) item.revisionPending = true;
+      }
       requireThat(auth?.valid === true && /^[a-f\d]{64}$/.test(auth.revision) && auth.evidence?.sourceId === command.sourceId
         && auth.evidence.revision === command.revision && auth.evidence.actor === command.author
         && Boolean(auth.evidence.own) === Boolean(item.evidence.own), "invalid", "Admission must match a fresh trusted source");
@@ -389,6 +405,8 @@ export function evolve(ledger, key, event) {
         : ["command", "label"].includes(auth.evidence.kind), "invalid", "The source does not authorize this action");
       item.evidence = { ...auth.evidence, ...(!item.evidence.own ? { producer: auth.producer ?? null } : {}) };
       item.revision = auth.revision; item.requestOnly = false; item.question = null;
+      delete item.authorizationRevoked;
+      delete item.mainRepair;
       break;
     }
     case "reserve": {
@@ -402,7 +420,7 @@ export function evolve(ledger, key, event) {
       }
       const previous = s.operations[item.activeOperation];
       requireThat(!previous || TERMINAL.has(previous.phase), "busy", "The previous operation is not resolved");
-      requireThat(!item.requestOnly && !item.paused && !item.complete && !item.question && item.continuation?.phase !== "requested",
+      requireThat(!item.requestOnly && !item.authorizationRevoked && !item.paused && !item.complete && !item.question && item.continuation?.phase !== "requested",
         "waiting", "The item is not admitted, is paused, complete or waiting for an answer or issue reopening");
       const automatic = event.automatic !== false;
       const day = new Date(at).toISOString().slice(0, 10);
@@ -436,7 +454,7 @@ export function evolve(ledger, key, event) {
     }
     case "begin-restart": {
       const command = item.commands[event.commandId];
-      requireThat(!item.requestOnly && !item.evidence.own && command?.status === "queued" && command.action === "restart", "invalid", "Restart needs an explicit queued request on an admitted issue");
+      requireThat(!item.requestOnly && !item.authorizationRevoked && !item.evidence.own && command?.status === "queued" && command.action === "restart", "invalid", "Restart needs an explicit queued request on an admitted issue");
       if (item.restart?.commandId === command.id) return ledger;
       requireThat(!item.restart || ["done", "superseded"].includes(item.restart.phase), "busy", "The previous restart must be recovered first");
       item.generation++; item.paused = false; item.question = null; item.complete = false;
@@ -550,7 +568,8 @@ export function evolve(ledger, key, event) {
     case "ask": {
       requireThat(typeof event.reason === "string" && event.reason.length > 0 && event.reason.length <= 16000, "invalid", "A concrete question is required");
       item.questionSequence = (item.questionSequence ?? 0) + 1;
-      requireThat(event.kind === undefined || ["completion-revision", "publish-outcome", "pr-closure", "issue-closure", "main-failure"].includes(event.kind), "invalid", "Unknown question kind");
+      requireThat(event.kind === undefined || ["completion-revision", "publish-outcome", "pr-closure", "issue-closure", "main-failure", "authorization"].includes(event.kind), "invalid", "Unknown question kind");
+      if (event.kind === "authorization") requireThat(item.authorizationRevoked, "invalid", "Authorization questions require revoked admission");
       if (event.kind === "publish-outcome") {
         const op = s.operations[event.recovery?.operation], effect = op?.effects.find((e) => e.id === event.recovery.effect);
         requireThat(op?.item === key && op.id === item.activeOperation && op.phase === "publishing" && effect?.status === "pending"
@@ -575,7 +594,7 @@ export function evolve(ledger, key, event) {
     }
     case "register-main-repair": {
       const r = event.registration;
-      requireThat(r?.revision === item.revision && r.sourceId === item.evidence.sourceId && !item.evidence.own && !item.requestOnly && !item.complete
+      requireThat(r?.revision === item.revision && r.sourceId === item.evidence.sourceId && !item.evidence.own && !item.requestOnly && !item.authorizationRevoked && !item.complete
         && Array.isArray(r.keys) && r.keys.length > 0 && r.keys.length <= 800
         && event.authorization?.valid === true && event.authorization.revision === item.revision,
         "invalid", "Main repair registration needs current admitted issue authority");
@@ -594,7 +613,7 @@ export function evolve(ledger, key, event) {
         || event.outcome === "base-moved" && SHA.test(main?.sha) && main.sha !== q.dependency.baseSha
         || event.outcome === "pr-changed" && pr && (pr.state !== "open" || SHA.test(event.headSha) && event.headSha !== q.dependency.headSha)
         || event.outcome === "repair-admitted" && repair && event.repairAuthorization?.valid === true
-          && event.repairAuthorization.revision === repair.revision && event.repairKey !== key && !repair.complete && !repair.evidence.own && !repair.requestOnly
+          && event.repairAuthorization.revision === repair.revision && event.repairKey !== key && !repair.complete && !repair.evidence.own && !repair.requestOnly && !repair.authorizationRevoked
           && (event.repairBase === q.dependency.baseSha || repair.mainRepair?.revision === repair.revision
             && q.dependency.keys.length > 0 && q.dependency.keys.every((k) => repair.mainRepair.keys.includes(k)))),
         "pending", "Only a known change to this main dependency can settle its question");
@@ -614,7 +633,7 @@ export function evolve(ledger, key, event) {
       if (decision === "continue") {
         requireThat(!item.complete && (!item.continuation || item.continuation.phase !== "requested") && op?.phase !== "publishing",
           "busy", "Recover earlier publication and continuation before reopening the issue");
-        requireThat(event.authorization?.valid === true && event.authorization.revision === item.revision,
+        requireThat(!item.authorizationRevoked && event.authorization?.valid === true && event.authorization.revision === item.revision,
           "invalid", "Continuing needs fresh authorization for the current issue revision");
         item.continuation = { commandId: command.id, generation: item.generation, revision: item.revision,
           createdAt: time(event.at), slot: `continue:${key}:${command.id}`, phase: "requested" };
@@ -676,7 +695,7 @@ export function evolve(ledger, key, event) {
       requireThat(command?.status === "queued" && command.action === "answer" && ["accept-completion", "1"].includes(text),
         "invalid", "Completion acceptance needs an explicit pending answer");
       requireThat(text !== "1" || event.questionKind === "completion-revision", "invalid", "A numbered answer needs the completion question");
-      requireThat(event.authorization?.valid === true && /^[a-f\d]{64}$/.test(event.authorization.revision)
+      requireThat(!item.authorizationRevoked && event.authorization?.valid === true && /^[a-f\d]{64}$/.test(event.authorization.revision)
         && item.prs.some((p) => p.required) && item.prs.filter((p) => p.required).every((p) => p.state === "merged" || p.state === "closed" && p.acceptedClosure),
         "invalid", "Only fully accounted work and a fresh accepted revision can complete");
       item.completionAcceptance = { sourceId: command.sourceId, revision: event.authorization.revision, at: time(event.at) };
@@ -939,7 +958,7 @@ export function evolve(ledger, key, event) {
     case "accept-closure": {
       const pr = item.prs.find((p) => p.number === event.number);
       const command = item.commands[event.commandId], op = s.operations[item.activeOperation];
-      requireThat(!item.requestOnly && !item.evidence.own && !item.paused && (!op || TERMINAL.has(op.phase)),
+      requireThat(!item.requestOnly && !item.authorizationRevoked && !item.evidence.own && !item.paused && (!op || TERMINAL.has(op.phase)),
         "busy", "Recover existing work before accepting a closure");
       requireThat(command?.status === "queued" && closureAnswer(command, item.question, item.revision) === event.number
         && pr?.required && pr.state === "closed" && !pr.acceptedClosure,
@@ -958,7 +977,7 @@ export function evolve(ledger, key, event) {
       break;
     }
     case "close-out":
-      requireThat(!item.revisionPending && item.prs.some((p) => p.required) && item.prs.filter((p) => p.required)
+      requireThat(!item.authorizationRevoked && !item.revisionPending && item.prs.some((p) => p.required) && item.prs.filter((p) => p.required)
         .every((p) => p.state === "merged" || (p.state === "closed" && p.acceptedClosure)), "incomplete", "Required work is not all accounted for");
       item.complete = true;
       item.question = null;

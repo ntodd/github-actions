@@ -58,7 +58,7 @@ export async function publishOperation({ store, itemKey, operationId, publisherR
     const observation = await observe(state.items[itemKey], op);
     const expectedHead = expectedEffectHead(op, effect);
     const item = state.items[itemKey];
-    const current = !item.paused && !item.complete && !item.question && op.generation === item.generation && op.revision === item.revision
+    const current = !item.authorizationRevoked && !item.paused && !item.complete && !item.question && op.generation === item.generation && op.revision === item.revision
       && observation.authorization?.valid === true && observation.authorization.revision === item.revision
       && observation.open === true && observation.head === expectedHead
       && (!["thread-reply", "thread-resolve"].includes(effect.type) || observation.threadRevisions?.[effect.thread] === effect.revision);

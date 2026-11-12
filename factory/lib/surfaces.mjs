@@ -77,7 +77,7 @@ export function surfaceService({ api, write, store, repo, appLogin, run, now = (
   }
   async function workGuard(key, definition) {
     const item = await currentItem(key);
-    if (!sameIntent(item, definition)) return false;
+    if (item.authorizationRevoked || !sameIntent(item, definition)) return false;
     if (item.continuation?.phase === "requested" && definition.kind !== "issue-reopen") return false;
     const latest = { ...await loadConfig(api), repo };
     const { authorization } = await observeAuthorization(api, item, latest);
@@ -217,7 +217,8 @@ export function surfaceService({ api, write, store, repo, appLogin, run, now = (
   }
   async function render(ledger, context, outcomes = []) {
     for (const item of Object.values(ledger.items)) {
-      for (const effect of Object.values(item.apiEffects ?? {}).filter((e) => e.status === "pending")) {
+      for (const effect of Object.values(item.apiEffects ?? {}).filter((e) => e.status === "pending"
+        || ["prepared", "rejected"].includes(e.status) && !sameIntent(item, e.definition))) {
         try { await execute(item.key, effect.slot, effect.definition, undefined, true); }
         catch (error) { outcomes.push({ key: item.key, surface: "receipt", status: "waiting", reason: error.message }); }
       }
@@ -274,7 +275,8 @@ export function surfaceService({ api, write, store, repo, appLogin, run, now = (
           : item.prs.find((p) => p.state === "open")?.number ?? item.prs.find((p) => p.required)?.number ?? ownNumber(item);
         try {
           const posted = await comment(item.key, `question:${id}`, target,
-            `**Needs you:** ${question.reason}\n\n${question.kind === "publish-outcome" ? "You can reply with investigation details, but recovery needs a verified remote outcome." : "Reply with `/agent answer <your answer>`."} Use \`/agent stop\` to pause work.`,
+            `**Needs you:** ${question.reason}\n\n${question.kind === "publish-outcome" ? "You can reply with investigation details, but recovery needs a verified remote outcome."
+              : question.kind === "authorization" ? "A new trusted admission source is required before work can resume." : "Reply with `/agent answer <your answer>`."} Use \`/agent stop\` to pause work.`,
             `<!-- factory:question=${id} -->`, async () => {
               const current = await currentItem(item.key);
               return !current.paused && current.question?.reason === question.reason && current.question?.id === question.id;

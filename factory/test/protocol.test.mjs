@@ -100,6 +100,42 @@ test("a pending mention record cannot reserve work, restart, or accept unrelated
   fails(() => validateLedger(corrupt), "corrupt");
 });
 
+test("revoked admission fences once and only fresh verified evidence after ownership recovery can replace it", () => {
+  const revoke = { type: "revoke-admission", authorization: { valid: false } };
+  fails(() => step(initial(), { ...revoke, authorization: null }), "invalid");
+  fails(() => step(initial(), { ...revoke, authorization: { valid: true } }), "invalid");
+  const registered = step(initial(), { type: "register-main-repair", registration: { baseSha: A, revision, sourceId: "label:123", keys: ["e".repeat(64)] },
+    authorization: observation.authorization });
+  let s = ingestCommands(registered, "issue:7", [{ authority: "instruction", sourceId: "issue-comment:1001", revision: "e".repeat(64),
+    author: "ntodd", createdAt: at, target: 7, command: { action: "build", text: "" } }]);
+  const commandId = Object.keys(s.items["issue:7"].commands)[0], authorization = { valid: true, revision,
+    evidence: { kind: "command", sourceId: "issue-comment:1001", revision: "e".repeat(64), actor: "ntodd" } };
+  const readmit = { type: "admit-request", commandId, authorization };
+  s = step(s, revoke); assert.equal(s.items["issue:7"].generation, 1);
+  assert.equal(step(s, revoke).items["issue:7"].generation, 1);
+  fails(() => step(s, reserve()), "waiting");
+  fails(() => step(s, { ...readmit, authorization: { ...authorization, valid: false } }), "invalid");
+  const sameSource = structuredClone(s); sameSource.items["issue:7"].evidence.sourceId = "issue-comment:1001";
+  delete sameSource.items["issue:7"].mainRepair;
+  fails(() => step(sameSource, readmit), "invalid");
+  const corrupt = structuredClone(s); corrupt.items["issue:7"].authorizationRevoked = "true";
+  fails(() => validateLedger(corrupt), "corrupt");
+  const restored = step(s, readmit);
+  assert.equal(restored.items["issue:7"].authorizationRevoked, undefined);
+  assert.equal(restored.items["issue:7"].mainRepair, undefined);
+  assert.deepEqual(restored.items["issue:7"].prs, s.items["issue:7"].prs);
+  assert.deepEqual(restored.items["issue:7"].attempts, s.items["issue:7"].attempts);
+  for (const active of [step(initial(), reserve()), claimed(), ready(), pending()]) {
+    const queued = ingestCommands(step(active, revoke), "issue:7", [{ authority: "instruction", sourceId: "issue-comment:1001", revision: "e".repeat(64),
+      author: "ntodd", createdAt: at, target: 7, command: { action: "build", text: "" } }]);
+    fails(() => step(queued, readmit), "busy");
+  }
+  const revised = step(s, { ...readmit, authorization: { ...authorization, revision: "f".repeat(64) } });
+  assert.equal(revised.items["issue:7"].revisionPending, true);
+  const final = [9, 10].reduce((state, number) => step(state, { type: "pr-observed", number, state: "merged", mergedSha: C }), s);
+  fails(() => step(final, { type: "close-out" }), "incomplete");
+});
+
 test("reservation is durable and delivery cannot double-charge or claim a second owner", () => {
   const s = claimed();
   assert.deepEqual(step(s, reserve()), s);
