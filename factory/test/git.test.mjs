@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, appendFileSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, appendFileSync, symlinkSync } from "node:fs";
+import { deflateSync } from "node:zlib";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { gitCommand, cleanGitWriter, repositoryUrl } from "../lib/git.mjs";
@@ -140,6 +141,40 @@ test("reachable base history does not count against proposal object limits", asy
   t.after(() => writer.dispose());
   await writer.validate(proposal.effects[0], f.op);
   assert.equal((await writer.apply(proposal.effects[0], f.op)).outcome, "applied");
+});
+
+test("oversized pack declarations and delta results are rejected before object import", async (t) => {
+  const f = fixture(t); f.commit(); const proposal = f.exportIt();
+  const number = (value, firstBits = 7, type = 0) => {
+    const bytes = [type * 16 + value % 2 ** firstBits]; value = Math.floor(value / 2 ** firstBits);
+    while (value) { bytes[bytes.length - 1] |= 128; bytes.push(value % 128); value = Math.floor(value / 128); }
+    return Buffer.from(bytes);
+  };
+  const header = Buffer.alloc(12); header.write("PACK"); header.writeUInt32BE(2, 4); header.writeUInt32BE(1, 8);
+  for (const object of [
+    Buffer.concat([number(3 * 1024 ** 3, 4, 3), deflateSync(Buffer.alloc(0))]),
+    (() => { const delta = Buffer.concat([number(0), number(3 * 1024 ** 3)]);
+      return Buffer.concat([number(delta.length, 4, 7), Buffer.alloc(20), deflateSync(delta)]); })(),
+  ]) {
+    writeFileSync(join(f.artifact, "proposal.bundle"), Buffer.concat([
+      Buffer.from(`# v2 git bundle\n${proposal.effects[0].commit} refs/factory/exports/op-1\n\n`), header, object, Buffer.alloc(20),
+    ]));
+    const writer = f.writer();
+    await assert.rejects(writer.validate(proposal.effects[0], f.op), /exceeds Git object limits/);
+    assert.deepEqual(readdirSync(join(writer.directory, "objects")).sort(), ["info", "pack"]);
+    assert.deepEqual(readdirSync(join(writer.directory, "objects", "pack")), []);
+  }
+});
+
+test("bounded delta-compressed proposal objects still validate", async (t) => {
+  const f = fixture(t), content = Array.from({ length: 4000 }, (_, i) => `line ${i}\n`).join("");
+  f.commit("delta.txt", content);
+  f.commit("delta.txt", `${content}one new line\n`);
+  const proposal = f.exportIt();
+  const bundle = readFileSync(join(f.artifact, "proposal.bundle")), pack = bundle.subarray(bundle.indexOf("\n\n") + 2);
+  const indexed = text(gitCommand(f.repo, ["index-pack", "--stdin", "--fix-thin"], { input: pack })).split(/\s+/).at(-1);
+  assert.match(text(f.git(["verify-pack", "-v", join(f.repo, ".git", "objects", "pack", `pack-${indexed}.idx`)])), /[a-f0-9]{40} blob\s+\d+ \d+ \d+ \d+ [a-f0-9]{40}/);
+  await f.writer().validate(proposal.effects[0], f.op);
 });
 
 test("clean update merges two recorded histories in a fresh bare repository without executing project hooks", (t) => {

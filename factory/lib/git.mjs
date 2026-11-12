@@ -1,7 +1,8 @@
 // Git is a data transport here. Publisher calls run in a fresh bare repository,
 // without project hooks, configuration, filters, helpers, worktrees or submodules.
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, lstatSync } from "node:fs";
+import { mkdtempSync, rmSync, lstatSync, readFileSync } from "node:fs";
+import { inflateSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { validBranch } from "./protocol.mjs";
@@ -90,6 +91,52 @@ export function cleanGitWriter({ remote, readToken, writeToken, bundleFile, allo
   function importBundle(op, effect) {
     if (imported === effect.commit) return;
     if (!bundleFile || (!lstatSync(bundleFile).isFile() || lstatSync(bundleFile).isSymbolicLink()) || lstatSync(bundleFile).size > (limits.maxBundleBytes ?? 50 * 1024 * 1024)) throw new Error("Proposal bundle is missing or too large");
+    // Inspect bounded streams before Git imports or reconstructs any object.
+    // A delta entry's pack size describes instructions, not its output size.
+    const bytes = readFileSync(bundleFile), headerEnd = bytes.indexOf("\n\n");
+    if (headerEnd < 0 || headerEnd > 1024 * 1024 || !/^# v[23] git bundle\n/.test(bytes.subarray(0, 16).toString())) throw new Error("Invalid proposal bundle header");
+    const pack = bytes.subarray(headerEnd + 2), end = pack.length - 20;
+    if (end < 12 || pack.toString("ascii", 0, 4) !== "PACK" || ![2, 3].includes(pack.readUInt32BE(4))) throw new Error("Invalid proposal pack header");
+    const count = pack.readUInt32BE(8);
+    if (count > 100000) throw new Error("Proposal exceeds Git object limits");
+    let offset = 12, total = 0;
+    const byte = () => { if (offset >= end) throw new Error("Truncated proposal pack"); return pack[offset++]; };
+    for (let object = 0; object < count; object++) {
+      let current = byte(), size = current & 15, shift = 4;
+      const kind = (current >> 4) & 7;
+      if (![1, 2, 3, 4, 6, 7].includes(kind)) throw new Error("Invalid proposal object type");
+      while (current & 128) {
+        current = byte(); size += (current & 127) * 2 ** shift; shift += 7;
+        if (!Number.isSafeInteger(size) || shift > 53) throw new Error("Proposal exceeds Git object limits");
+      }
+      if (size > maxTotal - total || kind === 3 && size > maxBlob) throw new Error("Proposal exceeds Git object limits");
+      if (kind === 7) offset += 20;
+      if (kind === 6) { let length = 0; do { current = byte(); if (++length > 9) throw new Error("Invalid proposal delta offset"); } while (current & 128); }
+      if (offset >= end) throw new Error("Truncated proposal pack");
+      let data;
+      try { data = inflateSync(pack.subarray(offset, end), { info: true, maxOutputLength: Math.max(1, size) }); }
+      catch { throw new Error("Proposal exceeds Git object limits or contains invalid compressed data"); }
+      if (data.buffer.length !== size || data.engine.bytesWritten < 1) throw new Error("Invalid proposal object size");
+      offset += data.engine.bytesWritten;
+      let expanded = size;
+      if (kind === 6 || kind === 7) {
+        let cursor = 0;
+        const deltaSize = () => {
+          let value = 0, shift = 0, part;
+          do {
+            if (cursor >= data.buffer.length || shift > 49) throw new Error("Invalid proposal delta size");
+            part = data.buffer[cursor++]; value += (part & 127) * 2 ** shift; shift += 7;
+          } while (part & 128);
+          if (!Number.isSafeInteger(value)) throw new Error("Proposal exceeds Git object limits");
+          return value;
+        };
+        deltaSize(); expanded = Math.max(size, deltaSize());
+        if (expanded > maxBlob) throw new Error("Proposal exceeds Git object limits");
+      }
+      total += expanded;
+      if (total > maxTotal) throw new Error("Proposal exceeds Git object limits");
+    }
+    if (offset !== end) throw new Error("Invalid proposal pack length");
     const ref = exportRef(op.id);
     const heads = text(run(["bundle", "list-heads", resolve(bundleFile)])).split("\n");
     if (heads.length !== 1 || heads[0] !== `${effect.commit} ${ref}`) throw new Error("Bundle does not advertise only the recorded proposal");
