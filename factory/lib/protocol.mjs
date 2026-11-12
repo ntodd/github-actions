@@ -231,6 +231,10 @@ export function validateLedger(s) {
       && /^[0-9a-f]{64}$/.test(op.revision) && object(op.worker)
       && op.worker.workflowPath === ".github/workflows/factory.yml" && SHA.test(op.worker.entrySha), "corrupt", `Malformed operation ${id}`);
     requireThat(op.phase !== "claimed" || op.owner !== null, "corrupt", `Missing owner for ${id}`);
+    if (op.abandonedPrepared !== undefined) requireThat(object(op.abandonedPrepared) && op.phase === "superseded" && op.owner === null
+      && op.result === null && op.effects.length === 0 && op.dispatch?.attempts.length >= 3
+      && ["answer", "respond", "resolve", "update", "build", "restart", "retry"].includes(s.items[op.item].commands[op.abandonedPrepared.commandId]?.action)
+      && Number.isFinite(Date.parse(op.abandonedPrepared.at)), "corrupt", `Invalid prepared abandonment for ${id}`);
     requireThat((op.worker.runner === undefined || validRunner(op.worker.runner))
       && (op.worker.model === undefined || typeof op.worker.model === "string" && op.worker.model.length > 0 && op.worker.model.length <= 256)
       && validOperationUsage(op.usage, op), "corrupt", `Malformed usage for ${id}`);
@@ -871,6 +875,17 @@ export function evolve(ledger, key, event) {
       if (op.result.outcome === "failed") op.failure = op.result.reason || "The worker reported failure";
       if (op.result.outcome === "needs-you") item.question = {
         id: createHash("sha256").update(`${key}:${item.generation}:${op.id}:${op.result.reason}`).digest("hex"), operation: op.id, reason: op.result.reason, at: time(event.at) };
+      break;
+    }
+    case "abandon-prepared": {
+      const op = current(), command = item.commands[event.commandId];
+      requireThat(op.phase === "prepared" && op.owner === null && op.result === null && op.effects.length === 0,
+        "busy", "Only a verified unclaimed prepared operation can be abandoned");
+      requireThat(op.dispatch?.attempts.length >= 3 && command?.status === "queued"
+        && ["answer", "respond", "resolve", "update", "build", "restart", "retry"].includes(command.action),
+        "invalid", "Exhausted dispatch requires an explicit queued work request");
+      op.phase = "superseded";
+      op.abandonedPrepared = { commandId: command.id, at: time(event.at) };
       break;
     }
     case "supersede": {

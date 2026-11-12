@@ -84,9 +84,18 @@ module factory {
     s' = { ...s, owner: runId, phase: "claimed", live: Set((op, runId)) }
   }
 
+  // Abstracts an explicit work request after dispatch retries are exhausted.
+  // Deliveries remain in flight, but the retired reservation cannot be claimed.
+  action abandonPrepared = all {
+    not(s.locked), s.phase == "prepared", s.owner == 0, s.live.size() == 0,
+    s.opGeneration == s.generation, s.heads.get(s.target) == s.expectedHead,
+    not(s.merged.contains(s.target)), s.main == s.expectedBase,
+    s' = { ...s, phase: "superseded" }
+  }
+
   action rejectDelivery(op: int, runId: int): bool = all {
     not(s.locked), s.deliveries.contains((op, runId)),
-    op != s.op or s.owner != 0 or s.paused or s.opGeneration != s.generation,
+    op != s.op or s.owner != 0 or s.paused or s.opGeneration != s.generation or s.phase != "prepared",
     s' = { ...s, duplicateSeen: true }
   }
 
@@ -306,7 +315,7 @@ module factory {
     collectResult(artifact._1, artifact._2),
     nondet runId = RUNS.oneOf()
     foreignArtifact(runId),
-    recoverDeadWorker, stop, resume, discardStale, expireResult,
+    recoverDeadWorker, stop, resume, discardStale, abandonPrepared, expireResult,
     recoverMissingResult, authorizePublish, push, applyPush, rejectPush, persistReceipt,
     crashPublisher, recoverPublished, recoverUnpublished, finishRejectedPublish,
     rejectRacedPublish,
@@ -520,4 +529,10 @@ module factory {
     .then(recoverMissingResult).then(resultFor(1)).then(expireResult)
     .then(recoverMissingResult).then(resultFor(1)).then(expireResult)
     .then(recoverMissingResult).then(reserve(1)).fail()
+
+  run abandonedDeliveryTest = init.then(reserve(1)).then(dispatch(1))
+    .then(abandonPrepared).then(claim(1, 1)).fail()
+
+  run replacedDeliveryTest = init.then(reserve(1)).then(dispatch(1))
+    .then(abandonPrepared).then(reserve(1)).then(claim(1, 1)).fail()
 }

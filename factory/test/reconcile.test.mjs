@@ -71,6 +71,25 @@ test("queued ownership is preserved and timeout requests cancellation before a r
   assert.equal(decide(claimed(), facts({ owner: { id: "999", attempt: 1, status: "completed" } })).action, null);
 });
 
+test("explicit retry retires an exhausted unclaimed operation exactly once", () => {
+  let state = step(initial(), reserve());
+  for (const date of [at, "2026-11-12T12:05:00Z", "2026-11-12T12:10:00Z"]) state = step(state, { type: "dispatch-request", at: date });
+  state = apply(state, decide(state, facts(), "2026-11-12T12:20:00Z"));
+  state = ingestCommands(state, "issue:7", [{ authority: "instruction", sourceId: "issue-comment:997", revision: "e".repeat(64),
+    author: "ntodd", createdAt: "2026-11-12T12:21:00Z", target: 9, command: { action: "retry", text: "" } }]);
+  const retry = decide(state, facts(), "2026-11-12T12:22:00Z");
+  assert.equal(retry.action.type, "reserve");
+  state = apply(state, retry);
+  assert.equal(operation(state).phase, "superseded");
+  assert.throws(() => step(state, { type: "claim", run, provenance: { repositoryId: "42", workflowPath: ".github/workflows/factory.yml", headSha: "a".repeat(40) }, observation }), (e) => e.code === "claimed");
+  state = step(state, reserve("op-2", { automatic: false, commandIds: retry.action.commandIds, at: "2026-11-12T12:22:00Z" }));
+  const next = decide(state, facts(), "2026-11-12T12:23:00Z");
+  assert.equal(next.action.type, "dispatch");
+  assert.equal(next.action.operationId, "op-2");
+  assert.equal(next.events.some((e) => e.type === "ask"), false);
+  assert.equal(Object.keys(state.operations).length, 2);
+});
+
 test("cancellation and dispatch requests have durable bounded backoff", () => {
   let s = step(initial(), reserve());
   s = step(s, { type: "dispatch-request" });

@@ -2,6 +2,7 @@
 // The projection compares durable lifecycle state. External GitHub behavior and
 // rejected actions are covered separately by protocol/store tests and sandbox CI.
 import assert from "node:assert/strict";
+import { ingestCommands } from "../factory/lib/commands.mjs";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -70,6 +71,15 @@ function replay(file) {
             ] },
           });
         } else if (b.phase === "publishing") event("authorize-publish", { observation: obs(a) });
+        else if (b.phase === "superseded" && a.phase === "prepared" && a.opGeneration === a.generation
+          && a.heads[a.target] === a.expectedHead && a.main === a.expectedBase && !a.merged.includes(a.target)) {
+          for (let attempt = 0; attempt < 3; attempt++) event("dispatch-request", { at: `2026-11-12T12:${String(attempt * 5).padStart(2, "0")}:00Z` });
+          const sourceId = `issue-comment:${900 + b.op}`;
+          ledger = ingestCommands(ledger, "issue:7", [{ authority: "instruction", sourceId, revision,
+            author: "ntodd", createdAt: at, target: b.target, command: { action: "retry", text: "" } }]);
+          const commandId = Object.values(ledger.items["issue:7"].commands).find((c) => c.sourceId === sourceId).id;
+          event("abandon-prepared", { commandId });
+        }
         else if (b.phase === "superseded") event("supersede", { observation: obs(a) });
         else if (a.phase === "publishing" && b.phase === "result-ready") event("recover-publish");
         else if (b.phase === "failed") event(a.phase === "claimed" ? "recover-worker" : "result-unavailable", { resultAbsent: true, confirmed: true });

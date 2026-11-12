@@ -238,9 +238,14 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
 
   if (op && !TERMINAL.has(op.phase)) {
     if (op.phase === "prepared") {
-      if ((op.dispatch?.attempts.length ?? 0) >= 3) return ask("Dispatch attempts were exhausted; no worker has claimed the operation", "agent-failed");
-      if (op.dispatch?.nextAt && instant < Date.parse(op.dispatch.nextAt)) return wait("agent-ready", "Waiting before retrying the same dispatch", "dispatch", op.id, op.dispatch.nextAt);
-      return finish({ type: "dispatch", operationId: op.id }, "agent-ready", "Dispatch the reserved operation; duplicate deliveries cannot claim it twice");
+      if ((op.dispatch?.attempts.length ?? 0) >= 3) {
+        if (!command || !WORK_ACTIONS.has(command.action)) return ask("Dispatch attempts were exhausted; no worker has claimed the operation", "agent-failed");
+        observe({ type: "abandon-prepared", operationId: op.id, commandId: command.id });
+        op = state.operations[item.activeOperation];
+      } else {
+        if (op.dispatch?.nextAt && instant < Date.parse(op.dispatch.nextAt)) return wait("agent-ready", "Waiting before retrying the same dispatch", "dispatch", op.id, op.dispatch.nextAt);
+        return finish({ type: "dispatch", operationId: op.id }, "agent-ready", "Dispatch the reserved operation; duplicate deliveries cannot claim it twice");
+      }
     }
     if (op.phase === "claimed") {
       if (!facts.owner || !identity(op.owner, facts.owner)) return wait("agent-waiting", "Cannot establish the recorded owner's current status", "owner-status", op.owner);

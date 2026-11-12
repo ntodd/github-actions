@@ -8,6 +8,19 @@ const fails = (fn, code) => assert.throws(fn, (e) => e.code === code);
 const observed = (s, outcome, evidence, extra = {}) => step(s, { type: "effect-observed", effectId: "push",
   requestId: "op-1/push/1", outcome, evidence, ...extra });
 
+test("prepared abandonment requires exhausted dispatch, an explicit request and zero ownership", () => {
+  let s = ingestCommands(step(initial(), reserve()), "issue:7", [{ authority: "instruction", sourceId: "issue-comment:997", revision,
+    author: "ntodd", createdAt: at, target: 9, command: { action: "retry", text: "" } }]);
+  const commandId = Object.keys(s.items["issue:7"].commands)[0], event = { type: "abandon-prepared", commandId };
+  fails(() => step(s, event), "invalid");
+  for (const date of [at, "2026-11-12T12:05:00Z", "2026-11-12T12:10:00Z"]) s = step(s, { type: "dispatch-request", at: date });
+  fails(() => step(step(s, { type: "claim", run, provenance, observation }), event), "busy");
+  const abandoned = step(s, event);
+  assert.equal(operation(abandoned).phase, "superseded");
+  operation(abandoned).abandonedPrepared.commandId = "missing";
+  fails(() => validateLedger(abandoned), "corrupt");
+});
+
 test("configured check findings are valid operation inputs, while arbitrary feedback kinds are rejected", () => {
   const input = { sourceId: "check:123", revision: "e".repeat(64) };
   assert.equal(step(initial(), reserve("op-1", { feedbackInputs: [input] })).operations["op-1"].feedbackInputs[0].sourceId, "check:123");
