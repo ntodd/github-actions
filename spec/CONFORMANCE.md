@@ -177,6 +177,18 @@ The setup REST adapter has read the sandbox's actual CI, check identities and
 full ruleset shapes. This is read-only evidence; App-backed writes and live
 approval semantics remain unverified.
 
+A connector GET recheck at 2026-11-12 17:05 UTC found sandbox setup unapplied:
+repository `1449400573` still uses `main` at
+`7778370ffc7016df5023faa3f538bd544fb2ef7f`, with auto-merge disabled. Reading
+that default ref succeeded, while `git/ref/heads/factory-state` returned 404.
+The complete ruleset collection contained only legacy ruleset `26758485`,
+scoped to the default branch. Its full response requires last-push approval
+and retains the administrator exemption, but contains no strict status checks
+or state-branch protections. No mutations were attempted. These observations
+establish outstanding setup work, not permission or approval enforcement.
+The connector rejected the workflow-catalog endpoint; it supplies no current
+legacy-isolation inventory. CLI authentication remains unresolved.
+
 Config parsing uses a pinned bundled YAML parser, regenerated and checked
 against its source by the build scripts. GitHub read queries have also been
 accepted by the live API for this repository's issue/PR edit history,
