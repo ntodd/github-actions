@@ -53,8 +53,8 @@ properties checked on sampled traces, not that every trace is proved safe.
 | A human push must not be overwritten by an old proposal | `humanPush`, `rejectRacedPublish`, expected-head guard in `applyPush`; `noHeadOverwrite` | `humanPushDuringPublishTest`, `delayedPushCannotOverwriteHumanTest` |
 | Main can advance while a PR write is in flight; the old integration cannot merge | `mainMoves`, `applyPush`, `merge`; `reviewedIntegration` | `mainMovesDuringPublishTest`, `outdatedIntegrationCannotMergeTest` |
 | [Merging and approval](../DESIGN.md#merging-and-approval): agent changes need approval covering the new head and passing current integration checks | `approve`, `observeCI`, guards in `merge`; `reviewedIntegration` | `oldApprovalCannotMergeTest`, `oldCICannotMakeNewHeadReadyTest` |
-| A late push to an already-merged PR branch is not the commit that landed | `merge`, `applyPush`; immutable `merges` history | `mergeWhilePushInFlightTest` |
-| [PR and issue state](../DESIGN.md#states-and-where-you-see-them): merging one required PR does not complete all work | `merge`, `closeOut`; `completeMeansAllMerged` | `partialCompletionTest`, `fullCompletionTest` |
+| A late push to an already-merged PR branch is not landed work; completion needs verified coverage or an explicit alternative | `merge`, `applyPush`, `verifyLanding`, `acceptCompletion`; immutable `merges` history, `verifiedLandingIsReal`, `completeMeansAllMerged` | `mergeWhilePushInFlightTest`, `latePushCannotCompleteTest`, `latePushNeedsDispositionTest`, `rewrittenPublicationNeedsDispositionTest`, `landingEvidenceWaitsForReceiptTest` |
+| [PR and issue state](../DESIGN.md#states-and-where-you-see-them): merging one required PR does not complete all work | `merge`, `closeOut`; `completeMeansAllMerged` also requires terminal ownership and accounted publications | `partialCompletionTest`, `fullCompletionTest` |
 
 ## Abstraction boundaries and assumptions
 
@@ -71,7 +71,7 @@ properties checked on sampled traces, not that every trace is proved safe.
 | Reconciler scheduling | `step` nondeterministically selects protocol operations; `recoveryStep` explores stable-input recovery | The design's full first-applicable-action ordering, reasons for new work, fairness, serial integration selection, priority and deadlines |
 | Main health, CI and review | Exact numeric head/base identities and successful CI observations; approval is attached to a head | CI failures, flaky reruns, failure matching, main repair dependencies, review threads, bot policies, review dismissal/revocation and signal timeouts |
 | Merge policy | `merge` represents a human-authorized GitHub merge with strict approval/check guards | Automatic merge is not an App action here. The model does not track enabling auto-merge, admin bypass, GitHub's actual approval implementation or queued merge behavior |
-| Completion | Both fixed required PRs must merge; merged commit identity stays in the audit history | Accepted closure/waiver, replacement PRs, abandoned issues, reopening or stack base dependencies. Those are explicitly allowed by the design but outside this model |
+| Completion | Both fixed required PRs must merge; merged commit identity stays in the audit history. Commit ancestry carries operation coverage; human rewrites can remove it. Applied publications need verified coverage or a fresh abstract human disposition | API ancestry/tree proof validation, question/revision/command binding, closed-PR alternatives, replacement PRs, abandoned issues, reopening or stack base dependencies. JavaScript scenarios cover the concrete proof and disposition boundaries |
 | Session and runner lifecycle | Workers terminate before controller acceptance/publishing; expired result data can trigger another attempt | Claude session format, fresh-context reconstruction, filesystem isolation, result schema or model output quality |
 | Progress | Named scenarios show that recovery and completion are possible; witnesses measure sampled reachability | Eventual progress or fairness. `idle` can repeat indefinitely; neither simulator profile proves liveness |
 
@@ -96,7 +96,8 @@ For changes to a contract above:
 5. When the JavaScript controller is implemented, replay model traces
    against its adapter. `npm run model:replay` now replays named scenarios
    and sampled traces through `factory/lib/protocol.mjs`, comparing phase,
-   owner, generation, budget, expected commits and aggregate completion at
+   owner, generation, budget, expected commits, actual merged commits,
+   verified landing coverage and aggregate completion at
    each step. This is protocol evidence; live GitHub adapters and the full
    reconciler still need their own conformance checks.
 
@@ -227,6 +228,24 @@ completion decision. Command deletion/edits fence an active operation. These
 admission/scheduling rules remain outside the model and are covered by the
 JavaScript scenario tests rather than the trace replay.
 
+Landing is separate from publication in both artifacts. The model records
+which operations actually reached merged history, preserves that coverage
+through ordinary descendant commits, and allows a human rewrite to drop it.
+`verifyLanding` abstracts a successful read after receipt recovery;
+`acceptCompletion` abstracts a fresh human decision about the current work.
+Neither action changes the recorded merge commit. The JavaScript protocol
+also requires a revision- and publication-bound question for unverified code,
+and scopes a decision to already-reserved generations. `landing.test.mjs`
+exercises exact commit, ancestry and tree proofs, malformed API identities,
+bounded reads/backoff, missing-evidence escalation, stale answers, restarted
+work, own-PR maintenance and the external issue-close guard. Live merge
+methods and API consistency remain sandbox assumptions, not replay evidence.
+Temporary weakened copies were checked with seed `20261111`: removing the
+publication-coverage guard made `latePushCannotCompleteTest` fail, and
+allowing verification without actual landing made
+`rewrittenPublicationNeedsDispositionTest` fail. The weakened copies were
+discarded; neither result establishes live GitHub proof semantics.
+
 Publish recovery now has a 15-minute default deadline. JavaScript scenarios
 bind its escalation question to the exact uncertain request, continue
 inspection while stopped or without an Actions artifact, and clear only
@@ -239,6 +258,18 @@ notify about notification failures. The bounded model covers uncertainty
 and receipt recovery, but omits these deadlines, questions, API effects
 and notification projections. Their coverage is in the protocol,
 reconcile, publish, publisher, API-journal, surface and new-PR tests.
+
+Failed reads during pre-submission validation use the same durable read
+backoff as failed authorization observations. Actions transport/JSON/body
+failures, remote Git fetch/head failures and PR/thread lookup outages retain
+the accepted proposal without recording a validation defect or another
+worker. Successful rereads still run the artifact/object/target checks and
+fresh submit guard. Oversized or malformed artifacts and unrelated PRs remain
+validation failures. Focused publisher, Actions, Git, new-PR and thread
+scenarios exercise both paths, recovery after the read deadline, and attention
+resolution. In Quint these reads are abstracted by `idle`; transport error
+classification, retry timing and the validation algorithms remain outside
+the model and need adapter tests and live sandbox evidence.
 
 Closure dispositions remain outside Quint's all-merged completion model.
 The JavaScript protocol, reconciler and controller scenarios cover fresh
