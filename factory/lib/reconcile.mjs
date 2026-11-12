@@ -270,6 +270,9 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
   if (open.length > 1 || facts.unsupportedStack) return ask("This work has several dependent PRs; stack maintenance is not enabled yet");
 
   const reserve = (mode, pr = null, request = null, feedback = []) => {
+    if (mode === "update" && integration && (integration.item !== key || integration.pr !== pr?.number)) {
+      return wait("agent-waiting", `Waiting for integration of PR #${integration.pr}`, "integration", integration.pr, integration.deadline);
+    }
     if (!request) {
       const day = new Date(now).toISOString().slice(0, 10);
       const kind = mode === "update" ? "api" : "coding";
