@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, appendFileSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, appendFileSync, symlinkSync, existsSync } from "node:fs";
 import { deflateSync } from "node:zlib";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -183,12 +183,18 @@ test("clean update merges two recorded histories in a fresh bare repository with
   f.git(["reset", "--hard", f.base]);
   const base = f.commit("main.txt", "new main\n");
   f.git(["push", "--quiet", f.remote, "HEAD:refs/heads/main"]);
-  writeFileSync(join(f.repo, ".git", "hooks", "pre-commit"), "#!/bin/sh\nexit 99\n", { mode: 0o755 });
   const op = { ...f.op, mode: "update", target: { ...f.op.target, head: prHead }, base: { ref: "main", sha: base } };
   const clean = f.writer(); clean.seed(op);
+  const hooks = join(clean.directory, "hooks"), marker = join(f.root, "reference-hook-ran");
+  writeFileSync(join(hooks, "reference-transaction"), `#!/bin/sh\nprintf 'ran\\n' >> '${marker.replaceAll("'", "'\\''")}'\n`, { mode: 0o755 });
+  // Positive control: this hook fires on the same plumbing used by export.
+  gitCommand(clean.directory, ["-c", `core.hooksPath=${hooks}`, "update-ref", "refs/factory/hook-probe", prHead]);
+  assert.equal(existsSync(marker), true);
+  rmSync(marker);
   const result = cleanUpdate({ cwd: clean.directory, operation: op, directory: f.artifact,
     run: { id: "100", attempt: 1 }, author: { name: "Factory", email: "factory@example.com" } });
   assert.equal(result.outcome, "ready");
+  assert.equal(existsSync(marker), false);
   const parents = text(gitCommand(clean.directory, ["rev-list", "--parents", "-n", "1", result.commit])).split(" ");
   assert.deepEqual(parents, [result.commit, prHead, base]);
   assert.equal(text(gitCommand(clean.directory, ["show", `${result.commit}:pr.txt`])), "PR change");
