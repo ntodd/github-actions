@@ -300,15 +300,15 @@ test("broad observation failures still journal publication read recovery without
   assert.equal(JSON.stringify(f.state).includes("private read detail"), false);
 });
 
-test("controller withholds secret-enabled worker prose from durable state", async () => {
+for (const phase of ["worker", "setup"]) test(`controller withholds ${phase}-secret-enabled worker prose from durable state`, async () => {
   const f = fixture(), original = f.actions.download, secret = "selected-project-secret";
-  f.api.fileAt = async () => ({ content: "trusted-users: [ntodd]\nenvironment: {worker-secrets: [DATABASE_PASSWORD]}" });
+  f.api.fileAt = async () => ({ content: `trusted-users: [ntodd]\nenvironment: {${phase}-secrets: [DATABASE_PASSWORD]}` });
   await f.pass();
   await claimOperation({ api: f.api, store: f.store, repo: "ntodd/project", itemKey: "issue:7", operationId: "op-1", run,
     context: { sha: A, defaultBranch: "main", config: {} } });
   f.actions.download = async (op) => {
     const result = await original(op);
-    result.proposal = { ...result.proposal, outcome: "needs-you", reason: secret, effects: [] };
+    result.proposal = { ...result.proposal, outcome: "needs-you", reason: `Required project secret is missing from SETUP_SECRETS: DATABASE_PASSWORD (${secret})`, effects: [] };
     return result;
   };
   f.finish(); await f.pass(); await f.pass();
@@ -316,8 +316,10 @@ test("controller withholds secret-enabled worker prose from durable state", asyn
   assert.match(f.state.items["issue:7"].question.reason, /redacted result report/);
 });
 
-test("a preparation question reaches the issue without model work, a push or a replacement build", async (t) => {
-  const f = fixture(); await f.pass();
+for (const phase of ["worker", "setup"]) test(`a ${phase}-secret preparation question reaches the issue without model work, a push or a replacement build`, async (t) => {
+  const f = fixture();
+  f.api.fileAt = async () => ({ content: `trusted-users: [ntodd]\nenvironment: {${phase}-secrets: [DATABASE_PASSWORD]}` });
+  await f.pass();
   await claimOperation({ api: f.api, store: f.store, repo: "ntodd/project", itemKey: "issue:7", operationId: "op-1", run,
     context: { sha: A, defaultBranch: "main", config: {} } });
   const root = mkdtempSync(join(tmpdir(), "factory-prepare-question-")); t.after(() => rmSync(root, { recursive: true, force: true }));

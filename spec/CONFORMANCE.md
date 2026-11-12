@@ -391,7 +391,10 @@ credential withholding, file permissions, owner/config binding and unsafe
 cache rejection. A real shell exercises failure and process-group deadlines;
 a stub CLI exercises the actual Claude runner's environment. Controller
 scenarios consume preparation questions as owner-bound result artifacts
-without another build. Workflow-shape checks keep the bundle before project
+without another build. Free-form result reasons are withheld from the ledger
+when either setup or worker secrets are declared; only the fixed missing-secret
+diagnostic for a pinned, declared public name is reconstructed. Worker export
+scenarios redact selected values from both phases. Workflow-shape checks keep the bundle before project
 checkout, out of clean jobs, and outside result paths. These tests establish
 local adapter behavior, not live Actions secret masking, Crew cleanup or
 isolation between processes in the same worker job; sandbox validation remains.

@@ -90,9 +90,9 @@ test("workers describe available project variable names without putting secret v
   assert.equal(JSON.stringify([proposal, prompts, system]).includes(secret), false);
 });
 
-test("worker result prose redacts selected project secrets before export", async (t) => {
+for (const phase of ["worker", "setup"]) test(`worker result prose redacts selected ${phase} secrets before export`, async (t) => {
   const f = fixture(t), secret = "private-test-database-password";
-  f.args.assignment.config = parseConfig("trusted-users: [ntodd]\nenvironment: {worker-secrets: [DATABASE_PASSWORD]}");
+  f.args.assignment.config = parseConfig(`trusted-users: [ntodd]\nenvironment: {${phase}-secrets: [DATABASE_PASSWORD]}`);
   f.args.projectSecrets = { DATABASE_PASSWORD: secret };
   f.args.invoke = async () => ({ outcome: { status: "needs-you", reason: `Cannot connect: ${secret}`, report: `Used ${secret}`, tests: [`Failed with ${secret}`, { evidence: secret }] } });
   const proposal = await runWorker(f.args);

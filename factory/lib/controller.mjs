@@ -215,8 +215,14 @@ export async function runController({ api, write, store, actions, repo, toolingS
             const assigned = parseConfig((await api.fileAt(".github/factory.yml", op.configSha)).content);
             // This job never receives project secret values. Keep free-form
             // worker questions in the redacted artifact rather than the ledger.
-            if (assigned.environment.workerSecrets.length) result.proposal = { ...result.proposal,
-              reason: `Worker outcome: ${["ready", "needs-you", "no-change", "failed"].includes(result.proposal.outcome) ? result.proposal.outcome : "invalid"}. Read the redacted result report from worker run ${op.owner.id}.` };
+            const secretNames = [...assigned.environment.workerSecrets, ...assigned.environment.setupSecrets];
+            if (secretNames.length) {
+              // A declared name is public config. Reconstruct this fixed
+              // diagnostic; arbitrary suffixes and undeclared names stay out.
+              const missing = secretNames.find((name) => result.proposal.reason === `Required project secret is missing from SETUP_SECRETS: ${name}`);
+              result.proposal = { ...result.proposal, reason: missing ? `Required project secret is missing from SETUP_SECRETS: ${missing}`
+                : `Worker outcome: ${["ready", "needs-you", "no-change", "failed"].includes(result.proposal.outcome) ? result.proposal.outcome : "invalid"}. Read the redacted result report from worker run ${op.owner.id}.` };
+            }
             const feedback = result.proposal.replies?.length ? await readFeedback(api, { issue: null, prs: [op.target.number] }, (await loadConfig(api)).config) : [];
             await save(key, { type: "collect-result", operationId: op.id, artifact: result.artifact, proposal: result.proposal, feedback });
           } catch (error) {
