@@ -189,6 +189,22 @@ establish outstanding setup work, not permission or approval enforcement.
 The connector rejected the workflow-catalog endpoint; it supplies no current
 legacy-isolation inventory. CLI authentication remains unresolved.
 
+The previously approved [sandbox PR #17](https://github.com/ntodd/agent-ready-sandbox/pull/17)
+was merged at `f7b354d438ec6250b146ffedefadf9c7f4a23872` at 17:12 UTC.
+Its exact head `e317fec2e1f708d1f3ce84b9975bd142cc74a4ba` had a successful
+`test` check. The diff installed only the config and a read-only caller pinned
+to `d2a6b3fc40695b397bb86694f2b81f09bb8fccba`; it did not activate the factory.
+The resulting [factory push run](https://github.com/ntodd/agent-ready-sandbox/actions/runs/43266937488)
+failed before creating any jobs (`jobs: []`). Local cross-workflow actionlint
+validation against those pinned shared files passes, so it does not reproduce
+the GitHub startup failure. The connector's run metadata provides no validation
+error and there is no job log. That error still needs investigation; this is
+negative live evidence, not a successful controller or event-loop test.
+The separate [CI push run](https://github.com/ntodd/agent-ready-sandbox/actions/runs/43266941198)
+failed `Tipper.TipLogTest` with seed `656758`; no test source changed in #17.
+Owner-only App inspection has not been dispatched: the CLI keyring token is
+invalid and computer-use inventory reports no browser session.
+
 Config parsing uses a pinned bundled YAML parser, regenerated and checked
 against its source by the build scripts. GitHub read queries have also been
 accepted by the live API for this repository's issue/PR edit history,
