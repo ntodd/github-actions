@@ -5,6 +5,17 @@ import { wakeReview } from "../lib/wakeup.mjs";
 import { callerWorkflow } from "../lib/caller.mjs";
 import { parseDocument } from "../vendor/yaml.mjs";
 
+test("the control job rejects controller completions and accepts worker completions", () => {
+  const workflow = parseDocument(readFileSync(new URL("../../.github/workflows/factory-runtime.yml", import.meta.url), "utf8")).toJS();
+  const accepts = (eventName, path, event) => Function("github", `return (${workflow.jobs.control.if});`)({
+    event_name: eventName, event: { workflow_run: { path, event } },
+  });
+  assert.equal(accepts("workflow_run", ".github/workflows/factory.yml", "workflow_run"), false);
+  assert.equal(accepts("workflow_run", ".github/workflows/factory.yml", "workflow_dispatch"), true);
+  assert.equal(accepts("workflow_run", ".github/workflows/ci.yml", "push"), true);
+  assert.equal(accepts("issue_comment", undefined, undefined), true);
+});
+
 test("review wake-ups dispatch only a target hint to the actual default branch", async () => {
   const calls = [];
   const result = await wakeReview({ api: { repository: async () => ({ default_branch: "trunk" }) },
