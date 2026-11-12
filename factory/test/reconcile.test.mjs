@@ -2,11 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { decideItem } from "../lib/reconcile.mjs";
 import { parseConfig } from "../lib/config.mjs";
-import { initial, step, reserve, claimed, ready, pending, run, observation, B, C, D, at, operation, proposal, artifact } from "./fixtures.mjs";
+import { defaultLanding, initial, step, reserve, claimed, ready, pending, run, observation, B, C, D, at, operation, proposal, artifact } from "./fixtures.mjs";
 import { ingestCommands, resolveRoute } from "../lib/commands.mjs";
 const config = parseConfig("trusted-users: [ntodd]");
 const pr = (extra = {}) => ({ number: 9, state: "open", headSha: B, baseSha: "a".repeat(40), mergeable: "MERGEABLE", behind: false,
-  checks: { state: "success", headSha: B, failed: [] }, ...extra });
+  checks: { state: "success", headSha: B, failed: [] }, ...(extra.state === "merged" ? { baseRef: "main", defaultLanding: defaultLanding(extra.mergedSha) } : {}), ...extra });
 const facts = (extra = {}) => ({ authorization: observation.authorization, issueState: "open", prs: [pr(), pr({ number: 10, state: "merged", mergedSha: C })], ...extra });
 function decide(s = initial(), f = facts(), now = at, options = {}) { return decideItem(s, "issue:7", f, config, { now, ...options }); }
 const apply = (s, plan) => plan.events.reduce((x, e) => step(x, e), s);

@@ -54,6 +54,7 @@ properties checked on sampled traces, not that every trace is proved safe.
 | Main can advance while a PR write is in flight; the old integration cannot merge | `mainMoves`, `applyPush`, `merge`; `reviewedIntegration` | `mainMovesDuringPublishTest`, `outdatedIntegrationCannotMergeTest` |
 | [Merging and approval](../DESIGN.md#merging-and-approval): agent changes need approval covering the new head and passing current integration checks | `approve`, `observeCI`, guards in `merge`; `reviewedIntegration` | `oldApprovalCannotMergeTest`, `oldCICannotMakeNewHeadReadyTest` |
 | A late push to an already-merged PR branch is not landed work; completion needs verified coverage or an explicit alternative | `merge`, `applyPush`, `verifyLanding`, `acceptCompletion`; immutable `merges` history, `verifiedLandingIsReal`, `completeMeansAllMerged` | `mergeWhilePushInFlightTest`, `latePushCannotCompleteTest`, `latePushNeedsDispositionTest`, `rewrittenPublicationNeedsDispositionTest`, `landingEvidenceWaitsForReceiptTest` |
+| A merge away from the default branch is a recorded outcome, not default-branch coverage, even with no factory publications | `mergeAway`, `landMerge`, `verifyMerge`, `acceptCompletion`; `defaultMerges`, `verifiedMerges`, `acceptedMerges` | `offDefaultMergesCannotCompleteTest`, `offDefaultMergeCannotVerifyTest`, `offDefaultPublicationCannotVerifyTest`, `offDefaultMergeCanLandLaterTest`, `offDefaultMergesNeedDispositionTest` |
 | [PR and issue state](../DESIGN.md#states-and-where-you-see-them): merging one required PR does not complete all work | `merge`, `closeOut`; `completeMeansAllMerged` also requires terminal ownership and accounted publications | `partialCompletionTest`, `fullCompletionTest` |
 
 ## Abstraction boundaries and assumptions
@@ -71,7 +72,7 @@ properties checked on sampled traces, not that every trace is proved safe.
 | Reconciler scheduling | `step` nondeterministically selects protocol operations; `recoveryStep` explores stable-input recovery | The design's full first-applicable-action ordering, reasons for new work, fairness, serial integration selection, priority and deadlines |
 | Main health, CI and review | Exact numeric head/base identities and successful CI observations; approval is attached to a head | CI failures, flaky reruns, failure matching, main repair dependencies, review threads, bot policies, review dismissal/revocation and signal timeouts |
 | Merge policy | `merge` represents a human-authorized GitHub merge with strict approval/check guards | Automatic merge is not an App action here. The model does not track enabling auto-merge, admin bypass, GitHub's actual approval implementation or queued merge behavior |
-| Completion | Both fixed required PRs must merge; merged commit identity stays in the audit history. Commit ancestry carries operation coverage; human rewrites can remove it. Applied publications need verified coverage or a fresh abstract human disposition | API ancestry/tree proof validation, question/revision/command binding, closed-PR alternatives, replacement PRs, abandoned issues, reopening or stack base dependencies. JavaScript scenarios cover the concrete proof and disposition boundaries |
+| Completion | Both fixed required PRs must merge; merged commit identity stays in the audit history. Merges elsewhere need later default integration and a trusted read, or a fresh abstract human disposition. Commit ancestry carries operation coverage; human rewrites can remove it. Applied publications need verified coverage or a fresh abstract human disposition | API repository/base/ancestry/tree proof validation, question/revision/command binding, closed-PR alternatives, replacement PRs, abandoned issues, reopening or stack base dependencies. JavaScript scenarios cover the concrete proof and disposition boundaries |
 | Session and runner lifecycle | Workers terminate before controller acceptance/publishing; expired result data can trigger another attempt | Claude session format, fresh-context reconstruction, filesystem isolation, result schema or model output quality |
 | Progress | Named scenarios show that recovery and completion are possible; witnesses measure sampled reachability | Eventual progress or fairness. `idle` can repeat indefinitely; neither simulator profile proves liveness |
 
@@ -239,23 +240,34 @@ which operations actually reached merged history, preserves that coverage
 through ordinary descendant commits, and allows a human rewrite to drop it.
 `verifyLanding` abstracts a successful read after receipt recovery;
 `acceptCompletion` abstracts a fresh human decision about the current work.
-Neither action changes the recorded merge commit. The JavaScript protocol
+`mergeAway` records a merge elsewhere without advancing the default branch;
+`landMerge` and `verifyMerge` separate later integration from its observation.
+Completion requires each merged PR's verified default coverage or explicit
+acceptance, including items with no factory publication. Neither acceptance
+nor verification changes the recorded merge commit. The JavaScript protocol
 also requires a revision- and publication-bound question for unverified code,
 and scopes a decision to already-reserved generations. `landing.test.mjs`
 exercises exact commit, ancestry and tree proofs, malformed API identities,
 bounded reads/backoff, missing-evidence escalation, stale answers, restarted
 work, own-PR maintenance and the external issue-close guard. Live merge
 methods and API consistency remain sandbox assumptions, not replay evidence.
-An additional terminal-state audit reproduced an unresolved adapter gap: a
-PR merged into `feature` is normalized without its base identity, allowing
-the reconciler to choose close-out. The modeled merge action assumes the
-supported destination. Completion after retargeting away from the default
-branch still needs an implementation fix and regression before activation.
+`default-landing.test.mjs` covers the reproduced terminal-state adapter gap:
+closed PR observations now retain their merge base. An observed default-base
+merge needs a fresh repository identity/default read; off-default results need
+exact commit, ancestry or tree evidence on the default branch. Positive proof
+is historical and durable across later branch renames or default changes.
+Unknown reads share the bounded landing budget and backoff; missing coverage
+blocks the reducer and the external issue-close guard. Explicit alternatives
+bind the merged PR snapshot as well as the issue revision and publication set.
 Temporary weakened copies were checked with seed `20261111`: removing the
 publication-coverage guard made `latePushCannotCompleteTest` fail, and
 allowing verification without actual landing made
 `rewrittenPublicationNeedsDispositionTest` fail. The weakened copies were
 discarded; neither result establishes live GitHub proof semantics.
+Removing the required-merge coverage guard from temporary model and runtime
+copies also failed `offDefaultMergesCannotCompleteTest` and the non-default
+merge JavaScript regression, respectively. The parent runtime returned
+`close-out` for that regression where the fixed runtime asks for disposition.
 
 Publish recovery now has a 15-minute default deadline. JavaScript scenarios
 bind its escalation question to the exact uncertain request, continue

@@ -16,7 +16,7 @@ module factory {
   }
   type Merge = {
     pr: int, head: int, base: int, approval: int, checkHead: int,
-    checkBase: int, integratedBase: int, work: Set[int]
+    checkBase: int, integratedBase: int, work: Set[int], default: bool
   }
   type State = {
     generation: int, paused: bool, admitted: bool, op: int, opGeneration: int,
@@ -32,7 +32,7 @@ module factory {
     heads: int -> int, integrated: int -> int,
     approvals: int -> int, checkHeads: int -> int, checkBases: int -> int,
     checks: Set[(int, int, int)], main: int, humanVersion: int,
-    merged: Set[int], merges: List[Merge], complete: bool,
+    merged: Set[int], merges: List[Merge], defaultMerges: Set[int], verifiedMerges: Set[int], acceptedMerges: Set[int], complete: bool,
     duplicateSeen: bool, staleSeen: bool, stoppedSeen: bool,
     crashSeen: bool, expiredSeen: bool
   }
@@ -51,7 +51,7 @@ module factory {
     heads: PRS.mapBy(_ => 0), integrated: PRS.mapBy(_ => 0),
     approvals: PRS.mapBy(_ => -1), checkHeads: PRS.mapBy(_ => -1),
     checkBases: PRS.mapBy(_ => -1), checks: Set(), main: 0, humanVersion: 1000,
-    merged: Set(), merges: List(), complete: false,
+    merged: Set(), merges: List(), defaultMerges: Set(), verifiedMerges: Set(), acceptedMerges: Set(), complete: false,
     duplicateSeen: false, staleSeen: false, stoppedSeen: false,
     crashSeen: false, expiredSeen: false
   }
@@ -325,12 +325,36 @@ module factory {
     s.checkHeads.get(pr) == s.heads.get(pr),
     s.checkBases.get(pr) == s.main, s.integrated.get(pr) == s.main,
     s' = { ...s, merged: s.merged.union(Set(pr)), main: s.main + 1,
+      defaultMerges: s.defaultMerges.union(Set(pr)), verifiedMerges: s.verifiedMerges.union(Set(pr)),
       landedWork: s.landedWork.union(s.headWork.get(s.heads.get(pr))),
       baseWork: s.baseWork.put(s.main + 1, s.baseWork.get(s.main).union(s.headWork.get(s.heads.get(pr)))),
       verifiedWork: s.verifiedWork.union(s.applied.filter(op => 100 + op == s.heads.get(pr))),
       merges: s.merges.append({ pr: pr, head: s.heads.get(pr), base: s.main,
         approval: s.approvals.get(pr), checkHead: s.checkHeads.get(pr),
-        checkBase: s.checkBases.get(pr), integratedBase: s.integrated.get(pr), work: s.headWork.get(s.heads.get(pr)) }) }
+        checkBase: s.checkBases.get(pr), integratedBase: s.integrated.get(pr), work: s.headWork.get(s.heads.get(pr)), default: true }) }
+  }
+
+  // A human can retarget and merge elsewhere without satisfying main's rules.
+  // Preserve the actual result, but do not infer any default-branch coverage.
+  action mergeAway(pr: int): bool = all {
+    not(s.merged.contains(pr)),
+    s' = { ...s, merged: s.merged.union(Set(pr)),
+      merges: s.merges.append({ pr: pr, head: s.heads.get(pr), base: s.main,
+        approval: s.approvals.get(pr), checkHead: s.checkHeads.get(pr),
+        checkBase: s.checkBases.get(pr), integratedBase: s.integrated.get(pr), work: s.headWork.get(s.heads.get(pr)), default: false }) }
+  }
+
+  // External follow-up integration is separate from the trusted read proving it.
+  action landMerge(pr: int): bool = all {
+    s.merged.contains(pr), not(s.defaultMerges.contains(pr)),
+    val work = s.merges.indices().map(i => s.merges.nth(i)).filter(m => m.pr == pr).fold(Set(), (acc, m) => acc.union(m.work))
+    s' = { ...s, main: s.main + 1, defaultMerges: s.defaultMerges.union(Set(pr)),
+      baseWork: s.baseWork.put(s.main + 1, s.baseWork.get(s.main).union(work)), landedWork: s.landedWork.union(work) }
+  }
+
+  action verifyMerge(pr: int): bool = all {
+    not(s.locked), s.defaultMerges.contains(pr), not(s.verifiedMerges.contains(pr)),
+    s' = { ...s, verifiedMerges: s.verifiedMerges.union(Set(pr)) }
   }
 
   // A successful read can establish landing; failed reads remain idle. A
@@ -343,13 +367,14 @@ module factory {
   // Abstracts a fresh human answer about the current completion snapshot.
   action acceptCompletion = all {
     not(s.locked), s.admitted, not(s.paused), terminal, s.live.size() == 0,
-    s.merged == PRS, not(s.applied.subseteq(s.verifiedWork.union(s.acceptedWork))),
-    s' = { ...s, acceptedWork: s.applied, generation: s.generation + 1 }
+    s.merged == PRS, not(s.applied.subseteq(s.verifiedWork.union(s.acceptedWork))) or not(PRS.subseteq(s.verifiedMerges.union(s.acceptedMerges))),
+    s' = { ...s, acceptedWork: s.applied, acceptedMerges: s.merged, generation: s.generation + 1 }
   }
 
   action closeOut = all {
     not(s.locked), s.admitted, terminal, not(s.pending), s.live.size() == 0, s.merged == PRS,
     s.applied.subseteq(s.verifiedWork.union(s.acceptedWork)),
+    PRS.subseteq(s.verifiedMerges.union(s.acceptedMerges)),
     s' = { ...s, complete: true }
   }
 
@@ -382,7 +407,7 @@ module factory {
     nondet check = s.checks.oneOf()
     observeCI(check._1, check._2, check._3),
     nondet pr = PRS.oneOf()
-    merge(pr),
+    any { merge(pr), mergeAway(pr), landMerge(pr), verifyMerge(pr) },
     nondet op = s.applied.oneOf()
     verifyLanding(op),
     acceptCompletion, closeOut, idle
@@ -433,13 +458,15 @@ module factory {
     (s.phase == "publishing" and s.requested and not(s.receipts.contains(s.op)))
   val noDuplicatePush = s.publications.length() == s.applied.size()
   val receiptsHaveEffects = s.receipts.subseteq(s.applied)
-  val reviewedIntegration = s.merges.indices().map(i => s.merges.nth(i)).forall(m => all {
+  val reviewedIntegration = s.merges.indices().map(i => s.merges.nth(i)).filter(m => m.default).forall(m => all {
     m.approval == m.head, m.checkHead == m.head,
     m.checkBase == m.base, m.integratedBase == m.base
   })
   val completeMeansAllMerged = not(s.complete) or all { s.merged == PRS, terminal, not(s.pending),
+    PRS.subseteq(s.verifiedMerges.union(s.acceptedMerges)),
     s.applied.subseteq(s.verifiedWork.union(s.acceptedWork)) }
-  val verifiedLandingIsReal = s.verifiedWork.subseteq(s.landedWork) and s.acceptedWork.subseteq(s.applied)
+  val verifiedLandingIsReal = all { s.verifiedWork.subseteq(s.landedWork), s.acceptedWork.subseteq(s.applied),
+    s.verifiedMerges.subseteq(s.defaultMerges), s.acceptedMerges.subseteq(s.merged) }
   val waitsReleaseCrew = Set("result-ready", "publishing", "done", "failed", "superseded").contains(s.phase)
     implies (s.running.size() == 0)
   val safety = all { oneOwner, boundedAttempts, authorizedPublishRequests,
@@ -654,4 +681,22 @@ module factory {
   run landingEvidenceWaitsForReceiptTest = init.then(resultFor(1)).then(authorizePublish).then(push).then(applyPush)
     .then(crashPublisher).then(humanPush(1)).then(approve(1)).then(observeCI(1, 1000, 0)).then(merge(1))
     .then(verifyLanding(1)).fail()
+
+  run offDefaultMergesCannotCompleteTest = init.then(humanPush(1)).then(humanPush(2))
+    .then(mergeAway(1)).then(mergeAway(2)).then(closeOut).fail()
+
+  run offDefaultMergeCannotVerifyTest = init.then(resultFor(1)).then(publish).then(mergeAway(1))
+    .then(verifyMerge(1)).fail()
+
+  run offDefaultPublicationCannotVerifyTest = init.then(resultFor(1)).then(publish).then(mergeAway(1))
+    .then(verifyLanding(1)).fail()
+
+  run offDefaultMergeCanLandLaterTest = init.then(resultFor(1)).then(publish).then(mergeAway(1))
+    .then(humanPush(2)).then(mergeAway(2)).then(landMerge(1)).then(verifyMerge(1))
+    .then(verifyLanding(1)).then(landMerge(2)).then(verifyMerge(2)).then(closeOut)
+    .expect(s.complete and s.merges.nth(0).head == 101 and s.merges.nth(1).head == 1000 and safety)
+
+  run offDefaultMergesNeedDispositionTest = init.then(humanPush(1)).then(humanPush(2))
+    .then(mergeAway(1)).then(mergeAway(2)).then(acceptCompletion).then(closeOut)
+    .expect(s.complete and s.defaultMerges == Set() and s.acceptedMerges == PRS and safety)
 }

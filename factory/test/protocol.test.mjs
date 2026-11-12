@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { admit, emptyLedger, evolve, validateLedger, revisionOf, validBranch } from "../lib/protocol.mjs";
 import { ingestCommands } from "../lib/commands.mjs";
 import { A, B, C, D, at, run, provenance, revision, observation, reserve, artifact, proposal,
-  initial, step, operation, claimed, ready, publishing, pending } from "./fixtures.mjs";
+  defaultLanding, initial, step, operation, claimed, ready, publishing, pending } from "./fixtures.mjs";
 const fails = (fn, code) => assert.throws(fn, (e) => e.code === code);
 const observed = (s, outcome, evidence, extra = {}) => step(s, { type: "effect-observed", effectId: "push",
   requestId: "op-1/push/1", outcome, evidence, ...extra });
@@ -132,7 +132,7 @@ test("revoked admission fences once and only fresh verified evidence after owner
   }
   const revised = step(s, { ...readmit, authorization: { ...authorization, revision: "f".repeat(64) } });
   assert.equal(revised.items["issue:7"].revisionPending, true);
-  const final = [9, 10].reduce((state, number) => step(state, { type: "pr-observed", number, state: "merged", mergedSha: C }), s);
+  const final = [9, 10].reduce((state, number) => step(state, { type: "pr-observed", number, state: "merged", mergedSha: C, baseRef: "main", defaultLanding: defaultLanding(C) }), s);
   fails(() => step(final, { type: "close-out" }), "incomplete");
 });
 
@@ -251,7 +251,7 @@ test("retry budgets survive operations, roll over at UTC midnight, and allow exp
 });
 
 test("aggregate completion needs every required PR and preserves what actually merged", () => {
-  let s = step(initial(), { type: "pr-observed", number: 9, state: "merged", mergedSha: C });
+  let s = step(initial(), { type: "pr-observed", number: 9, state: "merged", mergedSha: C, baseRef: "main", defaultLanding: defaultLanding(C) });
   fails(() => step(s, { type: "close-out" }), "incomplete");
   fails(() => step(s, { type: "pr-observed", number: 9, state: "merged", mergedSha: D }), "stale");
   s = step(s, { type: "pr-observed", number: 10, state: "closed" });

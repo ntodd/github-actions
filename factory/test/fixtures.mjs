@@ -1,6 +1,7 @@
 import { admit, emptyLedger, evolve, revisionOf } from "../lib/protocol.mjs";
 export const A = "a".repeat(40), B = "b".repeat(40), C = "c".repeat(40), D = "d".repeat(40);
 export const at = "2026-11-12T12:00:00Z";
+export const defaultLanding = (commit) => ({ status: "landed", commit, at, checks: 1, source: "main", ref: "main", baseRef: "main", destination: commit, method: "base" });
 export const run = { id: "100", attempt: 1 };
 export const provenance = { repositoryId: "42", workflowPath: ".github/workflows/factory.yml", headSha: A };
 export const revision = revisionOf({ title: "Fix it", body: "Accepted task" });

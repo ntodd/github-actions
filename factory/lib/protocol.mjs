@@ -3,7 +3,7 @@
 // from the controller's API adapter, never from event payloads or worker claims.
 import { createHash } from "node:crypto";
 import { attachmentManifest, referencedAttachments, attachmentDescriptor } from "./attachments.mjs";
-import { validEffect, validReceipt, pullRequestText, expectedEffectHead, publicationGaps, publicationDigest } from "./effects.mjs";
+import { validEffect, validReceipt, pullRequestText, expectedEffectHead, completionGaps, publicationDigest } from "./effects.mjs";
 import { validApiJournal } from "./api-journal.mjs";
 import { nodeId, replyProposal, threadRevision, threadEffectId } from "./threads.mjs";
 import { syncApiAlerts, validApiAlerts, validPreflights } from "./recovery.mjs";
@@ -34,6 +34,13 @@ function validLanding(value, effect, item) {
     && (value.method !== "commit" || value.destination === effect.commit) && (value.method !== "tree" || SHA.test(value.tree))
     && (value.source === "pr" ? item.prs.some((p) => p.number === value.number && p.state === "merged" && p.mergedSha === value.destination)
       : value.source === "main" && validBranch(value.ref));
+}
+function validDefaultLanding(value, pr) {
+  if (pr.state !== "merged" || !object(value) || value.commit !== pr.mergedSha) return false;
+  if (value.status === "landed" && value.source !== "main") return false;
+  if (value.method === "base" && (value.status !== "landed" || value.baseRef !== value.ref || value.destination !== value.commit)) return false;
+  return validLanding(value.method === "base" ? { ...value, method: "commit" } : value,
+    { type: "push", status: "applied", commit: pr.mergedSha }, { prs: [] });
 }
 export class ProtocolError extends Error {
   constructor(code, message) { super(message); this.name = "ProtocolError"; this.code = code; }
@@ -196,6 +203,8 @@ export function validateLedger(s) {
       const a = item.completionAcceptance;
       requireThat(object(a) && /^[a-f\d]{64}$/.test(a.revision) && Number.isFinite(Date.parse(a.at))
         && (a.generation === undefined || integer(a.generation) && a.generation < item.generation)
+        && (a.prs === undefined || Array.isArray(a.prs) && new Set(a.prs.map((p) => p?.number)).size === a.prs.length
+          && a.prs.every((p) => object(p) && item.prs.some((r) => r.number === p.number && r.state === "merged" && r.mergedSha === p.mergedSha)))
         && Object.values(item.commands).some((c) => c.sourceId === a.sourceId && c.action === "answer" && c.status === "applied"),
       "corrupt", `Completion acceptance lost its trusted decision for ${key}`);
     }
@@ -255,7 +264,9 @@ export function validateLedger(s) {
     requireThat(new Set(item.prs.map((p) => p.number)).size === item.prs.length && item.prs.every((p) => object(p)
       && Number.isSafeInteger(p.number) && p.number > 0 && typeof p.required === "boolean"
       && ["open", "merged", "closed"].includes(p.state) && typeof p.acceptedClosure === "boolean"
-      && (p.state !== "merged" || SHA.test(p.mergedSha))), "corrupt", `Malformed PR membership for ${key}`);
+      && (p.state !== "merged" || SHA.test(p.mergedSha))
+      && (p.mergeBase == null || validBranch(p.mergeBase))
+      && (p.defaultLanding === undefined || validDefaultLanding(p.defaultLanding, p))), "corrupt", `Malformed PR membership for ${key}`);
     for (const pr of item.prs) {
       requireThat(!prs.has(pr.number), "corrupt", `PR #${pr.number} belongs to more than one item`);
       prs.add(pr.number);
@@ -736,7 +747,7 @@ export function evolve(ledger, key, event) {
     }
     case "accept-completion": {
       const command = item.commands[event.commandId];
-      const op = s.operations[item.activeOperation], gaps = publicationGaps(s, key).filter((r) => !r.accepted), question = item.question ?? item.lastQuestion;
+      const op = s.operations[item.activeOperation], gaps = completionGaps(s, key).filter((r) => !r.accepted), question = item.question ?? item.lastQuestion;
       const text = command ? answerText(command).toLowerCase() : "";
       requireThat(command?.status === "queued" && command.action === "answer" && ["accept-completion", "1"].includes(text),
         "invalid", "Completion acceptance needs an explicit pending answer");
@@ -748,7 +759,8 @@ export function evolve(ledger, key, event) {
       requireThat(!item.authorizationRevoked && event.authorization?.valid === true && /^[a-f\d]{64}$/.test(event.authorization.revision)
         && item.prs.some((p) => p.required) && item.prs.filter((p) => p.required).every((p) => p.state === "merged" || p.state === "closed" && p.acceptedClosure),
         "invalid", "Only fully accounted work and a fresh accepted revision can complete");
-      item.completionAcceptance = { sourceId: command.sourceId, revision: event.authorization.revision, generation: item.generation, at: time(event.at) };
+      item.completionAcceptance = { sourceId: command.sourceId, revision: event.authorization.revision, generation: item.generation, at: time(event.at),
+        prs: item.prs.filter((p) => p.required && p.state === "merged").map((p) => ({ number: p.number, mergedSha: p.mergedSha })) };
       item.revision = event.authorization.revision; item.revisionPending = false; item.generation++; item.question = null;
       command.status = "applied";
       break;
@@ -1012,6 +1024,19 @@ export function evolve(ledger, key, event) {
       if (pr.required && (pr.state === "open" || pr.state === "closed" && !pr.acceptedClosure)) item.complete = false;
       if (event.state !== "open" && s.integration?.item === key && s.integration.pr === event.number) s.integration = null;
       pr.mergedSha = event.state === "merged" ? event.mergedSha : null;
+      if (own(event, "baseRef")) {
+        requireThat(event.baseRef === null || validBranch(event.baseRef), "invalid", "Invalid observed merge base");
+        pr.mergeBase = event.baseRef;
+      }
+      if (event.defaultLanding !== undefined) {
+        requireThat(validDefaultLanding(event.defaultLanding, pr)
+          && (pr.defaultLanding?.status === "landed" || event.defaultLanding.method !== "base"
+            || pr.mergeBase === event.defaultLanding.baseRef), "invalid", "Invalid default-branch merge evidence");
+        const previous = pr.defaultLanding, next = event.defaultLanding;
+        if (previous?.status !== "landed" && (!previous || next.status === "landed"
+          || next.checks > previous.checks && Date.parse(next.at) > Date.parse(previous.at))) pr.defaultLanding = next;
+      }
+      if (completionGaps(s, key).some((r) => !r.accepted)) item.complete = false;
       break;
     }
     case "accept-closure": {
@@ -1037,7 +1062,7 @@ export function evolve(ledger, key, event) {
     }
     case "close-out":
       requireThat((!s.operations[item.activeOperation] || TERMINAL.has(s.operations[item.activeOperation].phase))
-        && !publicationGaps(s, key).some((r) => !r.accepted), "incomplete", "Published work must land or receive an explicit disposition before completion");
+        && !completionGaps(s, key).some((r) => !r.accepted), "incomplete", "Required work must reach the default branch or receive an explicit disposition before completion");
       requireThat(!item.authorizationRevoked && !item.revisionPending && item.prs.some((p) => p.required) && item.prs.filter((p) => p.required)
         .every((p) => p.state === "merged" || (p.state === "closed" && p.acceptedClosure)), "incomplete", "Required work is not all accounted for");
       item.complete = true;

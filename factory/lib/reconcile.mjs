@@ -5,7 +5,7 @@ import { evolve, TERMINAL } from "./protocol.mjs";
 import { queuedCommands, WORK_ACTIONS, routeNextAt } from "./commands.mjs";
 import { answerText, closureAnswer, issueClosureAnswer, issueClosureChoice } from "./answers.mjs";
 import { failureKeys } from "./failure-report.mjs";
-import { publicationGaps, publicationDigest } from "./effects.mjs";
+import { completionGaps, publicationDigest } from "./effects.mjs";
 import { repairRegistration, repairCandidates, mainRepairRole } from "./main-repair.mjs";
 const minute = 60_000;
 const identity = (a, b) => a?.id === b?.id && a?.attempt === b?.attempt;
@@ -57,8 +57,11 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
   // returning the first merged PR and thereby hide unfinished upper levels.
   for (const recorded of item.prs) {
     const current = facts.prs?.find((p) => p.number === recorded.number);
-    if (current && (current.state !== recorded.state || (current.state === "merged" && current.mergedSha !== recorded.mergedSha))) {
-      observe({ type: "pr-observed", number: current.number, state: current.state, mergedSha: current.mergedSha });
+    if (current && (current.state !== recorded.state || (current.state === "merged" && current.mergedSha !== recorded.mergedSha)
+      || current.baseRef !== undefined && current.baseRef !== recorded.mergeBase
+      || current.defaultLanding !== undefined && JSON.stringify(current.defaultLanding) !== JSON.stringify(recorded.defaultLanding))) {
+      observe({ type: "pr-observed", number: current.number, state: current.state, mergedSha: current.mergedSha,
+        ...(current.baseRef !== undefined ? { baseRef: current.baseRef } : {}), ...(current.defaultLanding ? { defaultLanding: current.defaultLanding } : {}) });
     }
   }
   for (const landing of facts.landings ?? []) observe({ type: "record-landing", ...landing });
@@ -203,12 +206,12 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
     else return ask("There is no closed required PR to accept. Request work on an open PR, or use /agent restart for replacement work.", "agent-needs-you", { consumeCommand: command.id });
   }
   if (allFinal) {
-    const gaps = publicationGaps(state, key).filter((r) => !r.accepted), digest = publicationDigest(gaps);
+    const gaps = completionGaps(state, key).filter((r) => !r.accepted), digest = publicationDigest(gaps);
     if (gaps.length && !command && !item.question && gaps.every((g) => g.reason !== "unverified")) {
       const started = gaps.map((g) => Date.parse(g.firstAt)).filter(Number.isFinite);
       const deadline = item.status?.wait?.kind === "landing" ? item.status.wait.deadline
         : new Date((started.length ? Math.min(...started) : instant) + (config.timeouts.publishMinutes ?? 15) * minute).toISOString();
-      if (instant < Date.parse(deadline)) return finish(null, "agent-waiting", "Publication reached the branch; whether it landed could not yet be verified",
+      if (instant < Date.parse(deadline)) return finish(null, "agent-waiting", "Whether the recorded work reached the default branch could not yet be verified",
         { kind: "landing", target: key, deadline });
     }
     if ((!item.evidence.own || gaps.length) && facts.authorization?.valid !== true) return facts.authorization?.valid === false
@@ -225,7 +228,9 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
         && Date.parse(command?.at) > Date.parse(previousQuestion.at) && (!gaps.length || previousQuestion.publicationDigest === digest);
       const accepts = command?.action === "answer" && (text === "accept-completion" && (!gaps.length || currentQuestion) || text === "1" && currentQuestion);
       if (accepts) observe({ type: "accept-completion", commandId: command.id, questionKind: previousQuestion?.kind, authorization: facts.authorization });
-      else return ask(`${gaps.length ? `Published branch commits are not yet verified as landed:\n${gaps.slice(0, 10).map((r) => `- #${r.number}: ${r.commit}; recorded merge ${r.mergedSha} (${r.request}).`).join("\n")}${gaps.length > 10 ? `\nAnd ${gaps.length - 10} more recorded publications.` : ""}` : "The issue changed after its recorded PRs finished."}\n\n1. Accept the recorded merged work as complete: /agent answer accept-completion.\n2. ${item.evidence.own ? "Reopen this PR and request /agent update or /agent resolve if further maintenance is needed." : "Request replacement work with /agent restart."}`, "agent-needs-you",
+      else return ask(`${gaps.length ? `Recorded work is not yet verified as landed on the default branch:\n${gaps.slice(0, 10).map((r) => r.kind === "merge"
+        ? `- #${r.number}: merged at ${r.mergedSha} into ${r.baseRef ?? "an unknown branch"}; default-branch coverage is unverified.`
+        : `- #${r.number}: published ${r.commit}; recorded merge ${r.mergedSha} (${r.request}).`).join("\n")}${gaps.length > 10 ? `\nAnd ${gaps.length - 10} more recorded gaps.` : ""}` : "The issue changed after its recorded PRs finished."}\n\n1. Accept the recorded merged work as complete: /agent answer accept-completion.\n2. ${item.evidence.own ? "Bring any missing work to the default branch in a follow-up PR, then request another completion check." : "Request replacement work with /agent restart."}`, "agent-needs-you",
         { kind: "completion-revision", revision: facts.authorization.revision, ...(gaps.length ? { publicationDigest: digest } : {}), ...(command ? { consumeCommand: command.id } : {}) });
     }
     if (command?.action === "answer" && previousQuestion?.kind === "issue-closure") observe({ type: "complete-issue-answer", commandId: command.id });

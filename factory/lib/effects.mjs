@@ -83,8 +83,9 @@ export function landedCommits(ledger, key, extra = []) {
     if (effect.expectedHead) previous.push(effect.expectedHead);
     parents.set(effect.commit, previous);
   }
-  const known = new Set([...ledger.items[key].prs.filter((p) => p.state === "merged").map((p) => p.mergedSha),
-    ...rows.filter((r) => r.effect.landing?.status === "landed").map((r) => r.commit), ...extra]);
+  const known = new Set([...ledger.items[key].prs.filter((p) => p.state === "merged" && p.defaultLanding?.status === "landed").map((p) => p.mergedSha),
+    ...rows.filter((r) => r.effect.landing?.status === "landed" && (r.effect.landing.source === "main"
+      || ledger.items[key].prs.some((p) => p.number === r.effect.landing.number && p.defaultLanding?.status === "landed"))).map((r) => r.commit), ...extra]);
   const pending = [...known];
   for (let i = 0; i < pending.length; i++) for (const parent of parents.get(pending[i]) ?? []) {
     if (!known.has(parent)) { known.add(parent); pending.push(parent); }
@@ -100,5 +101,14 @@ export function publicationGaps(ledger, key) {
     accepted: accepted?.revision === item.revision && Number.isSafeInteger(accepted.generation) && r.op.generation <= accepted.generation,
   }));
 }
+export function completionGaps(ledger, key) {
+  const item = ledger.items[key], accepted = item.completionAcceptance;
+  return [...item.prs.filter((p) => p.required && p.state === "merged" && p.defaultLanding?.status !== "landed").map((p) => ({
+    kind: "merge", operation: null, request: `merge:${p.number}:${p.mergedSha}`, number: p.number, commit: p.mergedSha,
+    mergedSha: p.mergedSha, baseRef: p.mergeBase ?? null, reason: p.defaultLanding?.reason ?? "unobserved", firstAt: p.defaultLanding?.firstAt ?? null,
+    accepted: accepted?.revision === item.revision && accepted.prs?.some((r) => r.number === p.number && r.mergedSha === p.mergedSha) === true,
+  })), ...publicationGaps(ledger, key)];
+}
 export const publicationDigest = (rows) => createHash("sha256").update(JSON.stringify(rows.map((r) =>
-  [r.operation, r.request, r.number, r.commit, r.mergedSha]).sort((a, b) => a[1].localeCompare(b[1])))).digest("hex");
+  r.kind === "merge" ? [r.operation, r.request, r.number, r.commit, r.mergedSha, r.baseRef]
+    : [r.operation, r.request, r.number, r.commit, r.mergedSha]).sort((a, b) => a[1].localeCompare(b[1])))).digest("hex");

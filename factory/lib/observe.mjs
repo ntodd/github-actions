@@ -127,44 +127,72 @@ export async function publishObservation(api, item, op, repo, appLogin = null) {
     open: op.base.ref === context.defaultBranch && expectedBranch && subject.state === "open" && (!pr || pr.state === "open") };
 }
 
-async function observeLandings(api, ledger, key, prs, main, at, limit) {
+async function observeLandings(api, ledger, key, prs, main, at, limit, context) {
   if (!limit) return [];
-  const updates = [], proven = prs.filter((p) => p.state === "merged").map((p) => p.mergedSha), commits = new Map(), comparisons = new Map();
-  const item = ledger.items[key], accepted = item.completionAcceptance;
+  const updates = [], proven = [], commits = new Map(), comparisons = new Map();
+  const item = ledger.items[key], accepted = item.completionAcceptance, rows = publishedPushes(ledger, key).reverse();
   const commit = (sha) => { if (!commits.has(sha)) commits.set(sha, api.commit(sha)); return commits.get(sha); };
-  let attempts = 0;
-  for (const row of publishedPushes(ledger, key).reverse()) {
+  let attempts = 0, currentDefault = false;
+  if (prs.some((p) => p.state === "merged")) {
+    try {
+      const repository = await api.repository();
+      currentDefault = String(repository.id) === String(context.repositoryId) && repository.default_branch === main.ref;
+    } catch { /* Missing repository identity cannot certify a default-branch landing. */ }
+  }
+  const common = (sha, old) => ({ commit: sha, at, checks: Math.min((old?.checks ?? 0) + 1, 1000000), firstAt: old?.firstAt ?? at });
+  const unknown = (value, unavailable) => ({ ...value, status: "unknown", reason: unavailable ? "unavailable" : "unverified",
+    nextAt: new Date(Date.parse(at) + Math.min(3600000, 60000 * 2 ** Math.min(value.checks - 1, 6))).toISOString() });
+  async function prove(value, targets, unavailable = false) {
+    for (const target of targets) {
+      if (!/^[a-f\d]{40}$/.test(target.destination)) { unavailable = true; continue; }
+      if (target.destination === value.commit) return { ...value, ...target, status: "landed", method: "commit" };
+      const pair = `${value.commit}:${target.destination}`;
+      try {
+        if (!comparisons.has(pair)) comparisons.set(pair, api.compare(value.commit, target.destination));
+        const found = await comparisons.get(pair);
+        if (found.status === "ahead" && found.base_commit?.sha === value.commit && found.merge_base_commit?.sha === value.commit) {
+          return { ...value, ...target, status: "landed", method: "ancestor" };
+        }
+        if (!["ahead", "behind", "diverged", "identical"].includes(found.status) || found.base_commit?.sha !== value.commit) unavailable = true;
+      } catch { unavailable = true; }
+      try {
+        const [published, merged] = await Promise.all([commit(value.commit), commit(target.destination)]);
+        if (published.sha !== value.commit || merged.sha !== target.destination || !/^[a-f\d]{40}$/.test(published.tree?.sha)
+          || !/^[a-f\d]{40}$/.test(merged.tree?.sha)) throw new Error("Incomplete commit-tree observation");
+        if (published.tree.sha === merged.tree.sha) return { ...value, ...target, status: "landed", method: "tree", tree: published.tree.sha };
+      } catch { unavailable = true; }
+    }
+    return unknown(value, unavailable);
+  }
+  for (const pr of prs.filter((p) => p.state === "merged")) {
+    const old = item.prs.find((p) => p.number === pr.number)?.defaultLanding;
+    if (old) pr.defaultLanding = old;
+    if (old?.status !== "landed") {
+      const direct = currentDefault && (pr.baseRef === main.ref || main.sha === pr.mergedSha);
+      if (!direct && (old?.nextAt && Date.parse(at) < Date.parse(old.nextAt) || attempts >= limit)) continue;
+      const value = common(pr.mergedSha, old);
+      if (currentDefault && pr.baseRef === main.ref) pr.defaultLanding = { ...value, status: "landed", source: "main", ref: main.ref,
+        baseRef: pr.baseRef, destination: pr.mergedSha, method: "base" };
+      else {
+        if (!direct) attempts++;
+        pr.defaultLanding = await prove(value, currentDefault ? [{ source: "main", ref: main.ref, destination: main.sha }] : [], !currentDefault);
+      }
+    }
+    if (pr.defaultLanding?.status === "landed") proven.push(pr.mergedSha);
+  }
+  for (const row of rows) {
     const pr = prs.find((p) => p.number === row.number), old = row.effect.landing;
     if (!row.pr.required || pr?.state !== "merged" || old?.status === "landed" || landedCommits(ledger, key, proven).has(row.commit)
       || accepted?.revision === item.revision && row.op.generation <= accepted.generation
       || old?.nextAt && Date.parse(at) < Date.parse(old.nextAt) && main.sha !== row.commit || attempts >= limit && main.sha !== row.commit) continue;
     if (main.sha !== row.commit) attempts++;
-    const checks = Math.min((old?.checks ?? 0) + 1, 1000000), common = { commit: row.commit, at, checks, firstAt: old?.firstAt ?? at };
-    const targets = [{ source: "pr", number: pr.number, destination: pr.mergedSha }];
-    if (main.sha !== pr.mergedSha) targets.push({ source: "main", ref: main.ref, destination: main.sha });
-    let landing = main.sha === row.commit ? { ...common, source: "main", ref: main.ref, destination: main.sha, status: "landed", method: "commit" } : null, unavailable = false;
-    for (const target of landing ? [] : targets) {
-      if (!/^[a-f\d]{40}$/.test(target.destination)) { unavailable = true; continue; }
-      if (target.destination === row.commit) { landing = { ...common, ...target, status: "landed", method: "commit" }; break; }
-      const pair = `${row.commit}:${target.destination}`;
-      try {
-        if (!comparisons.has(pair)) comparisons.set(pair, api.compare(row.commit, target.destination));
-        const found = await comparisons.get(pair);
-        if (found.status === "ahead" && found.base_commit?.sha === row.commit && found.merge_base_commit?.sha === row.commit) {
-          landing = { ...common, ...target, status: "landed", method: "ancestor" }; break;
-        }
-        if (!["ahead", "behind", "diverged", "identical"].includes(found.status) || found.base_commit?.sha !== row.commit) unavailable = true;
-      } catch { unavailable = true; }
-      try {
-        const [published, merged] = await Promise.all([commit(row.commit), commit(target.destination)]);
-        if (published.sha !== row.commit || merged.sha !== target.destination || !/^[a-f\d]{40}$/.test(published.tree?.sha)
-          || !/^[a-f\d]{40}$/.test(merged.tree?.sha)) throw new Error("Incomplete commit-tree observation");
-        if (published.tree.sha === merged.tree.sha) { landing = { ...common, ...target, status: "landed", method: "tree", tree: published.tree.sha }; break; }
-      } catch { unavailable = true; }
+    const targets = pr.defaultLanding?.status === "landed" ? [{ source: "pr", number: pr.number, destination: pr.mergedSha }] : [];
+    if (currentDefault && !targets.some((t) => t.destination === main.sha)) {
+      const target = { source: "main", ref: main.ref, destination: main.sha };
+      if (main.sha === row.commit) targets.unshift(target); else targets.push(target);
     }
-    if (landing) proven.push(row.commit);
-    else landing = { ...common, status: "unknown", reason: unavailable ? "unavailable" : "unverified",
-      nextAt: new Date(Date.parse(at) + Math.min(3600000, 60000 * 2 ** Math.min(checks - 1, 6))).toISOString() };
+    const landing = await prove(common(row.commit, old), targets, !currentDefault);
+    if (landing.status === "landed") proven.push(row.commit);
     updates.push({ operationId: row.operation, effectId: row.effect.id, landing });
   }
   return updates;
@@ -196,7 +224,7 @@ export async function observeItem({ api, actions, ledger, key, context, rules, n
   for (const record of item.prs) {
     const pr = await api.pull(record.number), state = pr.merged_at ? "merged" : pr.state;
     const head = pr.head?.sha;
-    if (state !== "open") { prs.push({ number: pr.number, state, mergedSha: pr.merge_commit_sha, headSha: head }); continue; }
+    if (state !== "open") { prs.push({ number: pr.number, state, mergedSha: pr.merge_commit_sha, headSha: head, baseRef: pr.base?.ref ?? null }); continue; }
     if (pr.head?.repo?.full_name?.toLowerCase() !== context.repo.toLowerCase() || pr.base.ref !== context.defaultBranch) {
       prs.push({ number: pr.number, state, headSha: head, baseRef: pr.base.ref, unsupported: true });
       continue;
@@ -239,7 +267,7 @@ export async function observeItem({ api, actions, ledger, key, context, rules, n
     result = await actions.inspect(op, context); owner = result.owner;
   }
   const main = { ref: context.defaultBranch, sha: mainSha, checks: mainChecks };
-  const landings = await observeLandings(api, ledger, key, prs, main, now(), landingLimit);
+  const landings = await observeLandings(api, ledger, key, prs, main, now(), landingLimit, context);
   return { authorization, issueState: subject.state, feedback, prs, owner, result, landings,
     main, repairSpec: spec, repairBaseline, unsupportedStack: prs.some((p) => p.unsupported) };
 }

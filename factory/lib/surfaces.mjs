@@ -9,7 +9,7 @@ import { pendingWrites, pendingText, preflightRead, preflightId } from "./recove
 import { evolve, TERMINAL } from "./protocol.mjs";
 import { factoryReadApi } from "./identity.mjs";
 import { itemUsage, usageText } from "./usage.mjs";
-import { publicationGaps, publishedPushes } from "./effects.mjs";
+import { completionGaps, publishedPushes } from "./effects.mjs";
 const hash = (v) => createHash("sha256").update(v).digest("hex");
 const ownNumber = (item) => Number(item.key.split(":")[1]);
 const hidden = (value) => JSON.stringify(value).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
@@ -29,14 +29,14 @@ export function projectItem(ledger, key) {
   const pending = pendingWrites(ledger, key);
   const usage = itemUsage(ledger, key);
   const alerts = Object.values(item.apiAlerts ?? {}).filter((a) => a.status === "active");
-  const gaps = publicationGaps(ledger, key);
+  const gaps = completionGaps(ledger, key);
   const fallback = { state: "agent-ready", reason: "Accepted work is queued", next: "dispatch", wait: null };
   const summary = item.paused ? { state: "agent-stopped", reason: "Automatic work is paused", next: "work-command", wait: null }
     : item.question ? { state: item.status?.state === "agent-failed" ? "agent-failed" : "agent-needs-you", reason: item.question.reason, next: "answer", wait: null }
     : item.status ?? fallback;
   const prs = item.prs.map((pr) => ({ number: pr.number, state: gaps.some((g) => g.number === pr.number && !g.accepted) ? item.question ? "agent-needs-you" : "agent-waiting" : pr.state === "merged" ? "agent-complete"
     : pr.state === "closed" ? pr.acceptedClosure || !pr.required ? "agent-complete" : "agent-needs-you" : summary.state,
-  reason: pr.state === "merged" ? `Merged at ${pr.mergedSha}` : pr.state === "closed" ? pr.acceptedClosure || !pr.required
+  reason: pr.state === "merged" ? `Merged at ${pr.mergedSha} into ${pr.mergeBase ?? "an unrecorded branch"}; ${pr.defaultLanding?.status === "landed" ? "default-branch landing is verified" : gaps.some((g) => g.kind === "merge" && g.number === pr.number && g.accepted) ? "the merged outcome was explicitly accepted" : "default-branch landing is unverified"}` : pr.state === "closed" ? pr.acceptedClosure || !pr.required
     ? "Closed with an accepted disposition" : "Closed without merging; an explicit disposition is needed" : summary.reason,
   next: gaps.some((g) => g.number === pr.number && !g.accepted) ? summary.next
     : pr.state === "merged" || pr.state === "closed" && (pr.acceptedClosure || !pr.required) ? "none" : summary.next,
@@ -310,13 +310,13 @@ export function surfaceService({ api, write, store, repo, appLogin, run, now = (
   }
   async function closeOut({ key }) {
     const { state } = await store.load(), item = state.items[key];
-    if (item.evidence.own || !item.complete || publicationGaps(state, key).some((g) => !g.accepted)) return { status: "superseded" };
+    if (item.evidence.own || !item.complete || completionGaps(state, key).some((g) => !g.accepted)) return { status: "superseded" };
     const definition = { kind: "issue-close", target: ownNumber(item), payload: { revision: item.revision },
       guard: { generation: item.generation, revision: item.revision } };
     return execute(key, `close-out:${key}:${item.generation}:${item.revision}`, definition, async () => {
       if (!await workGuard(key, definition)) return false;
       const { state: latest } = await store.load(), current = latest.items[key], required = current.prs.filter((p) => p.required), op = latest.operations[current.activeOperation];
-      if (!current.complete || !required.length || op && !TERMINAL.has(op.phase) || publicationGaps(latest, key).some((g) => !g.accepted)) return false;
+      if (!current.complete || !required.length || op && !TERMINAL.has(op.phase) || completionGaps(latest, key).some((g) => !g.accepted)) return false;
       for (const recorded of required) {
         const actual = await api.pull(recorded.number);
         if (recorded.state === "merged" ? !actual.merged_at || actual.merge_commit_sha !== recorded.mergedSha

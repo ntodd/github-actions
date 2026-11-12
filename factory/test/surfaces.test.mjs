@@ -5,7 +5,7 @@ import { validateLedger, evolve, revisionOf } from "../lib/protocol.mjs";
 import { ingestCommands, applyControls, resolveRoute } from "../lib/commands.mjs";
 import { classifyText, classifyLabel } from "../lib/admission.mjs";
 import { parseConfig } from "../lib/config.mjs";
-import { initial, pending, A, B, C, at, run } from "./fixtures.mjs";
+import { defaultLanding, initial, pending, A, B, C, at, run } from "./fixtures.mjs";
 
 function fixture() {
   let state = initial(), id = 1000, clock = at, issueState = "open";
@@ -340,7 +340,7 @@ test("handover revalidates CI even if a previously-ready PR already satisfies th
 test("a partial issue shows terminal PRs independently and escapes hidden-state terminators", async () => {
   const f = fixture();
   await f.store.transact((s) => {
-    s.items["issue:7"].prs.push({ number: 10, required: true, state: "merged", mergedSha: C, acceptedClosure: false });
+    s.items["issue:7"].prs.push({ number: 10, required: true, state: "merged", mergedSha: C, mergeBase: "main", defaultLanding: defaultLanding(C), acceptedClosure: false });
     s.items["issue:7"].status.reason = "Wait --> on dependency"; return s;
   });
   const projections = projectItem(f.state, "issue:7");
@@ -353,7 +353,7 @@ test("a partial issue shows terminal PRs independently and escapes hidden-state 
 
 test("close-out recovers a lost issue-close response after revalidating every recorded outcome", async () => {
   const f = fixture(); f.pr.state = "closed"; f.pr.merged_at = at; f.pr.merge_commit_sha = C;
-  await f.store.transact((s) => evolve(evolve(s, "issue:7", { type: "pr-observed", number: 9, state: "merged", mergedSha: C }), "issue:7", { type: "close-out" }));
+  await f.store.transact((s) => evolve(evolve(s, "issue:7", { type: "pr-observed", number: 9, state: "merged", mergedSha: C, baseRef: "main", defaultLanding: defaultLanding(C) }), "issue:7", { type: "close-out" }));
   const original = f.write.closeIssue;
   f.write.closeIssue = async () => { await original(); throw new Error("response lost"); };
   const service = f.service();
@@ -365,7 +365,7 @@ test("close-out recovers a lost issue-close response after revalidating every re
 test("close-out cannot rely on an old ledger's terminal claim or revoked authority", async () => {
   for (const revoked of [false, true]) {
     const f = fixture(); f.pr.state = "closed"; f.pr.merged_at = at; f.pr.merge_commit_sha = C;
-    await f.store.transact((s) => evolve(evolve(s, "issue:7", { type: "pr-observed", number: 9, state: "merged", mergedSha: C }), "issue:7", { type: "close-out" }));
+    await f.store.transact((s) => evolve(evolve(s, "issue:7", { type: "pr-observed", number: 9, state: "merged", mergedSha: C, baseRef: "main", defaultLanding: defaultLanding(C) }), "issue:7", { type: "close-out" }));
     if (revoked) f.api.fileAt = async () => ({ content: "trusted-users: [someone-else]" });
     else f.pr.merge_commit_sha = A;
     assert.equal((await f.service().closeOut({ key: "issue:7" })).status, "superseded");

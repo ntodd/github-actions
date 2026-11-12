@@ -9,7 +9,7 @@ import { ingestCommands } from "../lib/commands.mjs";
 import { classifyText } from "../lib/admission.mjs";
 import { publicationGaps } from "../lib/effects.mjs";
 import { projectItem, surfaceService } from "../lib/surfaces.mjs";
-import { initial, reserve, observation, artifact, A, B, C, D, at } from "./fixtures.mjs";
+import { defaultLanding, initial, reserve, observation, artifact, A, B, C, D, at } from "./fixtures.mjs";
 const E = "e".repeat(40), tree = (sha) => createHash("sha1").update(`tree:${sha}`).digest("hex");
 
 function publish(state, commit, { id = `op-${state.items["issue:7"].attempts.length + 1}`, number = 9, head = B, inputs = [] } = {}) {
@@ -36,12 +36,12 @@ function publish(state, commit, { id = `op-${state.items["issue:7"].attempts.len
 function fixture({ commits = [C], merged = B, main = D } = {}) {
   let state = initial(), clock = at, head = B, id = 1000;
   for (const commit of commits) { state = publish(state, commit, { head }); head = commit; }
-  for (const [number, mergedSha] of [[9, merged], [10, main]]) state = evolve(state, "issue:7", { type: "pr-observed", number, state: "merged", mergedSha });
+  for (const [number, mergedSha] of [[9, merged], [10, main]]) state = evolve(state, "issue:7", { type: "pr-observed", number, state: "merged", mergedSha, baseRef: "main", defaultLanding: defaultLanding(mergedSha) });
   const config = parseConfig("trusted-users: [ntodd]\nmax-rounds: 20"), rows = [], compared = [], objects = [];
   let compare = async (base, destination) => ({ status: destination === B ? "behind" : "diverged", base_commit: { sha: base }, merge_base_commit: { sha: A } });
   let object = async (sha) => ({ sha, tree: { sha: tree(sha) } });
   const issue = { number: 7, title: "Fix it", body: "Accepted task", state: "open", user: { login: "ntodd" } };
-  const api = { issue: async () => issue, editors: async () => [],
+  const api = { repository: async () => ({ id: 42, default_branch: "main" }), issue: async () => issue, editors: async () => [],
     events: async () => [{ id: 123, event: "labeled", created_at: at, label: { name: "agent-ready" }, actor: { login: "ntodd" } }],
     comments: async (n) => n === 7 ? rows : [], reviews: async () => [], threads: async () => [], branchSha: async () => main,
     pull: async (number) => ({ number, state: "closed", merged_at: at, merge_commit_sha: state.items["issue:7"].prs.find((p) => p.number === number).mergedSha,
@@ -196,7 +196,7 @@ test("maintenance of a human PR needs the same explicit disposition for a post-m
     return plan;
   };
   assert.equal(reconcile(facts, at).action.type, "ask");
-  assert.match(current.items["pr:9"].question.reason, /Reopen this PR/);
+  assert.match(current.items["pr:9"].question.reason, /Bring any missing work to the default branch in a follow-up PR/);
   current = ingestCommands(current, "pr:9", [{ authority: "instruction", sourceId: "issue-comment:2002", revision: "e".repeat(64),
     author: "ntodd", createdAt: "2026-11-12T12:01:00Z", target: 9, command: { action: "answer", text: "accept-completion" } }]);
   assert.equal(reconcile({ ...facts, landings: [] }, "2026-11-12T12:01:00Z").action.type, "close-out");
