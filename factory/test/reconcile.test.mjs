@@ -380,6 +380,24 @@ test("unsupported own-PR and missing-PR commands ask once and allow a later upda
   }
 });
 
+test("unsupported stack commands ask once and cannot block a later request after the stack is reduced", () => {
+  let state = ingestCommands(initial(), "issue:7", [{ authority: "instruction", sourceId: "issue-comment:1001", revision: "e".repeat(64),
+    author: "ntodd", createdAt: at, target: 9, command: { action: "respond", text: "" } }]);
+  const stack = facts({ prs: [pr(), pr({ number: 10 })] });
+  const first = decide(state, stack);
+  assert.equal(first.action.type, "ask"); assert.match(first.action.reason, /stack maintenance/);
+  state = apply(state, first);
+  assert.equal(Object.values(state.items["issue:7"].commands)[0].status, "applied");
+  const question = state.items["issue:7"].question.id, again = decide(state, stack);
+  assert.equal(again.events.some((e) => e.type === "ask"), false);
+  state = apply(state, again); assert.equal(state.items["issue:7"].question.id, question);
+  state = ingestCommands(state, "issue:7", [{ authority: "instruction", sourceId: "issue-comment:1002", revision: "f".repeat(64),
+    author: "ntodd", createdAt: "2026-11-12T12:01:00Z", target: 9, command: { action: "update", text: "" } }]);
+  const update = decide(state, facts());
+  assert.equal(update.action.type, "reserve"); assert.equal(update.action.mode, "update");
+  assert.deepEqual(update.action.commandIds, [Object.values(state.items["issue:7"].commands).at(-1).id]);
+});
+
 test("edited changes-requested review text becomes an explicit question rather than silent handover", () => {
   const plan = decide(initial(), facts({ prs: [pr({ feedback: [{ sourceId: "review:5", trustedAuthor: true, edited: true, requiresResponse: true, authority: "data" }] })] }));
   assert.equal(plan.action.type, "ask");
