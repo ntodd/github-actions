@@ -12,6 +12,9 @@ on:
       dry-run:
         type: boolean
         default: true
+      completion-entry:
+        type: boolean
+        default: false
     secrets:
       AGENT_APP_PRIVATE_KEY:
         required: false
@@ -75,6 +78,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           FACTORY_REQUEST: ${{ inputs.request }}
           FACTORY_DRY_RUN: ${{ inputs.dry-run }}
+          FACTORY_COMPLETION_ENTRY: ${{ inputs.completion-entry }}
           FACTORY_TOOLING_SHA: ${{ job.workflow_sha }}
           FACTORY_TOOLING_REPOSITORY: ${{ job.workflow_repository }}
           FACTORY_APP_ID: ${{ inputs.app-id }}

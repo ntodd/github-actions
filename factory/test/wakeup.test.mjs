@@ -39,7 +39,7 @@ test("fork dispatch restrictions retain the backstop and do not request privileg
 test("the generated caller separates PR-context wake-ups and secrets-bearing default entry", () => {
   const caller = parseDocument(callerWorkflow({ defaultBranch: "trunk", ciWorkflows: ["CI", "Security"] })).toJS();
   assert.deepEqual(caller.on.push.branches, ["trunk"]);
-  assert.deepEqual(caller.on.workflow_run.workflows, ["CI", "Security", "factory"]);
+  assert.deepEqual(caller.on.workflow_run.workflows, ["CI", "Security"]);
   assert.equal(caller.on.schedule[0].cron, "17 * * * *");
   assert.equal(caller.jobs["wake-up"].secrets, undefined);
   assert.equal(caller.jobs["wake-up"].permissions.actions, "write");
@@ -53,9 +53,38 @@ test("the generated caller separates PR-context wake-ups and secrets-bearing def
   assert.equal(JSON.stringify(shared).includes("secrets."), false);
 });
 
+test("worker completion has its own thin caller and neither workflow listens to itself", () => {
+  for (const dryRun of [true, false]) {
+    const options = { defaultBranch: "main", ciWorkflows: ["CI"], dryRun, attachments: true };
+    const main = parseDocument(callerWorkflow(options)).toJS();
+    const completion = parseDocument(callerWorkflow({ ...options, completion: true })).toJS();
+    assert.equal(main.on.workflow_run.workflows.includes(main.name), false);
+    assert.equal(completion.on.workflow_run.workflows.includes(completion.name), false);
+    assert.deepEqual(Object.keys(completion.on), ["workflow_run"]);
+    assert.deepEqual(completion.on.workflow_run, { workflows: ["factory"], types: ["completed"] });
+    assert.deepEqual(Object.keys(completion.jobs), ["factory"]);
+    assert.equal(completion.jobs.factory.uses, main.jobs.factory.uses);
+    assert.equal(completion.jobs.factory.with["dry-run"], dryRun);
+    assert.equal(completion.jobs.factory.with.request, "");
+    assert.equal(completion.jobs.factory.with["completion-entry"], true);
+    assert.equal(main.jobs.factory.with["completion-entry"], undefined);
+    assert.deepEqual(completion.jobs.factory.permissions, main.jobs.factory.permissions);
+    assert.deepEqual(completion.jobs.factory.secrets, main.jobs.factory.secrets);
+    const accepts = (path, event) => Function("github", `return (${completion.jobs.factory.if});`)({
+      event_name: "workflow_run", event: { workflow_run: { path, event } },
+    });
+    assert.equal(accepts(".github/workflows/factory.yml", "workflow_dispatch"), true);
+    assert.equal(accepts(".github/workflows/factory.yml", "workflow_run"), false);
+    assert.equal(accepts(".github/workflows/ci.yml", "workflow_dispatch"), false);
+    assert.equal(accepts(".github/workflows/factory-completion.yml", "workflow_dispatch"), false);
+    assert.ok(Object.values(completion.jobs).every((job) => job.steps === undefined));
+  }
+});
+
 test("caller generation rejects YAML/expression injection and missing CI names", () => {
   for (const extra of [{ ciWorkflows: [] }, { ciWorkflows: ["CI\n  malicious: true"] }, { ciWorkflows: ["${{ secrets.KEY }}"] },
-    { defaultBranch: "main\nother: true" }, { ref: "main@other" }, { toolingRepository: "owner/repo\nother" }]) {
+    { defaultBranch: "main\nother: true" }, { ref: "main@other" }, { toolingRepository: "owner/repo\nother" },
+    { ciWorkflows: ["factory"] }, { ciWorkflows: ["factory completion"] }, { completion: "true" }]) {
     assert.throws(() => callerWorkflow({ defaultBranch: "main", ciWorkflows: ["CI"], ...extra }));
   }
 });

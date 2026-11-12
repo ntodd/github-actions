@@ -198,12 +198,41 @@ The resulting [factory push run](https://github.com/ntodd/agent-ready-sandbox/ac
 failed before creating any jobs (`jobs: []`). Local cross-workflow actionlint
 validation against those pinned shared files passes, so it does not reproduce
 the GitHub startup failure. The connector's run metadata provides no validation
-error and there is no job log. That error still needs investigation; this is
-negative live evidence, not a successful controller or event-loop test.
+error and there is no job log. The user supplied GitHub's validation message:
+`Workflow 'factory' cannot listen to itself.` This is negative live evidence,
+not a successful controller or event-loop test.
 The separate [CI push run](https://github.com/ntodd/agent-ready-sandbox/actions/runs/43266941198)
 failed `Tipper.TipLogTest` with seed `656758`; no test source changed in #17.
 Owner-only App inspection has not been dispatched: the CLI keyring token is
 invalid and computer-use inventory reports no browser session.
+
+Sandbox correction `0e08851b2b0f7e62e911b53c0d61bd1064d27db8` removed only
+`factory` from the installed read-only caller's completion subscriptions.
+The pinned shared SHA and `dry-run: true` stayed unchanged. Its
+[factory push run](https://github.com/ntodd/agent-ready-sandbox/actions/runs/43321963525),
+[CI run](https://github.com/ntodd/agent-ready-sandbox/actions/runs/43321962112)
+and [CI-completion factory run](https://github.com/ntodd/agent-ready-sandbox/actions/runs/43322030278)
+all succeeded. The clean control job ran with the expected pinned SHA and
+read-only setting; worker/update jobs were skipped. State is not initialized,
+so this establishes bootstrap entry and a CI wake-up, not work reconciliation,
+App inspection, publication or worker completion recovery.
+
+GitHub's self-listening restriction makes the literal subscription described
+in DESIGN.md invalid. The generator implements its intended completion path
+with a distinct thin `factory-completion.yml` caller listening to `factory`.
+The main caller listens only to configured CI names; both factory names are
+reserved against CI-name collisions. The completion entry requires a
+default-branch `workflow_run` identity, a matching API run and the explicit
+`completion-entry` contract. Existing job and ledger guards still filter for
+dispatched, recorded worker operations before minting write access. Worker
+run provenance remains `factory.yml`; no terminal-owner check is relaxed.
+Bootstrap publishes only the read-only main caller/config. Administrator
+setup also publishes the completion caller, and rejects older shared runtimes
+without its declared input. Bootstrap refuses an already-active completion
+caller. JavaScript scenarios cover these boundaries and both generated
+callers pass cross-workflow actionlint. The new completion caller has not yet
+been deployed; live worker recovery remains required. These workflow-routing
+details remain outside Quint's ownership projection.
 
 Config parsing uses a pinned bundled YAML parser, regenerated and checked
 against its source by the build scripts. GitHub read queries have also been

@@ -60,7 +60,10 @@ async function configureRepository(options) {
   let attachments = false;
   for (const name of ["factory-runtime", "factory-wakeup"]) {
     const contract = validateSharedSetupWorkflow(await shared.fileAt(`.github/workflows/${name}.yml`, sharedSha), name);
-    if (name === "factory-runtime") attachments = Object.hasOwn(contract?.secrets ?? {}, "AGENT_ATTACH_TOKEN");
+    if (name === "factory-runtime") {
+      if (contract?.inputs?.["completion-entry"]?.type !== "boolean") throw new Error("Shared runtime does not support the completion caller; select a newer --ref");
+      attachments = Object.hasOwn(contract?.secrets ?? {}, "AGENT_ATTACH_TOKEN");
+    }
   }
   const plan = setupPlan({ repository, app: inspected.app, configText, checks, ciWorkflows: ci, ref: options.ref, dryRun: !options.activate, attachments });
   if (inspected.provenance) plan.appInspection = inspected.provenance;

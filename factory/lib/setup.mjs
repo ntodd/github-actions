@@ -122,6 +122,8 @@ export function setupPlan({ repository, app, configText, checks, ciWorkflows,
     files: [
       { path: ".github/workflows/factory.yml", content: callerWorkflow({ defaultBranch: repository.default_branch, ciWorkflows, toolingRepository, ref, dryRun, attachments }) },
       { path: ".github/factory.yml", content: configText.endsWith("\n") ? configText : `${configText}\n` },
+      { path: ".github/workflows/factory-completion.yml", content: callerWorkflow({ defaultBranch: repository.default_branch,
+        ciWorkflows, toolingRepository, ref, dryRun, attachments, completion: true }) },
     ],
   };
 }

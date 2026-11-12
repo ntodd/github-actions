@@ -35,7 +35,8 @@ globalThis.fetch = async (input, options = {}) => {
   else if (p.endsWith("/check-runs")) value = {check_runs:[{name:"test",app:{id:15368}}]};
   else if (p.endsWith("/statuses")) value = [];
   else if (p === "/repos/ntodd/github-actions/commits/main") value = {sha:B};
-  else if (/^\\/repos\\/ntodd\\/github-actions\\/contents\\/\\.github\\/workflows\\/factory-(runtime|wakeup)\\.yml$/.test(p)) value = file("on:\\n  workflow_call:\\n");
+  else if (p.endsWith("/factory-runtime.yml") && process.env.FACTORY_TEST_OLD_RUNTIME) value = file("on:\\n  workflow_call:\\n");
+  else if (/^\\/repos\\/ntodd\\/github-actions\\/contents\\/\\.github\\/workflows\\/factory-(runtime|wakeup)\\.yml$/.test(p)) value = file("on:\\n  workflow_call:\\n    inputs:\\n      completion-entry: {type: boolean}\\n");
   else if (p.endsWith("/actions/secrets")) value = {secrets:[{name:"AGENT_APP_PRIVATE_KEY"},{name:"CLAUDE_CODE_OAUTH_TOKEN"}]};
   else if (p.endsWith("/contents/.github/factory.yml") || p.endsWith("/git/ref/heads/factory-state")) return new Response("{}",{status:404});
   else throw new Error("Unexpected setup read: " + p);
@@ -43,16 +44,21 @@ globalThis.fetch = async (input, options = {}) => {
 };
 `);
   const journal = join(dir, "journal.json");
-  const result = spawnSync(process.execPath, ["--import", shim, fileURLToPath(new URL("../setup/index.mjs", import.meta.url)),
-    "--preview", "--app-dir", appDir, "--ci", "CI", "--check", "test@15368", "--journal", journal, "ntodd/project"],
-  { encoding: "utf8", timeout: 10_000, env: { PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin` } });
+  const args = ["--import", shim, fileURLToPath(new URL("../setup/index.mjs", import.meta.url)),
+    "--preview", "--app-dir", appDir, "--ci", "CI", "--check", "test@15368", "--journal", journal, "ntodd/project"];
+  const environment = { PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin` };
+  const result = spawnSync(process.execPath, args, { encoding: "utf8", timeout: 10_000, env: environment });
   assert.equal(result.status, 0, result.stderr);
   const output = JSON.parse(result.stdout);
   assert.equal(output.status, "preview"); assert.equal(output.plan.mode, "read-only");
-  assert.equal(output.state, "initialize"); assert.equal(output.plan.files.length, 2);
+  assert.equal(output.state, "initialize"); assert.equal(output.plan.files.length, 3);
+  assert.equal(output.plan.files[2].path, ".github/workflows/factory-completion.yml");
   assert.equal(output.plan.files[0].content.includes("AGENT_ATTACH_TOKEN"), false);
   assert.equal(result.stdout.includes("test-administrator-token"), false);
   assert.equal(result.stdout.includes("BEGIN PRIVATE KEY"), false);
+  assert.equal(existsSync(journal), false); assert.equal(existsSync(`${journal}.lock`), false);
+  const old = spawnSync(process.execPath, args, { encoding: "utf8", timeout: 10_000, env: { ...environment, FACTORY_TEST_OLD_RUNTIME: "true" } });
+  assert.notEqual(old.status, 0); assert.match(old.stderr, /Shared runtime does not support the completion caller; select a newer --ref/);
   assert.equal(existsSync(journal), false); assert.equal(existsSync(`${journal}.lock`), false);
 });
 
@@ -100,7 +106,7 @@ globalThis.fetch = async (input, options = {}) => {
   else if (p.endsWith("/check-runs")) value = {check_runs:[{name:"test",app:{id:15368}}]};
   else if (p.endsWith("/statuses")) value = [];
   else if (p === "/repos/ntodd/github-actions/commits/"+B) value = {sha:B};
-  else if (/^\\/repos\\/ntodd\\/github-actions\\/contents\\/\\.github\\/workflows\\/factory-(runtime|wakeup)\\.yml$/.test(p)) value = file("on:\\n  workflow_call:\\n    secrets:\\n      AGENT_ATTACH_TOKEN: {required: false}\\n");
+  else if (/^\\/repos\\/ntodd\\/github-actions\\/contents\\/\\.github\\/workflows\\/factory-(runtime|wakeup)\\.yml$/.test(p)) value = file("on:\\n  workflow_call:\\n    inputs:\\n      completion-entry: {type: boolean}\\n    secrets:\\n      AGENT_ATTACH_TOKEN: {required: false}\\n");
   else if (p.endsWith("/git/ref/heads/factory-state")) return new Response("{}",{status:404});
   else throw new Error("Unexpected inspection setup read: "+p);
   return Response.json(value);

@@ -32,13 +32,15 @@ export async function applyBootstrap({ plan, api, journal, preview = false, now 
   if (tip !== plan.baseSha || variable.value !== plan.appIdCandidate || !names.includes("AGENT_APP_PRIVATE_KEY")) {
     throw new Error("Bootstrap base, App ID or existing private-key secret changed; inspect and replan");
   }
-  let existing;
-  try { existing = await api.fileAt(plan.files[0].path, tip); }
-  catch (error) { if (error.status !== 404) throw error; }
-  if (existing) {
-    const document = parseDocument(existing, { uniqueKeys: true, logLevel: "error" });
-    if (document.errors.length || document.toJS({ maxAliasCount: 0 })?.jobs?.factory?.with?.["dry-run"] !== true) {
-      throw new Error("Bootstrap cannot replace an active or unrecognized factory caller; use administrator setup");
+  for (const path of [plan.files[0].path, ".github/workflows/factory-completion.yml"]) {
+    let existing;
+    try { existing = await api.fileAt(path, tip); }
+    catch (error) { if (error.status !== 404) throw error; }
+    if (existing) {
+      const document = parseDocument(existing, { uniqueKeys: true, logLevel: "error" });
+      if (document.errors.length || document.toJS({ maxAliasCount: 0 })?.jobs?.factory?.with?.["dry-run"] !== true) {
+        throw new Error("Bootstrap cannot replace an active or unrecognized factory caller; use administrator setup");
+      }
     }
   }
   if (preview) return { status: "preview", plan, appVerified: false, next: "Review the caller/config PR, then manually dispatch request {\"kind\":\"inspect\"} on the default branch" };

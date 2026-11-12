@@ -6,13 +6,17 @@ export function controllerWakeup(eventName, event) {
 }
 
 export async function verifyEntry({ api, env, context }) {
-  const path = ".github/workflows/factory.yml", repo = env.GITHUB_REPOSITORY;
+  const repo = env.GITHUB_REPOSITORY, completionPath = ".github/workflows/factory-completion.yml";
+  const completion = env.GITHUB_WORKFLOW_REF === `${repo}/${completionPath}@refs/heads/${context.defaultBranch}`;
+  const path = completion ? completionPath : ".github/workflows/factory.yml";
   if (env.GITHUB_WORKFLOW_REF !== `${repo}/${path}@refs/heads/${context.defaultBranch}`
+    || completion !== (env.FACTORY_COMPLETION_ENTRY === "true")
+    || completion && env.GITHUB_EVENT_NAME !== "workflow_run"
     || !["issues", "issue_comment", "pull_request_target", "push", "workflow_run", "schedule", "workflow_dispatch", "repository_dispatch", "check_run", "status"].includes(env.GITHUB_EVENT_NAME)) throw new Error("Privileged factory entry must be the default-branch caller");
   const run = await api.run(env.GITHUB_RUN_ID, Number(env.GITHUB_RUN_ATTEMPT));
   if (String(run.repository?.id) !== context.repositoryId || String(run.head_repository?.id) !== context.repositoryId
     || run.path !== path || run.head_branch !== context.defaultBranch || run.head_sha !== env.GITHUB_SHA
     || String(run.id) !== env.GITHUB_RUN_ID || run.run_attempt !== Number(env.GITHUB_RUN_ATTEMPT)
-    || run.status !== "in_progress") throw new Error("Factory entry identity does not match the Actions API");
+    || run.status !== "in_progress" || completion && run.event !== "workflow_run") throw new Error("Factory entry identity does not match the Actions API");
   return run;
 }

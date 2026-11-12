@@ -20,3 +20,18 @@ test("the server's workflow attempt, repository, branch and commit must match th
     await assert.rejects(() => verifyEntry({ api: { run: async () => ({ ...actual, ...changed }) }, context, env }), /identity/);
   }
 });
+
+test("the completion caller can enter only through a verified default-branch workflow_run", async () => {
+  const path = ".github/workflows/factory-completion.yml", completionEnv = { ...env, GITHUB_EVENT_NAME: "workflow_run",
+    GITHUB_WORKFLOW_REF: `ntodd/project/${path}@refs/heads/main`, FACTORY_COMPLETION_ENTRY: "true" };
+  const api = { run: async () => ({ ...actual, path, event: "workflow_run" }) };
+  assert.equal((await verifyEntry({ api, context, env: completionEnv })).path, path);
+  await assert.rejects(verifyEntry({ api, context, env: { ...completionEnv, FACTORY_COMPLETION_ENTRY: "false" } }), /default-branch/);
+  await assert.rejects(verifyEntry({ api, context, env: { ...env, FACTORY_COMPLETION_ENTRY: "true" } }), /default-branch/);
+  for (const event of ["workflow_dispatch", "issue_comment", "repository_dispatch", "push"]) {
+    await assert.rejects(verifyEntry({ api, context, env: { ...completionEnv, GITHUB_EVENT_NAME: event } }), /default-branch/);
+  }
+  for (const changed of [{ event: "workflow_dispatch" }, { path: actual.path }, { head_branch: "topic" }, { head_repository: { id: 99 } }]) {
+    await assert.rejects(verifyEntry({ api: { run: async () => ({ ...actual, path, event: "workflow_run", ...changed }) }, context, env: completionEnv }), /identity/);
+  }
+});

@@ -90,6 +90,7 @@ test("bootstrap rejects active callers, changed bases/IDs and altered publicatio
     (f) => { f.refs.set("main", B); },
     (f) => { f.secretNames.delete("AGENT_APP_PRIVATE_KEY"); },
     (f) => { f.api.fileAt = async () => "jobs:\n  factory:\n    with: {dry-run: false}\n"; },
+    (f) => { f.api.fileAt = async (path) => `jobs:\n  factory:\n    with: {dry-run: ${path.endsWith("factory-completion.yml") ? "false" : "true"}}\n`; },
     (_f, plan) => { plan.files[0].content = plan.files[0].content.replace("dry-run: true", "dry-run: false"); },
     (_f, plan) => { plan.files[1].path = ".github/workflows/other.yml"; },
   ]) {

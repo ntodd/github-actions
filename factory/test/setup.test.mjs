@@ -58,6 +58,11 @@ test("the setup plan produces a read-only thin caller, strict protections and on
   assert.equal(caller.jobs.factory.with["dry-run"], true);
   assert.deepEqual(caller.on.push.branches, ["trunk"]);
   assert.equal(plan.files[1].path, ".github/factory.yml");
+  assert.equal(plan.files[2].path, ".github/workflows/factory-completion.yml");
+  const completion = parseDocument(plan.files[2].content).toJS();
+  assert.equal(completion.jobs.factory.with["dry-run"], true);
+  assert.deepEqual(completion.on.workflow_run.workflows, [caller.name]);
+  assert.equal(caller.on.workflow_run.workflows.includes(caller.name), false);
   assert.equal(plan.stateBranch, "factory-state");
   assert.equal(plan.settings.allow_auto_merge, true);
   assert.deepEqual(plan.variable, { name: "AGENT_APP_ID", value: "123" });

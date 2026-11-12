@@ -25,7 +25,7 @@ globalThis.fetch = async (url, options = {}) => {
   else if (path.endsWith("/contents/.github/workflows/ci.yml")) data = file("name: CI\\non: [push, pull_request]\\n");
   else if (path === "/repos/ntodd/github-actions/commits/" + B) data = {sha:B};
   else if (/^\\/repos\\/ntodd\\/github-actions\\/contents\\/\\.github\\/workflows\\/factory-(runtime|wakeup)\\.yml$/.test(path)) data = file("on:\\n  workflow_call:\\n");
-  else if (path.endsWith("/contents/.github/factory.yml") || path.endsWith("/contents/.github/workflows/factory.yml")) return new Response("{}", {status:404});
+  else if (path.endsWith("/contents/.github/factory.yml") || path.endsWith("/contents/.github/workflows/factory.yml") || path.endsWith("/contents/.github/workflows/factory-completion.yml")) return new Response("{}", {status:404});
   else throw new Error("Unexpected bootstrap read: " + path);
   return Response.json(data);
 };`);
