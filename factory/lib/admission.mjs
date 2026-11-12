@@ -131,8 +131,12 @@ function prCommandFacts(pr, comments, threads, config) {
 
 export function authorizeOwnPr({ pr, editors, comments = [], threads = [], commandId, evidence, config, repo, defaultBranch, allowClosed = false, allowRequest = false }) {
   const no = (reason) => ({ valid: false, reason });
-  if (!pr || !(pr.state === "open" || allowClosed && evidence?.sourceId && pr.state === "closed") || pr.head?.repo?.full_name?.toLowerCase() !== repo.toLowerCase()
-    || pr.base?.ref !== defaultBranch) return no("Only open same-repository PRs into the default branch are supported");
+  // Previously admitted closed work still needs fresh authorship/source checks
+  // for its disposition. An off-default terminal outcome grants no new work;
+  // claim and publish additionally require the PR to remain open on its base.
+  const terminal = allowClosed && evidence?.sourceId && pr?.state === "closed";
+  if (!pr || !(pr.state === "open" || terminal) || pr.head?.repo?.full_name?.toLowerCase() !== repo.toLowerCase()
+    || pr.base?.ref !== defaultBranch && !terminal) return no("Only open same-repository PRs into the default branch are supported");
   if (!trustedHuman(config, pr.user) || !Array.isArray(editors) || editors.some((e) => !trustedHuman(config, e))) return no("PR authorship or edits are not trusted");
   const sourceId = commandId ?? evidence?.sourceId;
   const fact = prCommandFacts(pr, comments, threads, config).find((f) => f.sourceId === sourceId);

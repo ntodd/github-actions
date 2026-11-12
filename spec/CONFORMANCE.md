@@ -259,6 +259,12 @@ is historical and durable across later branch renames or default changes.
 Unknown reads share the bounded landing budget and backoff; missing coverage
 blocks the reducer and the external issue-close guard. Explicit alternatives
 bind the merged PR snapshot as well as the issue revision and publication set.
+For a previously admitted human PR that closed after retargeting, the reader
+still revalidates original trusted authorship, edits and command identity so
+the completion question can be answered. This terminal observation cannot
+admit new off-default maintenance, and the publish guard remains closed.
+Admission and reader-to-reconciler scenarios cover both boundaries; they are
+outside Quint's abstract admission projection.
 Temporary weakened copies were checked with seed `20261111`: removing the
 publication-coverage guard made `latePushCannotCompleteTest` fail, and
 allowing verification without actual landing made

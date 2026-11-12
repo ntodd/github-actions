@@ -1,12 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { observeItem } from "../lib/observe.mjs";
+import { observeItem, publishObservation } from "../lib/observe.mjs";
 import { decideItem } from "../lib/reconcile.mjs";
-import { evolve, validateLedger } from "../lib/protocol.mjs";
+import { admit, emptyLedger, evolve, validateLedger } from "../lib/protocol.mjs";
 import { parseConfig } from "../lib/config.mjs";
 import { ingestCommands } from "../lib/commands.mjs";
-import { classifyText } from "../lib/admission.mjs";
+import { classifyText, inspectOwnPr } from "../lib/admission.mjs";
 import { completionGaps, landedCommits } from "../lib/effects.mjs";
 import { projectItem, surfaceService } from "../lib/surfaces.mjs";
 import { initial, pending, step, defaultLanding, A, B, C, D, at } from "./fixtures.mjs";
@@ -56,6 +56,41 @@ test("a human PR merged elsewhere also needs default coverage without any factor
   assert.equal(plan.action.type, "ask"); assert.match(plan.action.reason, /feature/);
   const result = plan.events.reduce((s, e) => evolve(s, "pr:9", e), state);
   assert.match(plan.action.reason, /follow-up PR/); assert.equal(result.items["pr:9"].complete, false);
+});
+
+test("fresh authorization for a human PR merged elsewhere permits disposition while still fencing publication", async () => {
+  const f = fixture(), pr = f.prs.get(9), context = { config: f.config, repo: "ntodd/project", repositoryId: "42", defaultBranch: "main", sha: D };
+  const original = { id: 200, body: "/agent update", user: { login: "ntodd" }, created_at: at, updated_at: at };
+  pr.state = "open"; pr.merged_at = null; pr.user = { login: "ntodd" }; pr.base.ref = "main";
+  pr.head.ref = "human"; pr.head.repo = { full_name: context.repo };
+  f.api.comments = async (number) => number === 9 ? [original] : [];
+  f.api.events = async () => [];
+  const authorization = await inspectOwnPr(f.api, 9, context, { commandId: "issue-comment:200" });
+  assert.equal(authorization.valid, true);
+  let state = admit(emptyLedger("42"), { key: "pr:9", revision: authorization.revision, evidence: authorization.evidence,
+    prs: [{ number: 9, state: "open", required: true, mergedSha: null, acceptedClosure: false }] });
+  pr.state = "closed"; pr.merged_at = at; pr.base.ref = "feature";
+  const observe = (now) => observeItem({ api: f.api, actions: {}, ledger: state, key: "pr:9", context,
+    rules: [{ type: "required_status_checks", parameters: { required_status_checks: [{ context: "CI" }] } }], now: () => now });
+  const observed = await observe(at);
+  assert.equal(observed.authorization.valid, true);
+  state = ingestCommands(state, "pr:9", observed.feedback);
+  const plan = decideItem(state, "pr:9", observed, f.config, { now: at });
+  state = plan.events.reduce((s, e) => evolve(s, "pr:9", e), state);
+  assert.equal(plan.action.type, "ask"); assert.equal(state.items["pr:9"].question.kind, "completion-revision");
+  assert.equal(state.items["pr:9"].authorizationRevoked, undefined); assert.equal(state.items["pr:9"].complete, false);
+  const answeredAt = "2026-11-12T12:01:00Z", answer = { ...original, id: 201, body: "/agent answer accept-completion", created_at: answeredAt, updated_at: answeredAt };
+  f.api.comments = async (number) => number === 9 ? [original, answer] : [];
+  const fresh = await observe(answeredAt);
+  state = ingestCommands(state, "pr:9", fresh.feedback);
+  const done = decideItem(state, "pr:9", fresh, f.config, { now: answeredAt });
+  state = done.events.reduce((s, e) => evolve(s, "pr:9", e), state);
+  assert.equal(done.action.type, "close-out", JSON.stringify({ action: done.action, commands: state.items["pr:9"].commands }));
+  assert.equal(state.items["pr:9"].complete, true);
+  assert.equal(state.items["pr:9"].prs[0].mergedSha, C);
+  f.api.fileAt = async () => ({ content: "trusted-users: [ntodd]" });
+  const guarded = await publishObservation(f.api, state.items["pr:9"], { target: { number: 9, branch: "human" }, base: { ref: "main" }, inputs: [] }, context.repo);
+  assert.equal(guarded.open, false);
 });
 
 test("an off-default merge completes after verified ancestry or exact tree equivalence on the default branch", async () => {

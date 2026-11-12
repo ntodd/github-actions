@@ -115,6 +115,19 @@ test("own PR maintenance needs an explicit authorized update/resolve and never e
   assert.equal(authorizeOwnPr({ ...args, comments: [comment(20, "/agent restart")] }).valid, false);
 });
 
+test("terminal own-PR disposition revalidates original authority without admitting off-default maintenance", () => {
+  const pr = { number: 9, title: "Own fix", body: "Intent", state: "open", user: { login: "ntodd" }, head: { repo: { full_name: "ntodd/repo" } }, base: { ref: "main" } };
+  const args = { pr, editors: [], comments: [comment(20, "/agent resolve")], commandId: "issue-comment:20", config, repo: "ntodd/repo", defaultBranch: "main" };
+  const original = authorizeOwnPr(args);
+  const closed = { ...pr, state: "closed", base: { ref: "feature" } }, terminal = { ...args, pr: closed, evidence: original.evidence, allowClosed: true };
+  assert.equal(authorizeOwnPr(terminal).valid, true);
+  for (const patch of [{ allowClosed: false }, { evidence: undefined }, { pr: { ...closed, state: "open" } },
+    { pr: { ...closed, user: { login: "outsider" } } }, { editors: ["outsider"] },
+    { pr: { ...closed, head: { repo: { full_name: "someone/fork" } } } },
+    { comments: [] }, { comments: [{ ...comment(20, "/agent resolve"), updated_at: "2026-11-12T00:01:00Z" }] },
+    { comments: [comment(20, "/agent resolve changed request")] }]) assert.equal(authorizeOwnPr({ ...terminal, ...patch }).valid, false);
+});
+
 test("trusted edit history permits updated review instructions but never edited commands", () => {
   const edited = { id: 90, body: "/agent stop", author: "ntodd", lastEditedAt: "2026-11-12T00:01:00Z", editors: ["ntodd"] };
   assert.equal(classifyText(edited, "review", config).authority, "instruction");
