@@ -921,7 +921,7 @@ export function evolve(ledger, key, event) {
       break;
     }
     case "close-out":
-      requireThat(item.prs.some((p) => p.required) && item.prs.filter((p) => p.required)
+      requireThat(!item.revisionPending && item.prs.some((p) => p.required) && item.prs.filter((p) => p.required)
         .every((p) => p.state === "merged" || (p.state === "closed" && p.acceptedClosure)), "incomplete", "Required work is not all accounted for");
       item.complete = true;
       item.question = null;

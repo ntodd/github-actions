@@ -335,6 +335,28 @@ test("a revised issue with an existing green PR starts a response on that PR bef
   assert.equal(apply(initial(), plan).items["issue:7"].revisionPending, true);
 });
 
+test("a revision pending when its PR merges requires explicit completion acceptance", () => {
+  const authorization = { valid: true, revision: "f".repeat(64) };
+  const response = decide(initial(), facts({ authorization }));
+  let state = apply(initial(), response);
+  state = step(state, reserve("op-1", { revision: authorization.revision }));
+  const merged = facts({ authorization, prs: [pr({ state: "merged", mergedSha: C }), pr({ number: 10, state: "merged", mergedSha: C })] });
+  state = apply(state, decide(state, merged));
+  state = step(state, { type: "supersede", observation: { open: false } });
+  const plan = decide(state, merged);
+  assert.equal(plan.action.type, "ask");
+  state = apply(state, plan);
+  assert.equal(state.items["issue:7"].question.kind, "completion-revision");
+  assert.throws(() => step(state, { type: "close-out" }), (e) => e.code === "incomplete");
+  state = ingestCommands(state, "issue:7", [{ authority: "instruction", sourceId: "issue-comment:998", revision: "e".repeat(64),
+    author: "ntodd", createdAt: at, target: 9, command: { action: "answer", text: "accept-completion" } }]);
+  const accepted = decide(state, merged);
+  assert.equal(accepted.action.type, "close-out");
+  state = apply(state, accepted);
+  assert.equal(state.items["issue:7"].complete, true);
+  assert.equal(state.items["issue:7"].revisionPending, false);
+});
+
 test("a reserved CI rerun is recovered before code repair and a queued rerun releases all workers", () => {
   const rerun = { effectId: "e".repeat(64), effectStatus: "pending", requestedAttempt: 1, attempt: 1, status: "completed", createdAt: at, requests: 1 };
   const current = pr({ checks: { state: "failure", headSha: B, failed: [{ transient: true, runId: 123 }] }, reruns: 1, apiReruns: [rerun] });

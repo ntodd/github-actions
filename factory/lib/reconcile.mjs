@@ -192,7 +192,7 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
       if (facts.authorization.revision !== item.revision) observe({ type: "revise", revision: facts.authorization.revision });
       return finish({ type: "restart", commandId: command.id }, "agent-working", "Retire the recorded work before admitting a replacement build");
     }
-    if (!item.evidence.own && facts.authorization.revision !== item.revision) {
+    if (!item.evidence.own && (item.revisionPending || facts.authorization.revision !== item.revision)) {
       const text = command && answerText(command).toLowerCase();
       const accepts = command?.action === "answer" && (text === "accept-completion" || text === "1"
         && previousQuestion?.kind === "completion-revision" && Date.parse(command.at) >= Date.parse(previousQuestion.at));
