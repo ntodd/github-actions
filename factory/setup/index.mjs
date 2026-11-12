@@ -10,19 +10,25 @@ import { applySetupPlan } from "../lib/setup-apply.mjs";
 import { setupJournal } from "../lib/setup-journal.mjs";
 import { stateStore, githubData } from "../lib/store.mjs";
 import { bootstrap } from "./bootstrap.mjs";
+import { readAppInspection } from "../lib/app-inspection.mjs";
+import { actionsClient } from "../lib/actions.mjs";
 
 let release = () => {};
 async function configureRepository(options) {
   const appDir = options.appDir ? resolve(options.appDir) : join(homedir(), ".config", "agent-ready", options.app);
   let appFile, privateKey;
-  try {
-    appFile = JSON.parse(readFileSync(join(appDir, "app.json"), "utf8"));
-    privateKey = readFileSync(join(appDir, "private-key.pem"), "utf8");
-  } catch { throw new Error(`App credentials are unavailable in ${appDir}. Provide --app-dir or create the App with agent-ready/app/create-app.mjs.`); }
+  if (!options.inspectionRun) {
+    try {
+      appFile = JSON.parse(readFileSync(join(appDir, "app.json"), "utf8"));
+      privateKey = readFileSync(join(appDir, "private-key.pem"), "utf8");
+    } catch { throw new Error(`App credentials are unavailable in ${appDir}. Provide --app-dir or create the App with agent-ready/app/create-app.mjs.`); }
+  }
   const token = runGh(["auth", "token", "--hostname", "github.com"]).trim();
   const api = setupClient({ token, repo: options.repo });
   const repository = await api.repository();
-  const inspected = await inspectSetupApp({ appId: appFile.id, privateKey, repo: options.repo });
+  const inspected = options.inspectionRun ? await readAppInspection({ api, actions: actionsClient({ token, repo: options.repo }), repository,
+    runId: options.inspectionRun, attempt: Number(options.inspectionAttempt ?? 1), toolingSha: options.ref,
+    ciWorkflows: options.ci.length ? options.ci : ["CI"] }) : await inspectSetupApp({ appId: appFile.id, privateKey, repo: options.repo });
   const sha = await api.branchSha(repository.default_branch);
   let configText;
   if (options.config) configText = readFileSync(resolve(options.config), "utf8");
@@ -51,9 +57,10 @@ async function configureRepository(options) {
   } else checks = (await api.branchRules(repository.default_branch)).filter((r) => r.type === "required_status_checks")
     .flatMap((r) => r.parameters.required_status_checks);
   const plan = setupPlan({ repository, app: inspected.app, configText, checks, ciWorkflows: ci, ref: options.ref, dryRun: !options.activate });
+  if (inspected.provenance) plan.appInspection = inspected.provenance;
   const shared = setupClient({ token, repo: "ntodd/github-actions" }), sharedSha = await shared.resolveRef(options.ref);
   for (const name of ["factory-runtime", "factory-wakeup"]) validateSharedSetupWorkflow(await shared.fileAt(`.github/workflows/${name}.yml`, sharedSha), name);
-  const secrets = { AGENT_APP_PRIVATE_KEY: privateKey };
+  const secrets = privateKey ? { AGENT_APP_PRIVATE_KEY: privateKey } : {};
   for (const name of ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "SETUP_SECRETS"]) {
     if (process.env[name]) secrets[name] = process.env[name];
   }

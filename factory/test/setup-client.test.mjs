@@ -29,6 +29,21 @@ test("setup reads complete check pagination and rejects credential-bearing pagin
   await assert.rejects(hostile.labels(), /Unexpected setup API target/); assert.equal(requests, 1);
 });
 
+test("inspection setup reads exact attempts and paginates jobs and artifacts without writes", async () => {
+  const calls = [], api = setupClient({ token: "administrator-token", repo: "ntodd/project", fetchImpl: async (url, options) => {
+    calls.push(url); assert.equal(options.method, "GET"); assert.equal(options.redirect, "error");
+    const u = new URL(url), second = u.searchParams.get("page") === "2", name = u.pathname.endsWith("/jobs") ? "jobs" : "artifacts";
+    if (u.pathname.endsWith("/attempts/2")) return Response.json({ id: 100, run_attempt: 2 });
+    return Response.json({ [name]: [{ id: second ? 2 : 1 }] }, { headers: second ? {} : { link: `<${url}&page=2>; rel="next"` } });
+  } });
+  assert.deepEqual(await api.run("100", 2), { id: 100, run_attempt: 2 });
+  assert.deepEqual(await api.jobs("100", 2), [{ id: 1 }, { id: 2 }]);
+  assert.deepEqual(await api.artifacts("100"), [{ id: 1 }, { id: 2 }]);
+  assert.match(calls[1], /runs\/100\/attempts\/2\/jobs/); assert.equal(calls.length, 5);
+  for (const action of [() => api.run("../other", 2), () => api.run("100", 0), () => api.jobs("100", NaN), () => api.artifacts("100/other")]) assert.throws(action);
+  assert.equal(calls.length, 5);
+});
+
 test("App inspection validates the installation and returns only public metadata", async () => {
   const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const pem = privateKey.export({ type: "pkcs8", format: "pem" }), calls = [];

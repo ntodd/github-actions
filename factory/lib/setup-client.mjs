@@ -74,6 +74,18 @@ export function setupClient({ token, repo, fetchImpl = fetch, gh = runGh }) {
       return { name, written: true };
     },
     workflows: () => list("/actions/workflows?per_page=100", "workflows"),
+    run: (id, attempt) => {
+      if (!/^[1-9]\d*$/.test(String(id)) || !Number.isSafeInteger(attempt) || attempt < 1) throw new Error("Invalid inspection run identity");
+      return api("GET", `/actions/runs/${id}/attempts/${attempt}`);
+    },
+    jobs: (id, attempt) => {
+      if (!/^[1-9]\d*$/.test(String(id)) || !Number.isSafeInteger(attempt) || attempt < 1) throw new Error("Invalid inspection run identity");
+      return list(`/actions/runs/${id}/attempts/${attempt}/jobs?per_page=100`, "jobs");
+    },
+    artifacts: (id) => {
+      if (!/^[1-9]\d*$/.test(String(id))) throw new Error("Invalid inspection run identity");
+      return list(`/actions/runs/${id}/artifacts?per_page=100`, "artifacts");
+    },
     branchRules: (branch) => list(`/rules/branches/${encodeURIComponent(branch)}?per_page=100`),
     liveWorkflowRuns: async (id) => {
       if (!Number.isSafeInteger(id) || id < 1) throw new Error("Invalid workflow identity");

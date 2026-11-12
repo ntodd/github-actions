@@ -18,6 +18,17 @@ test("bootstrap requires an immutable runtime ref and does not imply App credent
     ["--ref", ref, "--check", "test"]]) assert.throws(() => parseSetupOptions(["--bootstrap", ...args, "ntodd/project"]), /Bootstrap needs/);
 });
 
+test("inspection setup selects an API run/attempt and requires a pinned shared ref", () => {
+  const ref = "a".repeat(40), options = parseSetupOptions(["--inspection-run", "100", "--inspection-attempt", "2", "--ref", ref, "--preview", "ntodd/project"]);
+  assert.equal(options.inspectionRun, "100"); assert.equal(options.inspectionAttempt, "2");
+  assert.equal(options.preview, true); assert.equal(options.appDir, undefined);
+  for (const args of [["--inspection-run", "100"], ["--inspection-run", "/tmp/report.json", "--ref", ref],
+    ["--inspection-run", "100", "--ref", ref, "--app-dir", "/tmp/key"], ["--inspection-attempt", "2"],
+    ["--inspection-run", "100", "--ref", ref, "--inspection-attempt", "0"],
+    ["--inspection-run", "100", "--ref", ref, "--inspection-attempt", "2.5"],
+    ["--inspection-run", "100", "--ref", ref, "--bootstrap"]]) assert.throws(() => parseSetupOptions([...args, "ntodd/project"]));
+});
+
 test("setup CI validation requires PR and default-branch push entry points", () => {
   validateSetupCi("name: CI\non:\n  pull_request:\n  push:\njobs: {}", "CI");
   validateSetupCi("on: [pull_request, push]", "CI");

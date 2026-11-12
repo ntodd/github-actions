@@ -36,17 +36,19 @@ function crc32(bytes) {
   for (const byte of bytes) crc = (crc >>> 8) ^ crcTable[(crc ^ byte) & 255];
   return (crc ^ 0xffffffff) >>> 0;
 }
-// Deliberately accept only the two flat files the worker uploads, rather than
-// extracting arbitrary paths with an archiver. Sizes are bounded before inflate.
-export function resultFiles(zip, { maxBundleBytes = 50 * 1024 * 1024 } = {}) {
-  if (!Buffer.isBuffer(zip) || zip.length < 22 || zip.length > maxBundleBytes + 2 * 1024 * 1024) throw new Error("Invalid artifact archive size");
+// Accept only the named flat result files, with sizes bounded before inflate.
+export function resultFiles(zip, { maxBundleBytes = 50 * 1024 * 1024, inspection = false } = {}) {
+  const limits = inspection ? { "factory-app-inspection.json": 64 * 1024 }
+    : { "proposal.json": 1024 * 1024, "proposal.bundle": maxBundleBytes };
+  const required = inspection ? "factory-app-inspection.json" : "proposal.json";
+  if (!Buffer.isBuffer(zip) || zip.length < 22 || zip.length > (inspection ? 128 * 1024 : maxBundleBytes + 2 * 1024 * 1024)) throw new Error("Invalid artifact archive size");
   let end = -1;
   for (let i = zip.length - 22; i >= Math.max(0, zip.length - 65557); i--) {
     if (zip.readUInt32LE(i) === 0x06054b50 && i + 22 + zip.readUInt16LE(i + 20) === zip.length) { end = i; break; }
   }
   if (end < 0 || zip.readUInt16LE(end + 4) || zip.readUInt16LE(end + 6)) throw new Error("Invalid artifact ZIP directory");
   const count = zip.readUInt16LE(end + 10), directorySize = zip.readUInt32LE(end + 12), start = zip.readUInt32LE(end + 16);
-  if (count < 1 || count > 2 || zip.readUInt16LE(end + 8) !== count || start + directorySize !== end) throw new Error("Unexpected artifact ZIP layout");
+  if (count < 1 || count > Object.keys(limits).length || zip.readUInt16LE(end + 8) !== count || start + directorySize !== end) throw new Error("Unexpected artifact ZIP layout");
   const files = new Map(), ranges = [];
   let cursor = start;
   for (let n = 0; n < count; n++) {
@@ -59,7 +61,7 @@ export function resultFiles(zip, { maxBundleBytes = 50 * 1024 * 1024 } = {}) {
     if (next > end || zip.readUInt16LE(cursor + 34) !== 0 || flags & ~0x808 || ![0, 8].includes(method)
       || (mode & 0xf000) && (mode & 0xf000) !== 0x8000) throw new Error("Unsupported ZIP entry");
     const name = zip.subarray(cursor + 46, cursor + 46 + nameLength).toString("utf8");
-    const limit = name === "proposal.json" ? 1024 * 1024 : name === "proposal.bundle" ? maxBundleBytes : 0;
+    const limit = Object.hasOwn(limits, name) ? limits[name] : 0;
     if (!limit || files.has(name) || size > limit || local + 30 > start || zip.readUInt32LE(local) !== 0x04034b50
       || zip.readUInt16LE(local + 6) !== flags || zip.readUInt16LE(local + 8) !== method) throw new Error("Unexpected artifact file");
     const localName = zip.readUInt16LE(local + 26), localExtra = zip.readUInt16LE(local + 28);
@@ -73,7 +75,7 @@ export function resultFiles(zip, { maxBundleBytes = 50 * 1024 * 1024 } = {}) {
     if (bytes.length !== size || crc32(bytes) !== crc) throw new Error("Artifact file checksum does not match");
     files.set(name, bytes); ranges.push([local, dataEnd]); cursor = next;
   }
-  if (cursor !== end || !files.has("proposal.json")) throw new Error("Incomplete artifact archive");
+  if (cursor !== end || !files.has(required)) throw new Error("Incomplete artifact archive");
   return files;
 }
 
@@ -128,24 +130,30 @@ export function actionsClient({ token, repo, apiUrl = "https://api.github.com", 
       artifact: { id: String(a.id), digest: a.digest, run: { id: owner.id, attempt: owner.attempt }, repositoryId,
         workflowPath: op.worker.workflowPath, headSha: op.worker.entrySha, expired: a.expired === true } };
   }
-  async function download(op, context, accepted = null) {
-    const facts = await inspect(op, context);
-    if (!facts.available) throw new Error("The recorded result artifact is unavailable");
-    if (accepted && (facts.artifact.id !== accepted.id || facts.artifact.digest !== accepted.digest)) throw new Error("The accepted artifact was substituted");
-    const res = await response(`/actions/artifacts/${facts.artifact.id}/zip`);
+  async function downloadArchive(artifact, maxBytes = maxBundleBytes + 2 * 1024 * 1024) {
+    if (!positive(artifact?.id) || !/^sha256:[a-f0-9]{64}$/.test(artifact.digest)
+      || !Number.isSafeInteger(maxBytes) || maxBytes < 22 || maxBytes > maxBundleBytes + 2 * 1024 * 1024) throw new Error("Invalid artifact download identity or limit");
+    const res = await response(`/actions/artifacts/${artifact.id}/zip`);
     if (res.status !== 302) throw new Error("Artifact service did not return a signed download");
     const location = new URL(res.headers.get("location"));
     if (location.protocol !== "https:" || location.username || location.password) throw new Error("Invalid artifact download URL");
     const archive = await fetch(location.href, { redirect: "error", signal: AbortSignal.timeout(20_000) });
-    if (!archive.ok || Number(archive.headers.get("content-length") ?? 0) > maxBundleBytes + 2 * 1024 * 1024) throw new Error("Artifact download failed or is too large");
+    if (!archive.ok || Number(archive.headers.get("content-length") ?? 0) > maxBytes) throw new Error("Artifact download failed or is too large");
     const chunks = []; let size = 0;
     for await (const chunk of archive.body) {
       size += chunk.length;
-      if (size > maxBundleBytes + 2 * 1024 * 1024) throw new Error("Artifact download exceeds its limit");
+      if (size > maxBytes) throw new Error("Artifact download exceeds its limit");
       chunks.push(chunk);
     }
     const bytes = Buffer.concat(chunks);
-    if (digest(bytes) !== facts.artifact.digest) throw new InvalidResult("Artifact archive digest does not match GitHub metadata");
+    if (digest(bytes) !== artifact.digest) throw new InvalidResult("Artifact archive digest does not match GitHub metadata");
+    return bytes;
+  }
+  async function download(op, context, accepted = null) {
+    const facts = await inspect(op, context);
+    if (!facts.available) throw new Error("The recorded result artifact is unavailable");
+    if (accepted && (facts.artifact.id !== accepted.id || facts.artifact.digest !== accepted.digest)) throw new Error("The accepted artifact was substituted");
+    const bytes = await downloadArchive(facts.artifact);
     let files;
     try { files = resultFiles(bytes, { maxBundleBytes }); }
     catch { throw new InvalidResult("Worker result archive failed validation"); }
@@ -180,5 +188,5 @@ export function actionsClient({ token, repo, apiUrl = "https://api.github.com", 
     if (!validExecution(value, op)) throw new Error("Execution job timestamps are incomplete");
     return value;
   }
-  return { inspect, download, measure };
+  return { inspect, download, measure, downloadArchive };
 }

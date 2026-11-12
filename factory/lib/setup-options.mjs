@@ -4,6 +4,8 @@ export const setupUsage = `Usage: factory/enable.sh [options] owner/repo
 
   --app <slug>       App credential directory name (default ntodd-agent)
   --app-dir <path>   Directory containing app.json and private-key.pem
+  --inspection-run <id>  Use a verified owner-dispatched App inspection instead of a local key
+  --inspection-attempt <n>  Inspection run attempt (default 1; requires --inspection-run)
   --config <path>    Config to propose; otherwise retain the repo's config
   --trusted <users>  Trusted logins for a new config (comma/space separated)
   --ci <name>        CI workflow name; repeat for several (default CI)
@@ -17,12 +19,14 @@ export const setupUsage = `Usage: factory/enable.sh [options] owner/repo
 
 The default caller is read-only. Setup opens a PR; it never merges it.
 Model credentials in the environment are copied to repository secrets.
+Inspection setup requires --ref <full shared SHA> matching the installed read-only caller.
 `;
 
 export function parseSetupOptions(args) {
   const options = { app: "ntodd-agent", ref: "main", ci: [], check: [], preview: false, activate: false };
   const values = new Map([["--app", "app"], ["--app-dir", "appDir"], ["--config", "config"], ["--trusted", "trusted"],
-    ["--ci", "ci"], ["--check", "check"], ["--checks", "checks"], ["--ref", "ref"], ["--journal", "journal"]]);
+    ["--ci", "ci"], ["--check", "check"], ["--checks", "checks"], ["--ref", "ref"], ["--journal", "journal"],
+    ["--inspection-run", "inspectionRun"], ["--inspection-attempt", "inspectionAttempt"]]);
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (["--help", "-h"].includes(arg)) return { help: true };
@@ -41,6 +45,10 @@ export function parseSetupOptions(args) {
   if (!/^[\w.-]+\/[\w.-]+$/.test(options.repo ?? "") || !/^[a-z\d][a-z\d-]*$/i.test(options.app)) throw new Error("Provide a valid repository and App slug");
   if (options.checks && options.check.length) throw new Error("Use --check or --checks, not both");
   if (options.config && options.trusted) throw new Error("Put trusted-users in --config, or use --trusted for a new default config");
+  if (options.inspectionAttempt !== undefined && (!options.inspectionRun || !/^[1-9]\d*$/.test(options.inspectionAttempt)
+    || !Number.isSafeInteger(Number(options.inspectionAttempt)))) throw new Error("Inspection attempt needs --inspection-run and a positive integer");
+  if (options.inspectionRun && (!/^[1-9]\d*$/.test(options.inspectionRun) || !/^[a-f0-9]{40}$/.test(options.ref)
+    || options.appDir || options.bootstrap)) throw new Error("Inspection setup needs a run ID and --ref <commit SHA>; do not combine it with bootstrap or local App credentials");
   if (options.bootstrap && (options.activate || options.appDir || options.checks || options.check.length || !/^[a-f0-9]{40}$/.test(options.ref))) {
     throw new Error("Bootstrap needs --ref <commit SHA>; activation, local App keys and check changes belong to administrator setup");
   }
