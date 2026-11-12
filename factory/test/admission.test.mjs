@@ -73,6 +73,13 @@ test("a review bot's exact login cannot authorize a similarly named human", () =
   }
 });
 
+test("authoritative same-second edit metadata prevents a command", () => {
+  const fact = { ...comment(1, "/agent stop"), lastEditedAt: comment(1, "").created_at, editors: ["outsider"] };
+  assert.equal(fact.created_at, fact.updated_at);
+  assert.equal(classifyText(fact, "issue-comment", config).command, null);
+  assert.equal(classifyText(fact, "issue-comment", config).authority, "data");
+});
+
 test("the verified factory App is always data even when configured as a review bot or accidentally trusted", () => {
   const identity = "actual-factory[bot]";
   const bound = { ...withFactoryApp(parseConfig("trusted-users: [ntodd]\nhandle: unrelated\nreview-bots: ['actual-factory[bot]', 'reviewer[bot]']"), identity),

@@ -84,13 +84,16 @@ export function readClient({ token, repo, apiUrl = "https://api.github.com", fet
     return Number.isSafeInteger(numeric) ? numeric : raw;
   };
   async function withEdits(fact, kind) {
-    const edited = Object.hasOwn(fact, "lastEditedAt") ? fact.lastEditedAt !== null : fact.updated_at !== fact.created_at;
-    if (!edited) return fact;
+    // Only GraphQL's edit metadata can establish that text was never edited;
+    // equal second-precision REST timestamps cannot establish it.
+    if (Object.hasOwn(fact, "lastEditedAt") && fact.lastEditedAt === null) return fact;
     const nodeId = fact.node_id ?? fact.id;
     if (typeof nodeId !== "string") throw new Error("Edited content lacks an identity for edit-history validation");
-    const edits = await pages(`query($id:ID!,$cursor:String){node(id:$id){... on ${kind}{userContentEdits(first:100,after:$cursor){nodes{editor{__typename login}}pageInfo{hasNextPage endCursor}}}}}`,
-      { id: nodeId }, (d) => d.node?.userContentEdits);
-    return { ...fact, editors: edits.map((edit) => login(edit.editor)) };
+    let lastEditedAt;
+    const edits = await pages(`query($id:ID!,$cursor:String){node(id:$id){... on ${kind}{lastEditedAt userContentEdits(first:100,after:$cursor){nodes{editor{__typename login}}pageInfo{hasNextPage endCursor}}}}}`,
+      { id: nodeId }, (d) => { lastEditedAt = d.node?.lastEditedAt; return d.node?.userContentEdits; });
+    if (lastEditedAt !== null && (typeof lastEditedAt !== "string" || !Number.isFinite(Date.parse(lastEditedAt)))) throw new Error("Content lacks authoritative edit metadata");
+    return { ...fact, lastEditedAt, editors: edits.map((edit) => login(edit.editor)) };
   }
   return {
     apiUrl,

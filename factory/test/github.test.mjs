@@ -12,10 +12,11 @@ function api(handler) {
 }
 
 test("REST comment pagination reads all pages and refuses to forward credentials across origins", async () => {
-  const { client, calls } = api((url) => url.includes("page=2") ? Response.json([{ id: 2 }])
-    : Response.json([{ id: 1 }], { headers: { link: '<https://api.github.com/repos/ntodd/repo/issues/7/comments?page=2>; rel="next"' } }));
-  assert.deepEqual(await client.comments(7), [{ id: 1 }, { id: 2 }]);
-  assert.equal(calls.length, 2);
+  const { client, calls } = api((url) => url.endsWith("/graphql") ? Response.json({ data: { node: { lastEditedAt: null, userContentEdits: conn([]) } } })
+    : url.includes("page=2") ? Response.json([{ id: 2, node_id: "IC_2" }])
+      : Response.json([{ id: 1, node_id: "IC_1" }], { headers: { link: '<https://api.github.com/repos/ntodd/repo/issues/7/comments?page=2>; rel="next"' } }));
+  assert.deepEqual(await client.comments(7), [1, 2].map((id) => ({ id, node_id: `IC_${id}`, lastEditedAt: null, editors: [] })));
+  assert.equal(calls.length, 4);
   const unsafe = api(() => Response.json([], { headers: { link: '<https://evil.example/?token=x>; rel="next"' } }));
   await assert.rejects(unsafe.client.comments(7), /pagination/);
   assert.equal(unsafe.calls.length, 1);
@@ -80,10 +81,20 @@ test("config content reads require a commit and verify size; no mutating endpoin
 test("edited comments include their fully paginated editor history", async () => {
   const { client } = api((url, body) => {
     if (url.includes("/comments")) return Response.json([{ id: 1, node_id: "IC_1", body: "edited", created_at: "before", updated_at: "after" }]);
-    return Response.json({ data: { node: { userContentEdits: body.variables.cursor ? conn([{ editor: { login: "outsider", __typename: "User" } }])
+    return Response.json({ data: { node: { lastEditedAt: "2026-11-12T12:00:00Z", userContentEdits: body.variables.cursor ? conn([{ editor: { login: "outsider", __typename: "User" } }])
       : conn([{ editor: { login: "ntodd", __typename: "User" } }], "next") } } });
   });
   assert.deepEqual((await client.comments(7))[0].editors, ["ntodd", "outsider"]);
+});
+
+test("same-second comment edits still fetch editor history", async () => {
+  const at = "2026-11-12T12:00:00Z";
+  const { client } = api((url) => url.includes("/comments")
+    ? Response.json([{ id: 1, node_id: "IC_1", body: "/agent stop", user: { login: "ntodd" }, created_at: at, updated_at: at }])
+    : Response.json({ data: { node: { lastEditedAt: at, userContentEdits: conn([{ editor: { login: "outsider", __typename: "User" } }]) } } }));
+  const fact = (await client.comments(7))[0];
+  assert.deepEqual(fact.editors, ["outsider"]);
+  assert.equal(fact.lastEditedAt, at);
 });
 
 test("failed-step logs follow a signed redirect without forwarding any GitHub credentials", async () => {
