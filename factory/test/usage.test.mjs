@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { workerMeter, workerUsage, itemUsage, claudeCostScope } from "../lib/usage.mjs";
+import { workerMeter, workerUsage, itemUsage, claudeCostScope, routerUsage } from "../lib/usage.mjs";
 import { collectUsage } from "../lib/accounting.mjs";
 import { ingestCommands, requestRoute, resolveRoute } from "../lib/commands.mjs";
 import { validateLedger } from "../lib/protocol.mjs";
@@ -185,4 +185,21 @@ test("routing reservations remain counted through refusals, resolved commands an
   assert.equal(itemUsage(s, "issue:7").routingTokens.total, 30);
   assert.equal(itemUsage(s, "issue:7").routingUnknown, 0);
   assert.equal(itemUsage(s, "issue:7").routingUnpriced, 1);
+});
+
+test("Decisions measurements persist token usage without inventing a response ID", () => {
+  const fact = { authority: "instruction", sourceId: "issue-comment:999", revision: "e".repeat(64), author: "ntodd",
+    createdAt: at, target: 9, command: { action: "route", text: "@ntodd-agent status" } };
+  let state = ingestCommands(initial(), "issue:7", [fact]);
+  const commandId = Object.keys(state.items["issue:7"].commands)[0];
+  state = requestRoute(state, "issue:7", commandId, at, { model: "gpt-6-luna" });
+  assert.equal(state.items["issue:7"].commands[commandId].routingUsage[0].source, "decisions-api");
+  const usage = routerUsage({ usage: { input_tokens: 42, output_tokens: 0, total_tokens: 42,
+    input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } } }, "gpt-6-luna", "decisions-api");
+  const event = { type: "record-routing-usage", commandId, attempt: 1, usage };
+  state = JSON.parse(canonical(step(state, event)));
+  assert.equal(usage.status, "reported"); assert.equal(usage.responseId, null);
+  assert.equal(itemUsage(state, "issue:7").routingTokens.total, 42);
+  assert.deepEqual(step(state, event), state);
+  assert.throws(() => step(state, { ...event, usage: { ...usage, responseId: "resp_invented" } }), (error) => error.code === "invalid");
 });

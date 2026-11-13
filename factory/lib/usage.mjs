@@ -87,21 +87,21 @@ export function validExecution(v, op) {
 }
 
 export function validRouterUsage(v) {
-  if (!object(v) || v.source !== "responses-api" || !["unknown", "not-requested", "reported"].includes(v.status)
+  if (!object(v) || !["responses-api", "decisions-api"].includes(v.source) || !["unknown", "not-requested", "reported"].includes(v.status)
     || typeof v.model !== "string" || !v.model.length || v.model.length > 256) return false;
   if (v.status !== "reported") return v.tokens === null && v.responseId === null;
   const t = v.tokens;
-  return typeof v.responseId === "string" && /^resp_[A-Za-z0-9_-]{1,200}$/.test(v.responseId) && object(t)
+  return (v.source === "decisions-api" ? v.responseId === null : typeof v.responseId === "string" && /^resp_[A-Za-z0-9_-]{1,200}$/.test(v.responseId)) && object(t)
     && [t.input, t.output, t.total].every(count) && count(t.cachedInput) && count(t.reasoningOutput)
     && t.total === t.input + t.output && t.cachedInput <= t.input && t.reasoningOutput <= t.output;
 }
 
-export function routerUsage(response, model) {
-  const v = { source: "responses-api", status: "reported", model, responseId: response?.id,
+export function routerUsage(response, model, source = "responses-api") {
+  const v = { source, status: "reported", model, responseId: source === "decisions-api" ? null : response?.id,
     tokens: { input: response?.usage?.input_tokens, output: response?.usage?.output_tokens, total: response?.usage?.total_tokens,
       cachedInput: response?.usage?.input_tokens_details?.cached_tokens,
       reasoningOutput: response?.usage?.output_tokens_details?.reasoning_tokens } };
-  return validRouterUsage(v) ? v : { source: "responses-api", status: "unknown", model, tokens: null, responseId: null };
+  return validRouterUsage(v) ? v : { source, status: "unknown", model, tokens: null, responseId: null };
 }
 
 export function validOperationUsage(v, op) {

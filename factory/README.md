@@ -278,8 +278,10 @@ CI checks reproducibility. Quint remains a development dependency. The model cov
 in the [conformance audit](../spec/CONFORMANCE.md).
 
 Mentions require the explicitly passed `OPENAI_API_KEY`. The router defaults
-to `gpt-5-mini-2025-08-07`; `router: {model: ...}` in the trusted config can
-select another compatible Responses model. It has no tools, a 20-second
+to `gpt-6-luna` on OpenAI's Decisions API. A single typed choice selects the
+action and any effort level together; refusal, confidence below 0.9 or
+selected-choice probability below 0.9 asks for an exact command. These are
+initial conservative thresholds, not measured accuracy guarantees. It has no tools, a 20-second
 request deadline, bounded input/output and at most three durable requests
 per mention. Missing credentials or unclassifiable input asks for an exact
 command instead. Exact commands never call the router. Coding still uses

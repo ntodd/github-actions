@@ -358,6 +358,20 @@ fixtures use the actual canonical serializer, and regressions cover recovery
 after response loss, nested key reordering and rejection of changed values.
 This adapter correspondence defect is not a new abstract protocol transition.
 
+At the owner's request, the mention classifier now uses OpenAI's Decisions
+API with `gpt-6-luna`, replacing Responses text/JSON generation. One choice
+encodes both action and effort, so the provider cannot return inconsistent
+pairs. Refusals and decisions below the initial 0.9 confidence or selected
+probability threshold map to clarification. Fixtures follow the official
+Decisions response schema, including the absence of a response ID. Token
+measurements retain their provider source and historical Responses records
+remain valid. Unit scenarios cover all effort choices, malformed answers,
+distributions, refusals, thresholds, missing credentials, bounds and own-PR
+restrictions. Threshold calibration and live classification accuracy require
+labeled repository requests and a configured OpenAI key; Quint does not
+establish model accuracy. This is an explicitly requested router change;
+workflow admission, the command menu and protocol authority are unchanged.
+
 The implementation now includes a bounded controller I/O runner, a clean Git
 bundle publisher with a journaled draft-PR effect, a read-only Crew worker,
 an API-only update job and a reusable Actions workflow. Scenario tests drive

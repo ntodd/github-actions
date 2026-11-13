@@ -47,7 +47,7 @@ export function requestRoute(ledger, itemKey, commandId, at, { model = "unknown"
   }
   (command.routingAttempts ??= []).push(at);
   command.routingUsage ??= command.routingAttempts.slice(0, -1).map(() => ({ source: "responses-api", status: "unknown", model: "unknown", tokens: null, responseId: null }));
-  command.routingUsage.push({ source: "responses-api", status: "unknown", model, tokens: null, responseId: null });
+  command.routingUsage.push({ source: "decisions-api", status: "unknown", model, tokens: null, responseId: null });
   return validateLedger(next);
 }
 
