@@ -193,15 +193,20 @@ export async function runController({ api, write, store, actions, repo, toolingS
           op = state.operations[id];
           // Dispatch is itself reserved before sending. A timeout spends a
           // request, never allocates another operation or coding attempt.
-          await save(key, { type: "dispatch-request", operationId: id });
-          await write.dispatch("factory.yml", latest.defaultBranch, { kind: "worker", item: key, operation: id });
+          const dispatched = await save(key, { type: "dispatch-request", operationId: id });
+          const delivery = await write.dispatch("factory.yml", latest.defaultBranch, { kind: "worker", item: key, operation: id });
+          if (delivery?.id) await save(key, { type: "dispatch-accepted", operationId: id, request: 1, run: delivery,
+            deadline: new Date(Date.parse(dispatched.state.operations[id].createdAt) + latest.config.timeouts.queuedMinutes * 60000).toISOString() });
           break;
         }
         case "dispatch": {
           const observation = await publishObservation(api, item, op, repo);
           if (!observation.authorization.valid) break;
-          await save(key, { type: "dispatch-request", operationId: op.id });
-          await write.dispatch("factory.yml", context.defaultBranch, { kind: "worker", item: key, operation: op.id });
+          const dispatched = await save(key, { type: "dispatch-request", operationId: op.id });
+          const request = dispatched.state.operations[op.id].dispatch.attempts.length;
+          const delivery = await write.dispatch("factory.yml", context.defaultBranch, { kind: "worker", item: key, operation: op.id });
+          if (delivery?.id) await save(key, { type: "dispatch-accepted", operationId: op.id, request, run: delivery,
+            deadline: new Date(Date.parse(dispatched.state.operations[op.id].createdAt) + context.config.timeouts.queuedMinutes * 60000).toISOString() });
           break;
         }
         case "cancel-owner":

@@ -266,8 +266,9 @@ export async function observeItem({ api, actions, ledger, key, context, rules, n
   if (op?.owner && ["claimed", "result-ready", "publishing"].includes(op.phase)) {
     result = await actions.inspect(op, context); owner = result.owner;
   }
+  const dispatchRuns = op?.phase === "prepared" && op.dispatch?.attempts.some((a) => a.run) ? await actions.dispatched(op, context) : [];
   const main = { ref: context.defaultBranch, sha: mainSha, checks: mainChecks };
   const landings = await observeLandings(api, ledger, key, prs, main, now(), landingLimit, context);
-  return { authorization, issueState: subject.state, feedback, prs, owner, result, landings,
+  return { authorization, issueState: subject.state, feedback, prs, owner, result, dispatchRuns, landings,
     main, repairSpec: spec, repairBaseline, unsupportedStack: prs.some((p) => p.unsupported) };
 }

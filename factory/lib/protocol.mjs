@@ -291,8 +291,16 @@ export function validateLedger(s) {
       && /^[0-9a-f]{64}$/.test(op.revision) && object(op.worker)
       && op.worker.workflowPath === ".github/workflows/factory.yml" && SHA.test(op.worker.entrySha), "corrupt", `Malformed operation ${id}`);
     requireThat(op.phase !== "claimed" || op.owner !== null, "corrupt", `Missing owner for ${id}`);
+    if (op.dispatch !== undefined) requireThat(object(op.dispatch) && Array.isArray(op.dispatch.attempts)
+      && op.dispatch.attempts.length > 0 && op.dispatch.attempts.length <= 3
+      && Number.isFinite(Date.parse(op.dispatch.nextAt)) && op.dispatch.attempts.every((a) => object(a)
+        && Number.isFinite(Date.parse(a.at)) && (a.run === undefined ? a.deadline === undefined
+          : object(a.run) && typeof a.run.id === "string" && /^[1-9]\d*$/.test(a.run.id) && a.run.attempt === 1
+            && Number.isFinite(Date.parse(a.deadline)) && Date.parse(a.deadline) > Date.parse(op.createdAt)
+            && Date.parse(a.deadline) <= Date.parse(op.createdAt) + 86400000)), "corrupt", `Invalid dispatch receipt for ${id}`);
     if (op.abandonedPrepared !== undefined) requireThat(object(op.abandonedPrepared) && op.phase === "superseded" && op.owner === null
-      && op.result === null && op.effects.length === 0 && op.dispatch?.attempts.length >= 3
+      && op.result === null && op.effects.length === 0 && (op.dispatch?.attempts.length >= 3
+        || op.dispatch?.attempts.some((a) => a.run && Date.parse(a.deadline) <= Date.parse(op.abandonedPrepared.at)))
       && ["answer", "respond", "resolve", "update", "build", "restart", "retry"].includes(s.items[op.item].commands[op.abandonedPrepared.commandId]?.action)
       && Number.isFinite(Date.parse(op.abandonedPrepared.at)), "corrupt", `Invalid prepared abandonment for ${id}`);
     requireThat((op.worker.runner === undefined || validRunner(op.worker.runner))
@@ -560,6 +568,18 @@ export function evolve(ledger, key, event) {
       requireThat(isCurrent(op, event.observation), "stale", "Work is no longer authorized or current");
       op.owner = { ...run, status: "queued", conclusion: null };
       op.phase = "claimed";
+      break;
+    }
+    case "dispatch-accepted": {
+      const op = current(), run = runIdentity(event.run);
+      requireThat(op.phase === "prepared" && op.owner === null, "phase", "Only an unclaimed dispatch can receive a receipt");
+      requireThat(Number.isSafeInteger(event.request) && event.request > 0 && event.request === op.dispatch?.attempts.length,
+        "stale", "Dispatch receipt does not name the latest reserved request");
+      const request = op.dispatch.attempts[event.request - 1], deadline = time(event.deadline);
+      requireThat(run.attempt === 1 && Date.parse(deadline) > Date.parse(op.createdAt)
+        && Date.parse(deadline) <= Date.parse(op.createdAt) + 86400000, "invalid", "Invalid dispatch claim deadline");
+      requireThat(!request.run || sameRun(request.run, run) && request.deadline === deadline, "stale", "Dispatch receipt cannot change");
+      request.run = run; request.deadline = deadline;
       break;
     }
     case "dispatch-request":
@@ -993,9 +1013,10 @@ export function evolve(ledger, key, event) {
       const op = current(), command = item.commands[event.commandId];
       requireThat(op.phase === "prepared" && op.owner === null && op.result === null && op.effects.length === 0,
         "busy", "Only a verified unclaimed prepared operation can be abandoned");
-      requireThat(op.dispatch?.attempts.length >= 3 && command?.status === "queued"
+      requireThat((op.dispatch?.attempts.length >= 3 || op.dispatch?.attempts.some((a) => a.run && Date.parse(a.deadline) <= Date.parse(time(event.at))))
+        && command?.status === "queued"
         && ["answer", "respond", "resolve", "update", "build", "restart", "retry"].includes(command.action),
-        "invalid", "Exhausted dispatch requires an explicit queued work request");
+        "invalid", "Dispatch recovery requires an exhausted or expired unclaimed request and explicit work authorization");
       op.phase = "superseded";
       op.abandonedPrepared = { commandId: command.id, at: time(event.at) };
       break;

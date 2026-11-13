@@ -107,6 +107,16 @@ export function actionsClient({ token, repo, apiUrl = "https://api.github.com", 
     }
     return all;
   }
+  async function dispatched(op, { repositoryId }) {
+    const runs = [];
+    for (const request of op.dispatch?.attempts ?? []) if (request.run) {
+      const actual = await (await response(`/actions/runs/${request.run.id}/attempts/${request.run.attempt}`)).json();
+      const run = runProvenance(actual, { ...op, owner: request.run }, repositoryId, op.base.ref);
+      if (!["queued", "pending", "requested", "waiting", "in_progress", "completed"].includes(run.status)) throw new Error("Unknown dispatched run status");
+      runs.push({ ...run, status: ["in_progress", "completed"].includes(run.status) ? run.status : "queued" });
+    }
+    return runs;
+  }
   async function inspect(op, { repositoryId }) {
     // Supported operations record the default branch as their base. Historical
     // ownership remains bound to that branch after repository policy changes.
@@ -196,5 +206,5 @@ export function actionsClient({ token, repo, apiUrl = "https://api.github.com", 
     if (!validExecution(value, op)) throw new Error("Execution job timestamps are incomplete");
     return value;
   }
-  return { inspect, download, measure, downloadArchive };
+  return { inspect, dispatched, download, measure, downloadArchive };
 }

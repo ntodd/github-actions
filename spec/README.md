@@ -99,6 +99,14 @@ Lost or canceled deliveries retain their reservation, redispatch uses the same
 operation, and three exhausted requests lead to a question. A scheduled
 backstop can also collect a result whose completion wake-up was lost.
 
+Acknowledged dispatches retain their run ID and original reservation queue
+deadline. A fresh observation of that run waiting or running prevents another
+dispatch request, even after the ordinary backoff or third request. The receipt
+does not claim ownership. Thirty minutes is six modeled five-minute ticks;
+expiry asks, and an explicit retry can retire the still-unclaimed reservation
+and fence its late delivery. Unknown responses retain the bounded redispatch
+path. The additional named scenarios and replay exercise these distinct cases.
+
 Scheduling replay executes the actual generated callers' job filters,
 subscriptions and run-name expression, the shared control filter and the
 in-code completion guard. It checks the configured queue policy and each queue

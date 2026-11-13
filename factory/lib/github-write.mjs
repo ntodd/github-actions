@@ -6,7 +6,7 @@ export function writeClient({ token, repo, apiUrl = "https://api.github.com", fe
   const root = `${apiUrl}/repos/${repo}`, origin = new URL(apiUrl).origin;
   let canonicalRoot;
   const headers = { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "factory" };
-  async function call(method, path, body) {
+  async function call(method, path, body, version = "2022-11-28") {
     const url = path.startsWith("https://") ? path : `${root}${path}`;
     const target = new URL(url);
     if (target.origin !== origin) throw new Error("Unexpected GitHub API target");
@@ -21,7 +21,7 @@ export function writeClient({ token, repo, apiUrl = "https://api.github.com", fe
       sameRepository = canonicalRoot !== undefined && target.href.startsWith(canonicalRoot);
     }
     if (!sameRepository) throw new Error("Unexpected GitHub API target");
-    const res = await fetch(url, { method, headers: body ? { ...headers, "content-type": "application/json" } : headers,
+    const res = await fetch(url, { method, headers: { ...headers, "x-github-api-version": version, ...(body ? { "content-type": "application/json" } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}) });
     if (!res.ok) throw new GitHubError(res.status, method, new URL(url).pathname);
     return { data: [202, 204].includes(res.status) ? null : await res.json(), link: res.headers.get("link") };
@@ -86,7 +86,13 @@ export function writeClient({ token, repo, apiUrl = "https://api.github.com", fe
     closeIssue: async (number) => (await call("PATCH", `/issues/${number}`, { state: "closed" })).data,
     reopenIssue: async (number) => (await call("PATCH", `/issues/${number}`, { state: "open" })).data,
     closePull: async (number) => (await call("PATCH", `/pulls/${number}`, { state: "closed" })).data,
-    dispatch: async (workflow, ref, request) => void await call("POST", `/actions/workflows/${encodeURIComponent(workflow)}/dispatches`, { ref, inputs: { request: JSON.stringify(request) } }),
+    dispatch: async (workflow, ref, request) => {
+      const { data } = await call("POST", `/actions/workflows/${encodeURIComponent(workflow)}/dispatches`,
+        { ref, inputs: { request: JSON.stringify(request) } }, origin === "https://api.github.com" ? "2026-03-10" : "2022-11-28");
+      if (data === null) return null; // Older enterprise APIs return no receipt.
+      if (!Number.isSafeInteger(data.workflow_run_id) || data.workflow_run_id < 1) throw new Error("Invalid dispatch run identity");
+      return { id: String(data.workflow_run_id), attempt: 1 };
+    },
     cancelRun: async (id) => void await call("POST", `/actions/runs/${id}/cancel`),
     rerunFailedJobs: async (id) => void await call("POST", `/actions/runs/${id}/rerun-failed-jobs`),
   };

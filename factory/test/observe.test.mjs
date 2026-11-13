@@ -42,6 +42,20 @@ function fixture() {
   return { api, ledger, pr, context, observe, set comments(value) { comments = value; } };
 }
 
+test("prepared operations observe acknowledged deliveries without treating them as owners", async () => {
+  const f = fixture(), op = operation(f.ledger), run = { id: "100", attempt: 1 };
+  op.phase = "prepared"; op.owner = null;
+  op.dispatch = { attempts: [{ at, run, deadline: "2026-11-12T12:30:00Z" }], nextAt: "2026-11-12T12:05:00Z" };
+  let calls = 0, owners = 0;
+  const facts = await observeItem({ api: f.api, ledger: f.ledger, key: "issue:7", context: f.context, rules,
+    actions: { inspect: async () => { owners++; }, dispatched: async (actual, context) => {
+      calls++; assert.equal(actual.id, op.id); assert.equal(context.repositoryId, "42");
+      return [{ ...run, status: "queued" }];
+    } } });
+  assert.equal(calls, 1); assert.equal(owners, 0); assert.equal(facts.owner, null);
+  assert.deepEqual(facts.dispatchRuns, [{ ...run, status: "queued" }]);
+});
+
 test("required contexts bind to their App and do not accept stale-head or foreign checks", () => {
   const required = requiredChecks(rules);
   for (const checks of [[check({ head_sha: D })], [check({ app: { id: 2 } })], []]) {

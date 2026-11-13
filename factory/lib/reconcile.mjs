@@ -277,7 +277,15 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
 
   if (op && !TERMINAL.has(op.phase)) {
     if (op.phase === "prepared") {
-      if ((op.dispatch?.attempts.length ?? 0) >= 3) {
+      const known = op.dispatch?.attempts.filter((a) => a.run) ?? [];
+      if (known.length && (!Array.isArray(facts.dispatchRuns) || known.some((a) => !facts.dispatchRuns.some((r) => identity(a.run, r))))) {
+        return wait("agent-waiting", "The dispatched worker requests could not be observed completely", "dispatch", op.id);
+      }
+      const live = known.filter((a) => facts.dispatchRuns.some((r) => identity(a.run, r) && bad(r.status)));
+      const waiting = live.find((a) => instant < Date.parse(a.deadline));
+      if (waiting) return wait("agent-ready", "The dispatched worker request is waiting to claim the operation", "dispatch", op.id, waiting.deadline);
+      if (live.length || (op.dispatch?.attempts.length ?? 0) >= 3) {
+        if (live.length && (!command || !WORK_ACTIONS.has(command.action))) return ask("The dispatched worker request did not claim the operation before its queue deadline", "agent-failed");
         if (!command || !WORK_ACTIONS.has(command.action)) return ask("Dispatch attempts were exhausted; no worker has claimed the operation", "agent-failed");
         observe({ type: "abandon-prepared", operationId: op.id, commandId: command.id });
         op = state.operations[item.activeOperation];

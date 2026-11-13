@@ -5,6 +5,7 @@ module scheduling {
   type Job = { kind: str, id: int }
   type State = {
     phase: str, requests: int, owner: int, claimants: Set[int],
+    ticks: int, known: int, knownLive: bool,
     active: Job, pending: List[Job], deliveries: Set[int], due: bool, asked: bool,
     workerDone: bool, displaced: bool, lost: bool, noiseDisplaced: bool,
     lastAction: str, event: str, runId: int, accepted: bool
@@ -19,6 +20,7 @@ module scheduling {
 
   action init = s' = {
     phase: "prepared", requests: 0, owner: 0, claimants: Set(),
+    ticks: 0, known: 0, knownLive: false,
     active: NONE, pending: [], deliveries: Set(), due: true, asked: false,
     workerDone: false, displaced: false, lost: false, noiseDisplaced: false,
     lastAction: "init", event: "", runId: 0, accepted: false
@@ -46,7 +48,7 @@ module scheduling {
   // delivery spends a dispatch request, but never another coding reservation.
   action dispatch = all {
     s.active != NONE, s.active.kind != "worker", s.phase == "prepared",
-    not(s.asked), s.due, s.requests < 3,
+    not(s.asked), not(s.knownLive), s.due, s.requests < 3,
     s' = { ...s, requests: s.requests + 1, due: false,
       deliveries: s.deliveries.union(Set(s.requests + 1)), lastAction: "dispatch" }
   }
@@ -62,9 +64,18 @@ module scheduling {
     s' = { ...s, deliveries: s.deliveries.exclude(Set(id)), lost: true, lastAction: "lose-delivery", runId: id }
   }
 
+  // An API receipt identifies a live delivery, not a claimed coding owner.
+  action acknowledge(id: int): bool = all {
+    s.phase == "prepared", id > 0, id == s.requests,
+    (s.active.kind == "worker" and s.active.id == id) or
+      s.pending.foldl(false, (found, job) => found or (job.kind == "worker" and job.id == id)),
+    s' = { ...s, known: id, knownLive: true, lastAction: "acknowledge", runId: id }
+  }
+
   action cancelPending = all {
     s.pending.length() > 0, s.pending.head().kind == "worker",
-    s' = { ...s, pending: s.pending.tail(), lost: true, lastAction: "cancel-pending" }
+    s' = { ...s, pending: s.pending.tail(), lost: true,
+      knownLive: s.knownLive and s.pending.head().id != s.known, lastAction: "cancel-pending" }
   }
 
   // Finishing or crashing releases only the control job. Claimed workers keep
@@ -72,24 +83,26 @@ module scheduling {
   action finishControl = all {
     s.active != NONE,
     s' = { ...s, active: if (s.pending.length() > 0) s.pending.head() else NONE,
-      pending: if (s.pending.length() > 0) s.pending.tail() else [], lastAction: "finish-control" }
+      pending: if (s.pending.length() > 0) s.pending.tail() else [],
+      knownLive: s.knownLive and not(s.active.kind == "worker" and s.active.id == s.known), lastAction: "finish-control" }
   }
 
   action crashControl = all {
     s.active != NONE,
     s' = { ...s, active: if (s.pending.length() > 0) s.pending.head() else NONE,
-      pending: if (s.pending.length() > 0) s.pending.tail() else [], lost: true, lastAction: "crash-control" }
+      pending: if (s.pending.length() > 0) s.pending.tail() else [], lost: true,
+      knownLive: s.knownLive and not(s.active.kind == "worker" and s.active.id == s.known), lastAction: "crash-control" }
   }
 
   action backoffElapsed = all {
-    not(s.due),
-    s' = { ...s, due: true, lastAction: "backoff-elapsed" }
+    not(s.due) or s.knownLive,
+    s' = { ...s, ticks: s.ticks + 1, due: true, lastAction: "backoff-elapsed" }
   }
 
   action claim = all {
     s.active.kind == "worker", s.phase == "prepared", s.owner == 0, not(s.asked),
     s' = { ...s, phase: "claimed", owner: s.active.id,
-      claimants: s.claimants.union(Set(s.active.id)), lastAction: "claim" }
+      claimants: s.claimants.union(Set(s.active.id)), knownLive: false, lastAction: "claim" }
   }
 
   action finishWorker = all {
@@ -104,15 +117,23 @@ module scheduling {
   }
 
   action ask = all {
-    s.active != NONE, s.active.kind != "worker", s.phase == "prepared", s.requests == 3, not(s.asked),
+    s.active != NONE, s.active.kind != "worker", s.phase == "prepared", not(s.asked),
+    (s.requests == 3 and not(s.knownLive)) or (s.knownLive and s.ticks >= 6),
     s' = { ...s, asked: true, lastAction: "ask" }
+  }
+
+  action abandon = all {
+    s.phase == "prepared", s.asked,
+    (s.requests == 3 and not(s.knownLive)) or (s.knownLive and s.ticks >= 6),
+    s' = { ...s, phase: "superseded", asked: false, lastAction: "abandon" }
   }
 
   val oneOwner = s.claimants.size() <= 1 and
     (if (s.owner == 0) s.claimants == Set() else s.claimants == Set(s.owner))
   val boundedDispatch = s.requests >= 0 and s.requests <= 3
-  val durableOwnership = (s.phase == "prepared") == (s.owner == 0)
-  val questionFencesClaim = not(s.asked) or (s.phase == "prepared" and s.owner == 0 and s.requests == 3)
+  val durableOwnership = Set("prepared", "superseded").contains(s.phase) == (s.owner == 0)
+  val questionFencesClaim = not(s.asked) or (s.phase == "prepared" and s.owner == 0 and
+    (s.requests == 3 or (s.known > 0 and s.ticks >= 6)))
   val filteredBeforeQueue = not(s.noiseDisplaced) and
     (s.lastAction != "arrive" or not(NOISE.contains(s.event)) or not(s.accepted))
   val queueShape = s.pending.length() <= CAPACITY and (s.active != NONE or s.pending.length() == 0)
@@ -132,9 +153,10 @@ module scheduling {
     dispatch,
     nondet delivery = Set(1, 2, 3).oneOf()
     deliver(delivery),
+    acknowledge(s.requests),
     nondet lost = Set(1, 2, 3).oneOf()
     loseDelivery(lost),
-    cancelPending, finishControl, crashControl, backoffElapsed, claim, finishWorker, collect, ask, idle
+    cancelPending, finishControl, crashControl, backoffElapsed, claim, finishWorker, collect, ask, abandon, idle
   }
 
   run queuedWorker = arrive("backstop").then(dispatch).then(deliver(1))
@@ -169,6 +191,22 @@ module scheduling {
   run overflowKeepsExistingJobsTest = init.then(arrive("backstop")).then(fillQueue)
     .then(dispatch).then(deliver(1))
     .expect(s.displaced and s.pending.length() == CAPACITY and s.pending.foldl(true, (ok, job) => ok and job.kind == "human") and safety)
+
+  run acknowledgedWorker = queuedWorker.then(acknowledge(1))
+  run threeBackoffs = backoffElapsed.then(backoffElapsed).then(backoffElapsed)
+  run knownQueuedRunDoesNotRedispatchTest = init.then(acknowledgedWorker).then(threeBackoffs).then(dispatch).fail()
+  run knownQueuedRunDoesNotAskExhaustionTest = init.then(acknowledgedWorker).then(threeBackoffs).then(ask).fail()
+  run acknowledgedWorkerWaitsBehindBacklogTest = init.then(arrive("backstop"))
+    .then(arrive("human")).then(arrive("ci")).then(arrive("human"))
+    .then(dispatch).then(deliver(1)).then(acknowledge(1)).then(threeBackoffs)
+    .then(finishControl).then(finishControl).then(finishControl).then(finishControl).then(claim)
+    .expect(s.requests == 1 and s.owner == 1 and safety)
+  run expiredAcknowledgedWorkerCannotClaimTest = init.then(acknowledgedWorker)
+    .then(threeBackoffs).then(threeBackoffs).then(ask).then(finishControl).then(claim).fail()
+  run expiredAcknowledgedWorkerRetryFencesOldClaimTest = init.then(acknowledgedWorker)
+    .then(threeBackoffs).then(threeBackoffs).then(ask).then(abandon)
+    .expect(s.phase == "superseded" and s.requests == 1 and safety)
+    .then(finishControl).then(claim).fail()
 
   run lostDispatchBackstopTest = init.then(lostRequestRound).then(arrive("backstop"))
     .then(dispatch).then(deliver(2)).then(finishControl).then(claim)

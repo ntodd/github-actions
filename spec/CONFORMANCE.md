@@ -334,7 +334,7 @@ The live pre-claim cancellations exposed an omission in the original ownership
 model. [`scheduling.qnt`](scheduling.qnt) now represents the Actions controller
 queue with `queue: max`, overflow rejection, lost dispatch delivery, cancellation/crash
 before claim, durable dispatch backoff and exhaustion, and lost completion
-wake-ups. Fifteen named scenarios exercise those failures and recovery;
+wake-ups. Twenty named scenarios exercise those failures and recovery;
 the sampled profile explores 10,000 traces of up to 100 steps. Progress still
 requires a delivered backstop, available APIs and eventual scheduling; neither
 model proves fairness or inevitable completion.
@@ -358,6 +358,20 @@ worker deliveries remain in the modeled queue; their lifecycle ownership is
 still covered only by the separate single-operation projection. The pinned
 actionlint 1.7.12 predates this syntax; its exact unknown-key diagnostic is
 ignored only for the runtime file, while model replay checks the actual value.
+
+The scheduling projection also distinguishes an acknowledged delivery from a
+coding owner. GitHub.com's [2026-03-10 dispatch API](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event)
+returns a run ID; it is saved against the already reserved request. Fresh reads
+verify its repository, workflow, entry head, branch and original attempt.
+A live known delivery waits within the reservation's original queue deadline;
+it cannot spend another dispatch request or coding reservation. Expiry asks,
+and an explicit retry fences the old unclaimed operation before replacement.
+Five named scenarios and replay cover the wait, backlog, expiry and late-claim
+fences. JavaScript tests cover immutable receipts, incomplete observations,
+provenance failures, original deadlines and old enterprise 204 responses.
+Legacy or lost responses keep the previous bounded unknown-delivery behavior.
+Actual receipt persistence under GitHub delivery and API failures still needs
+live validation; the API response never grants work authority by itself.
 
 The sandbox also exposed a concrete serialization mismatch: the Git ledger
 sorts JSON object keys, but API-effect and measured-usage identity checks

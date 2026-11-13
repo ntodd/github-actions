@@ -80,6 +80,34 @@ test("one issue traverses reservation, exclusive admission, terminal artifact, p
   assert.deepEqual(f.effects.at(-1), ["close", 7]);
 });
 
+test("accepted dispatch receipts survive a later pass without redispatching a queued run", async () => {
+  const f = fixture(), delivery = { id: "500", attempt: 1 };
+  let calls = 0;
+  const write = { dispatch: async () => { calls++; return delivery; } };
+  const actions = { ...f.actions, dispatched: async () => [{ ...delivery, status: "queued" }] };
+  const first = await f.pass({ write, actions });
+  assert.equal(first.outcomes.some((o) => o.status === "interrupted"), false);
+  assert.deepEqual(f.state.operations["op-1"].dispatch.attempts[0].run, delivery);
+  assert.equal(f.state.operations["op-1"].dispatch.attempts[0].deadline, "2026-11-12T12:30:00.000Z");
+  const second = await f.pass({ write, actions, now: () => "2026-11-12T12:15:00.000Z" });
+  assert.equal(second.outcomes.some((o) => o.status === "interrupted"), false);
+  assert.equal(calls, 1);
+  assert.equal(f.state.items["issue:7"].attempts.length, 1);
+});
+
+test("a later accepted dispatch retains the reservation's original queue deadline", async () => {
+  const f = fixture(), delivery = { id: "500", attempt: 1 };
+  let calls = 0;
+  const write = { dispatch: async () => ++calls === 1 ? null : delivery };
+  const actions = { ...f.actions, dispatched: async () => [{ ...delivery, status: "queued" }] };
+  await f.pass({ write, actions });
+  await f.pass({ write, actions, now: () => "2026-11-12T12:15:00.000Z" });
+  assert.equal(calls, 2);
+  assert.equal(f.state.operations["op-1"].dispatch.attempts[1].deadline, "2026-11-12T12:30:00.000Z");
+  await f.pass({ write, actions, now: () => "2026-11-12T12:16:00.000Z" });
+  assert.equal(calls, 2);
+});
+
 test("handover and review-bot readiness keep the observed head when a push races the controller action", async () => {
   for (const readyOnly of [false, true]) {
     const f = fixture(); await f.pass();

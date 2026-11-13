@@ -9,6 +9,7 @@ import { parseDocument } from "../factory/vendor/yaml.mjs";
 import { admit, emptyLedger, evolve, revisionOf } from "../factory/lib/protocol.mjs";
 import { decideItem } from "../factory/lib/reconcile.mjs";
 import { parseConfig } from "../factory/lib/config.mjs";
+import { ingestCommands } from "../factory/lib/commands.mjs";
 
 export function replayScheduling({ dir, run, decode }) {
   const options = { defaultBranch: "main", ciWorkflows: ["CI"], dryRun: false, appLogin: "factory-app[bot]" };
@@ -85,7 +86,9 @@ export function replayScheduling({ dir, run, decode }) {
       const owner = state.owner ? { id: String(state.owner), attempt: 1, status: state.workerDone ? "completed" : "queued", conclusion: state.workerDone ? "success" : null } : null;
       return decideItem(ledger, "issue:7", { authorization: observation.authorization, issueState: "open",
         prs: [{ number: 1, state: "open", headSha: head, baseSha: sha, baseRef: "main" }],
-        main: { ref: "main", sha }, owner, result: { available: state.workerDone, inspected: state.workerDone } }, config, { now: at() });
+        main: { ref: "main", sha }, owner, result: { available: state.workerDone, inspected: state.workerDone },
+        dispatchRuns: (ledger.operations["op-1"].dispatch?.attempts ?? []).filter((a) => a.run).map((a) => ({ ...a.run,
+          status: state.knownLive && String(state.known) === a.run.id ? "queued" : "completed" })) }, config, { now: at() });
     }
     function applyPlan(decision) { for (const event of decision.events) update(event); }
     for (let i = 1; i < states.length; i++) {
@@ -108,6 +111,10 @@ export function replayScheduling({ dir, run, decode }) {
           assert.equal(routed(state.event), state.accepted, `Workflow routing disagrees for ${state.event}`);
           checkedEvents.add(state.event);
         } else if (state.lastAction === "backoff-elapsed") minute += 5;
+        else if (state.lastAction === "acknowledge") {
+          update({ type: "dispatch-accepted", request: state.runId, run: { id: String(state.runId), attempt: 1 },
+            deadline: new Date(Date.parse(ledger.operations["op-1"].createdAt) + 30 * 60000).toISOString() });
+        }
         else if (state.lastAction === "dispatch") {
           const decision = plan(before);
           assert.equal(decision.action?.type, "dispatch");
@@ -117,7 +124,13 @@ export function replayScheduling({ dir, run, decode }) {
         else if (state.lastAction === "ask") {
           const decision = plan(before);
           assert.equal(decision.action?.type, "ask");
-          assert.match(decision.action.reason, /Dispatch attempts were exhausted/);
+          assert.match(decision.action.reason, /Dispatch attempts were exhausted|claim the operation before its queue deadline/);
+          applyPlan(decision);
+        } else if (state.lastAction === "abandon") {
+          ledger = ingestCommands(ledger, "issue:7", [{ authority: "instruction", sourceId: `issue-comment:${1000 + i}`, revision,
+            author: "ntodd", createdAt: at(), target: 9, command: { action: "retry", text: "" } }]);
+          const decision = plan(before);
+          assert.equal(decision.action?.type, "reserve");
           applyPlan(decision);
         } else if (state.lastAction === "collect") {
           const decision = plan(before), identity = { id: String(state.owner), attempt: 1 };
@@ -136,7 +149,8 @@ export function replayScheduling({ dir, run, decode }) {
         assert.equal(ledger.items["issue:7"].attempts.length, 1, "Lost delivery must not spend another coding reservation");
         if (state.phase === "prepared" && !state.asked) {
           const decision = plan(state);
-          assert.equal(decision.action?.type ?? "wait", state.requests === 3 ? "ask" : state.due ? "dispatch" : "wait");
+          assert.equal(decision.action?.type ?? "wait", state.knownLive ? state.ticks >= 6 ? "ask" : "wait"
+            : state.requests === 3 ? "ask" : state.due ? "dispatch" : "wait");
         }
         if (state.active.kind === "worker" && state.asked) assert.throws(() => evolve(ledger, "issue:7", {
           type: "claim", operationId: "op-1", at: at(), run: { id: String(state.active.id), attempt: 1 }, provenance, observation,
