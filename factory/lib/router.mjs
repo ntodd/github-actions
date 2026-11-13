@@ -69,9 +69,15 @@ export function mentionRouter({ apiKey, fetchImpl = fetch } = {}) {
   return async (command, item, facts, context, { onUsage = async () => {} } = {}) => {
     const input = inputFor(command, item, facts);
     const model = context.config.router.model;
-    if (!apiKey || !input) {
+    if (!input) {
       await onUsage({ source: "decisions-api", status: "not-requested", model, tokens: null, responseId: null });
       return { action: "clarify", effort: null };
+    }
+    if (!apiKey?.trim()) {
+      await onUsage({ source: "decisions-api", status: "not-requested", model, tokens: null, responseId: null });
+      const settings = /^[\w.-]+\/[\w.-]+$/.test(context.repo ?? "")
+        ? `https://github.com/${context.repo}/settings/secrets/actions` : "the repository's Settings → Secrets and variables → Actions";
+      throw Object.assign(new Error(`Missing required GitHub Actions secret OPENAI_API_KEY. Set it in ${settings} to route mentions with OpenAI Decisions.`), { code: "missing-secret" });
     }
     const response = await fetchImpl("https://api.openai.com/v1/decisions", {
       method: "POST", redirect: "error", signal: AbortSignal.timeout(20_000),

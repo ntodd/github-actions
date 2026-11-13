@@ -309,7 +309,7 @@ export async function runController({ api, write, store, actions, repo, toolingS
             try { result = await route(reserved, current, fresh, latest, { onUsage: (usage) => save(key, {
               type: "record-routing-usage", commandId: command.id, attempt: reserved.routingAttempts.length, usage }) }); }
             catch (error) {
-              if (before < 2) throw error;
+              if (before < 2 || error.code === "missing-secret") throw error;
               // A failed third request becomes a visible question, never an
               // unbounded sequence of API calls on duplicate wake-ups.
             }
@@ -340,7 +340,7 @@ export async function runController({ api, write, store, actions, repo, toolingS
     } catch (error) {
       // Persisted intent remains for a later pass; do not claim an uncertain
       // remote operation failed, and do not let one item hide other work.
-      outcomes.push({ key, action: action.type, status: "interrupted", reason: error.message });
+      outcomes.push({ key, action: action.type, status: error.code === "missing-secret" ? "configuration-error" : "interrupted", reason: error.message });
     }
   }
   outcomes.push(...await collectUsage({ actions, store, context, now }));
@@ -352,9 +352,15 @@ export async function runController({ api, write, store, actions, repo, toolingS
     && JSON.stringify(state) !== JSON.stringify(snapshot)) {
     const next = await runController({ api, write, store, actions, repo, toolingSha, run, target, publish, route, restart, continueIssue, surfaces, render,
       now, operationId, observe, discovery: false, maxPasses: maxPasses - 1, assertRuntime });
+    const failure = outcomes.find((o) => o.status === "configuration-error");
+    if (failure) throw Object.assign(new Error(failure.reason), { code: "missing-secret" });
     return { plans: [...plans, ...next.plans], outcomes: [...outcomes, ...next.outcomes] };
   }
   if (surfaces) await surfaces.render(state, context, outcomes);
   await render(state, context, outcomes);
+  // Finish independent controls/recovery and surface the error before failing
+  // the Actions entry. Configuration failures must not become green passes.
+  const failure = outcomes.find((o) => o.status === "configuration-error");
+  if (failure) throw Object.assign(new Error(failure.reason), { code: "missing-secret" });
   return { plans, outcomes };
 }

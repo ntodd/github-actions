@@ -78,7 +78,7 @@ export async function applySetupPlan({ plan, api, store, journal, secrets = {}, 
   const baseSha = await api.branchSha(plan.defaultBranch);
   if (!sha(baseSha)) throw new Error("The default branch returned an invalid commit");
   if (preview) return { status: "preview", plan, state: before ? "existing" : "initialize", secrets: Object.keys(secrets),
-    warnings: names.has("OPENAI_API_KEY") ? [] : ["Mentions will ask for exact commands until OPENAI_API_KEY is configured"] };
+    warnings: names.has("OPENAI_API_KEY") ? [] : ["Mention routing will fail until the OPENAI_API_KEY Actions secret is configured; exact commands remain available"] };
   if (!journal) throw new Error("Applying setup requires its durable administrator journal");
   const effect = (slot, definition, inspect, submit, repeatable = false) => setupEffect({ journal, slot, definition, inspect, submit, repeatable, now });
   await store.initialize();
@@ -147,7 +147,7 @@ export async function applySetupPlan({ plan, api, store, journal, secrets = {}, 
     if (!(await Promise.all(plan.files.map(async (file) => await missing(() => api.fileAt(file.path, currentSha)) === file.content))).every(Boolean)) throw new Error("The default-branch caller/config changed during setup verification");
   }
   return { status: result.pr ? "pending-merge" : plan.mode, mode: plan.mode, protectionsVerified: true,
-    ...result, warnings: finalNames.has("OPENAI_API_KEY") ? [] : ["Mentions require OPENAI_API_KEY; exact commands remain available"] };
+    ...result, warnings: finalNames.has("OPENAI_API_KEY") ? [] : ["Mention routing will fail until the OPENAI_API_KEY Actions secret is configured; exact commands remain available"] };
 }
 
 export async function setupPullRequest({ plan, api, journal, baseSha, now }) {

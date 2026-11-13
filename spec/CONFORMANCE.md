@@ -371,6 +371,14 @@ restrictions. Threshold calibration and live classification accuracy require
 labeled repository requests and a configured OpenAI key; Quint does not
 establish model accuracy. This is an explicitly requested router change;
 workflow admission, the command menu and protocol authority are unchanged.
+The owner subsequently requested visible failures for missing credentials:
+an actual routing attempt without `OPENAI_API_KEY` now fails the Actions
+entry with the secret name and repository settings URL. Independent exact
+controls and recovery finish before the pass fails; no coding operation is
+authorized. Missing-key attempts remain unrequested provider usage and obey
+the existing three-attempt routing bound. Inspection and read-only planning
+do not invoke the router. Oversized or ambiguous input still asks for an exact
+command.
 
 The implementation now includes a bounded controller I/O runner, a clean Git
 bundle publisher with a journaled draft-PR effect, a read-only Crew worker,

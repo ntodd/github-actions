@@ -521,6 +521,30 @@ test("a first issue mention is routed, admitted from its fresh source, then disp
     context: { sha: A, defaultBranch: "main" } })).claimed, true);
 });
 
+test("a missing router secret fails the pass after independent exact controls and consumes no coding attempt", async () => {
+  const f = fixture(); f.source.labels = [];
+  const second = { ...f.source, number: 8 };
+  f.api.openIssues = async () => [f.source, second]; f.api.issue = async (n) => n === 7 ? f.source : second;
+  f.api.events = async () => [];
+  f.api.comments = async (n) => [{ id: n === 7 ? 999 : 1000, body: n === 7 ? "/agent stop" : "@ntodd-agent status",
+    user: { login: "ntodd" }, created_at: at, updated_at: at }];
+  const rendered = [];
+  for (let n = 0; n < 3; n++) await assert.rejects(f.pass({ route: mentionRouter(),
+    now: () => new Date(Date.parse(at) + n * 120000).toISOString(), render: async (_state, _context, outcomes) => rendered.push(outcomes) }), (error) => {
+    assert.equal(error.code, "missing-secret");
+    assert.match(error.message, /OPENAI_API_KEY/);
+    assert.match(error.message, /https:\/\/github.com\/ntodd\/project\/settings\/secrets\/actions/);
+    return true;
+  });
+  assert.equal(f.state.items["issue:7"].paused, true);
+  assert.equal(f.state.items["issue:8"].requestOnly, true);
+  assert.deepEqual(f.state.operations, {}); assert.deepEqual(f.effects, []);
+  const command = Object.values(f.state.items["issue:8"].commands)[0];
+  assert.equal(command.routingAttempts.length, 3);
+  assert(command.routingUsage.every((u) => u.source === "decisions-api" && u.status === "not-requested"));
+  assert(rendered.every((outcomes) => outcomes.some((o) => o.status === "configuration-error")));
+});
+
 test("a status mention cannot silently admit coding, and a later exact build can authorize the same request record", async () => {
   const f = fixture(); f.source.labels = []; f.api.events = async () => [];
   const rows = [{ id: 999, body: "@ntodd-agent status", user: { login: "ntodd" }, created_at: at, updated_at: at }];

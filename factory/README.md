@@ -283,7 +283,8 @@ action and any effort level together; refusal, confidence below 0.9 or
 selected-choice probability below 0.9 asks for an exact command. These are
 initial conservative thresholds, not measured accuracy guarantees. It has no tools, a 20-second
 request deadline, bounded input/output and at most three durable requests
-per mention. Missing credentials or unclassifiable input asks for an exact
+per mention. A missing `OPENAI_API_KEY` fails a routing pass with the secret
+name and repository settings link. Unclassifiable input asks for an exact
 command instead. Exact commands never call the router. Coding still uses
 the configured Claude worker on Crew.
 

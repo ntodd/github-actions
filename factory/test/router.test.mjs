@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mentionRouter, validateRoute, ROUTER_MODEL } from "../lib/router.mjs";
 import { parseConfig } from "../lib/config.mjs";
 import { ACTIONS } from "../lib/admission.mjs";
@@ -91,10 +92,31 @@ test("invalid probabilities, duplicates and unsupported answer types cannot supp
   }
 });
 
-test("missing credentials and oversized input ask for an exact command without a model call", async () => {
+test("missing credentials fail with the required secret and repository settings link without a model call", async () => {
   let calls = 0;
   const fetchImpl = async () => { calls++; throw new Error("Unexpected model call"); };
-  assert.equal((await mentionRouter({ fetchImpl })(command, item, {}, context)).action, "clarify");
+  for (const apiKey of [undefined, "", "   "]) await assert.rejects(mentionRouter({ apiKey, fetchImpl })(command, item, {}, { ...context, repo: "ntodd/next" }), (error) => {
+    assert.equal(error.code, "missing-secret");
+    assert.match(error.message, /OPENAI_API_KEY/);
+    assert.match(error.message, /https:\/\/github.com\/ntodd\/next\/settings\/secrets\/actions/);
+    return true;
+  });
+  assert.equal(calls, 0);
+});
+
+test("the Actions entry reports a missing router credential as an error annotation and nonzero exit", () => {
+  const code = `import { main } from ${JSON.stringify(new URL("../../agent-ready/lib/action.mjs", import.meta.url).href)};
+import { mentionRouter } from ${JSON.stringify(new URL("../lib/router.mjs", import.meta.url).href)};
+main(() => mentionRouter()(${JSON.stringify(command)}, ${JSON.stringify(item)}, {}, ${JSON.stringify({ ...context, repo: "ntodd/next" })}));`;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", code], { encoding: "utf8", timeout: 5000, env: {} });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stdout, /::error::Missing required GitHub Actions secret OPENAI_API_KEY/);
+  assert.match(result.stdout, /https:\/\/github.com\/ntodd\/next\/settings\/secrets\/actions/);
+});
+
+test("oversized input asks for an exact command without a model call", async () => {
+  let calls = 0;
+  const fetchImpl = async () => { calls++; throw new Error("Unexpected model call"); };
   assert.equal((await mentionRouter({ apiKey: "key", fetchImpl })({ ...command, text: "x".repeat(50_000) }, item, {}, context)).action, "clarify");
   assert.equal(calls, 0);
 });
@@ -122,7 +144,7 @@ test("Decisions usage is recorded without a response ID before handling refusals
   assert.equal((await refusal(command, item, {}, context, { onUsage: async (u) => { measured = u; } })).action, "clarify");
   assert.equal(measured.status, "reported");
   const measurements = [];
-  await mentionRouter() (command, item, {}, context, { onUsage: async (u) => measurements.push(u) });
+  await assert.rejects(mentionRouter()(command, item, {}, context, { onUsage: async (u) => measurements.push(u) }), (error) => error.code === "missing-secret");
   assert.equal(measurements[0].status, "not-requested");
 });
 
