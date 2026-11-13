@@ -4,15 +4,32 @@ import { runApiEffect, apiEffectId } from "../lib/api-journal.mjs";
 import { apiWriter } from "../lib/api-writer.mjs";
 import { validateLedger, evolve, admit } from "../lib/protocol.mjs";
 import { ingestCommands } from "../lib/commands.mjs";
+import { canonical } from "../lib/store.mjs";
 import { initial, at, run } from "./fixtures.mjs";
 function fixture() {
   let state = initial();
   const store = { load: async () => ({ state: structuredClone(state) }), transact: async (fn) => {
-    state = validateLedger(await fn(structuredClone(state))); return { state: structuredClone(state) };
+    state = JSON.parse(canonical(validateLedger(await fn(structuredClone(state))))); return { state: structuredClone(state) };
   } };
   return { store, get state() { return state; } };
 }
 const definition = { kind: "comment-create", target: 9, payload: { body: "Queued\n<!-- factory:status=issue:7/9 -->", marker: "<!-- factory:status=issue:7/9 -->" } };
+
+test("canonical ledger serialization preserves effect identity across recovery passes", async () => {
+  const f = fixture(); let sends = 0, present = false;
+  const d = { kind: "reaction", target: 9, payload: { id: 123, sourceKind: "issue-comment", content: "eyes" } };
+  const receipt = { kind: "reaction", target: 9, id: 456 };
+  const args = { store: f.store, key: "issue:7", slot: "ack", definition: d, run,
+    writer: { inspect: async () => present ? { outcome: "applied", receipt } : { outcome: "unknown" },
+      apply: async () => { if (++sends === 1) throw new Error("Response unknown"); present = true; return { outcome: "applied", receipt }; } } };
+  assert.equal((await runApiEffect({ ...args, now: () => at })).status, "pending");
+  const stored = f.state.items["issue:7"].apiEffects[apiEffectId("ack")].definition;
+  assert.notEqual(JSON.stringify(stored), JSON.stringify(d), "Exercise the real ledger's canonical key ordering");
+  assert.equal((await runApiEffect({ ...args, now: () => "2026-11-12T12:01:00Z" })).status, "applied");
+  assert.equal((await runApiEffect({ ...args, now: () => "2026-11-12T12:02:00Z" })).status, "applied");
+  assert.equal(sends, 2);
+  await assert.rejects(() => runApiEffect({ ...args, definition: { ...d, payload: { ...d.payload, id: 124 } } }), /identity/);
+});
 
 test("a lost comment response is recovered by identity without posting a duplicate", async () => {
   const f = fixture(); let applied = false, sends = 0;

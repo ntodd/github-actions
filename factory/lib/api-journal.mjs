@@ -1,6 +1,7 @@
 // The controller's GitHub API effects. They are separate from code publication:
 // a broken status surface cannot roll back a push or authorize another worker.
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { preflightRead, preflightId, recoveryNotice } from "./recovery.mjs";
 const object = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const positive = (v) => Number.isSafeInteger(v) && v > 0;
@@ -90,7 +91,7 @@ export async function runApiEffect({ store, key, slot, definition, run, writer, 
     if (!item || !validApiDefinition(definition, item)) throw new Error("API effect exceeds its recorded work item");
     item.apiEffects ??= {};
     if (item.apiEffects[id]) {
-      if (JSON.stringify(item.apiEffects[id].definition) !== JSON.stringify(definition)) throw new Error("An API effect identity cannot be reused for a different request");
+      if (!isDeepStrictEqual(item.apiEffects[id].definition, definition)) throw new Error("An API effect identity cannot be reused for a different request");
     } else item.apiEffects[id] = { id, slot, definition: structuredClone(definition), createdAt: now(), status: "prepared", requests: [], receipt: null };
     return s;
   });

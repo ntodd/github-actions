@@ -2,6 +2,7 @@
 // commit the returned ledger before executing an effect. Observations must come
 // from the controller's API adapter, never from event payloads or worker claims.
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { attachmentManifest, referencedAttachments, attachmentDescriptor } from "./attachments.mjs";
 import { validEffect, validReceipt, pullRequestText, expectedEffectHead, completionGaps, publicationDigest } from "./effects.mjs";
 import { validApiJournal } from "./api-journal.mjs";
@@ -373,7 +374,7 @@ export function evolve(ledger, key, event) {
       const previous = command.routingUsage?.[n];
       requireThat(!previous || event.usage.model === previous.model, "invalid", "Routing usage model changed");
       if (previous?.status !== "unknown" && previous !== undefined) {
-        requireThat(JSON.stringify(previous) === JSON.stringify(event.usage), "stale", "Measured routing usage cannot be replaced");
+        requireThat(isDeepStrictEqual(previous, event.usage), "stale", "Measured routing usage cannot be replaced");
         return ledger;
       }
       command.routingUsage ??= command.routingAttempts.map(() => ({ source: "responses-api", status: "unknown", model: "unknown", tokens: null, responseId: null }));
@@ -395,7 +396,7 @@ export function evolve(ledger, key, event) {
           reason: "Uncollected measurements remain unknown" };
       } else if (event.type === "record-execution") {
         requireThat(validExecution(event.usage, op), "invalid", "Execution measurement is invalid");
-        requireThat(!op.usage.execution || JSON.stringify(op.usage.execution) === JSON.stringify(event.usage), "stale", "Measured execution cannot be replaced");
+        requireThat(!op.usage.execution || isDeepStrictEqual(op.usage.execution, event.usage), "stale", "Measured execution cannot be replaced");
         op.usage.execution = event.usage;
       } else {
         const a = event.artifact;
@@ -404,7 +405,7 @@ export function evolve(ledger, key, event) {
           && /^sha256:[0-9a-f]{64}$/.test(a.digest) && (op.owner.status === "completed" || op.usage.execution),
           "provenance", "Usage artifact does not match its recorded owner");
         const model = workerUsage(event.metrics, op.worker.model ?? "unknown");
-        requireThat(!op.usage.model || JSON.stringify(op.usage.model) === JSON.stringify(model), "stale", "Measured model usage cannot be replaced");
+        requireThat(!op.usage.model || isDeepStrictEqual(op.usage.model, model), "stale", "Measured model usage cannot be replaced");
         op.usage.model = model;
         op.usage.modelArtifact = { id: a.id, digest: a.digest };
       }

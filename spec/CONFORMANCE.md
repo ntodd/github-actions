@@ -350,6 +350,14 @@ completion admission. Platform payloads, runner placement, rate limits and
 cache correctness remain outside these models; their adapter and live checks
 are still required.
 
+The sandbox also exposed a concrete serialization mismatch: the Git ledger
+sorts JSON object keys, but API-effect and measured-usage identity checks
+compared insertion-ordered JSON strings. Recovery now compares those objects
+structurally while retaining immutable payload/measurement guards. API journal
+fixtures use the actual canonical serializer, and regressions cover recovery
+after response loss, nested key reordering and rejection of changed values.
+This adapter correspondence defect is not a new abstract protocol transition.
+
 The implementation now includes a bounded controller I/O runner, a clean Git
 bundle publisher with a journaled draft-PR effect, a read-only Crew worker,
 an API-only update job and a reusable Actions workflow. Scenario tests drive

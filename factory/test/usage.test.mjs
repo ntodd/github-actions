@@ -6,6 +6,7 @@ import { ingestCommands, requestRoute, resolveRoute } from "../lib/commands.mjs"
 import { validateLedger } from "../lib/protocol.mjs";
 import { projectItem } from "../lib/surfaces.mjs";
 import { parseConfig } from "../lib/config.mjs";
+import { canonical } from "../lib/store.mjs";
 import { initial, claimed, step, reserve, operation, run, artifact, proposal, at } from "./fixtures.mjs";
 
 const metrics = { schemaVersion: 1, cost: 0.3, turns: 6, complete: true,
@@ -19,6 +20,17 @@ function storeFor(initialState) {
   }, get state() { return state; } };
 }
 const terminal = () => step(claimed(), { type: "owner-observed", run, status: "completed", conclusion: "failure" });
+
+test("persisted execution and model measurements accept identical recovery without replacing values", () => {
+  let state = terminal();
+  const events = [{ type: "record-execution", run, usage: execution(operation(state)) }, { type: "record-model-usage", run, artifact, metrics }];
+  for (const event of events) {
+    state = JSON.parse(canonical(step(state, event)));
+    assert.deepEqual(step(state, event), state);
+  }
+  assert.throws(() => step(state, { ...events[0], usage: { ...events[0].usage, jobId: "322" } }), /replaced/);
+  assert.throws(() => step(state, { ...events[1], metrics: { ...metrics, cost: 0.4 } }), /replaced/);
+});
 
 test("accounting accepts the configured model and runner length bounds", () => {
   const model = "m".repeat(256), runner = "r".repeat(128);
@@ -167,6 +179,7 @@ test("routing reservations remain counted through refusals, resolved commands an
     tokens: { input: 20, cachedInput: 10, output: 10, reasoningOutput: 4, total: 30 } };
   s = step(s, { type: "record-routing-usage", commandId, attempt: 1, usage });
   s = resolveRoute(s, "issue:7", commandId, "stop");
+  s = JSON.parse(canonical(s));
   assert.deepEqual(step(s, { type: "record-routing-usage", commandId, attempt: 1, usage }), s);
   assert.throws(() => step(s, { type: "record-routing-usage", commandId, attempt: 1, usage: { ...usage, responseId: "resp_other" } }), /replaced/);
   assert.equal(itemUsage(s, "issue:7").routingTokens.total, 30);
