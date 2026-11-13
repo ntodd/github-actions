@@ -37,7 +37,7 @@ jobs:
     # Only named worker dispatch completions need collection. Inspection,
     # migration and reconciliation completions must not queue another control.
     if: github.event_name != 'workflow_run' || github.event.workflow_run.path != '.github/workflows/factory.yml' || (github.event.workflow_run.event == 'workflow_dispatch' && github.event.workflow_run.display_title == 'factory worker')
-    runs-on: ubuntu-24.04
+    runs-on: crew-s
     timeout-minutes: 15
     concurrency:
       group: factory-control
@@ -203,7 +203,7 @@ jobs:
     name: factory-update
     needs: control
     if: needs.control.outputs.worker == 'true' && needs.control.outputs.mode == 'update'
-    runs-on: ubuntu-24.04
+    runs-on: crew-s
     timeout-minutes: 10
     concurrency:
       group: factory-item-${{ needs.control.outputs.item }}

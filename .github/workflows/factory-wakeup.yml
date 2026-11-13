@@ -7,7 +7,7 @@ permissions: {}
 
 jobs:
   wake-up:
-    runs-on: ubuntu-24.04
+    runs-on: crew-xs
     timeout-minutes: 3
     permissions:
       contents: read

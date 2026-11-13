@@ -298,6 +298,17 @@ reconcile and unnamed dispatch completions, while retaining worker and CI
 wake-ups. The regression failed before the fix; no protocol/model semantics
 changed.
 
+The owner changed the execution-placement requirement during rollout: every
+factory job must use Crew, including API-only work. The design now states that
+policy explicitly. Control and clean update use `crew-s`, review wake-ups use
+`crew-xs`, and the coding worker retains its configured runner (`crew-l` by
+default). Crew provides one disposable VM per job; the App credential remains
+only in the clean controller, which checks out pinned tooling rather than
+project code. A workflow-policy regression rejects the previous hosted runner
+placement and preserves those credential/checkout boundaries. Runner placement
+is outside the bounded Quint model; ownership and publication semantics are
+unchanged.
+
 The implementation now includes a bounded controller I/O runner, a clean Git
 bundle publisher with a journaled draft-PR effect, a read-only Crew worker,
 an API-only update job and a reusable Actions workflow. Scenario tests drive

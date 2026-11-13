@@ -100,9 +100,10 @@ does not occupy a Crew runner.
 - **PR-event workflows run the PR's copy of the workflow**
   (`pull_request_review`, for one). They get a hop with no secrets (see
   Trust).
-- **Claude runs only on Crew** (`crew-l`). Everything that only reads the
-  API or makes one call runs on GitHub's runners. Controller and publisher
-  jobs never execute project code. A worker's writable filesystem is
+- **Factory jobs run on Crew.** Claude defaults to `crew-l`; controller and
+  clean-update jobs use `crew-s`, and review wake-ups use `crew-xs`. Each job
+  gets its own disposable VM. Controller and publisher jobs never execute
+  project code. A worker's writable filesystem is
   discarded between jobs; credentials and caches are not shared with
   publisher jobs.
 - **Some things have to be in the repo's own workflow file:** the

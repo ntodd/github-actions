@@ -141,3 +141,19 @@ test("attachment credentials are forwarded only to the trusted entry and stay ou
   assert.equal(shared.jobs.control.steps.find((s) => s.id === "control").env.AGENT_ATTACH_TOKEN, "${{ secrets.AGENT_ATTACH_TOKEN }}");
   for (const role of ["worker", "update"]) assert.equal(JSON.stringify(shared.jobs[role]).includes("AGENT_ATTACH_TOKEN"), false);
 });
+
+test("factory execution uses separate Crew jobs while privileged credentials stay out of project execution", () => {
+  const runtime = parseDocument(readFileSync(new URL("../../.github/workflows/factory-runtime.yml", import.meta.url), "utf8")).toJS();
+  const wakeup = parseDocument(readFileSync(new URL("../../.github/workflows/factory-wakeup.yml", import.meta.url), "utf8")).toJS();
+  assert.equal(runtime.jobs.control["runs-on"], "crew-s");
+  assert.equal(runtime.jobs.update["runs-on"], "crew-s");
+  assert.equal(wakeup.jobs["wake-up"]["runs-on"], "crew-xs");
+  assert.equal(runtime.jobs.worker["runs-on"], "${{ needs.control.outputs.runner }}");
+  for (const job of [runtime.jobs.worker, runtime.jobs.update, wakeup.jobs["wake-up"]]) {
+    assert.equal(JSON.stringify(job).includes("AGENT_APP_PRIVATE_KEY"), false);
+  }
+  for (const step of runtime.jobs.control.steps.filter((s) => s.uses?.startsWith("actions/checkout@"))) {
+    assert.equal(step.with.repository, "${{ job.workflow_repository }}");
+    assert.equal(step.with["persist-credentials"], false);
+  }
+});
