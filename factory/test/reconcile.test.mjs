@@ -11,6 +11,14 @@ const facts = (extra = {}) => ({ authorization: observation.authorization, issue
 function decide(s = initial(), f = facts(), now = at, options = {}) { return decideItem(s, "issue:7", f, config, { now, ...options }); }
 const apply = (s, plan) => plan.events.reduce((x, e) => step(x, e), s);
 
+test("an unreadable main-CI result explains the observation failure instead of claiming CI is running", () => {
+  const reason = "Default-branch CI could not be observed completely";
+  const plan = decide(initial(), facts({ prs: [], main: { sha: "a".repeat(40), checks: { state: "pending", reason } } }));
+  assert.equal(plan.action, null);
+  assert.equal(plan.status.reason, reason);
+  assert.equal(plan.status.wait.kind, "main-ci");
+});
+
 test("explicit respond cannot exceed the response-round limit", () => {
   const state = ready();
   operation(state).phase = "failed";

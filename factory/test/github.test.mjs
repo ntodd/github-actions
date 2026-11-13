@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readClient } from "../lib/github.mjs";
+import { checkFacts } from "../lib/observe.mjs";
 const conn = (nodes, cursor = null) => ({ nodes, pageInfo: { hasNextPage: cursor !== null, endCursor: cursor } });
 function api(handler) {
   const calls = [];
@@ -10,6 +11,42 @@ function api(handler) {
     return handler(url, body, calls);
   } }) };
 }
+
+test("required CI remains visible when GitHub paginates checks through the verified numeric repository URL", async () => {
+  const sha = "a".repeat(40), root = "https://api.github.com/repos/ntodd/repo";
+  const { client, calls } = api((url) => {
+    if (url === root) return Response.json({ id: 42, full_name: "ntodd/repo" });
+    if (url.includes("/statuses")) return Response.json([]);
+    if (url.includes("/repositories/42/")) return Response.json({ check_runs: [
+      { id: 101, name: "Test", app: { id: 15368 }, head_sha: sha, status: "completed", conclusion: "success" },
+    ] });
+    return Response.json({ check_runs: Array.from({ length: 100 }, (_, i) => ({ id: i + 1, name: "factory", app: { id: 15368 },
+      head_sha: sha, status: "completed", conclusion: "skipped" })) }, { headers: {
+      link: `<https://api.github.com/repositories/42/commits/${sha}/check-runs?filter=latest&per_page=100&page=2>; rel="next"`,
+    } });
+  });
+  for (let i = 0; i < 2; i++) {
+    const raw = await client.checks(sha);
+    assert.equal(raw.checkRuns.length, 101);
+    assert.equal(checkFacts(raw, [{ name: "Test", appId: 15368 }]).state, "success");
+  }
+  assert.equal(calls.filter((c) => c.url === root).length, 1);
+});
+
+test("numeric pagination aliases must belong to the requested repository", async () => {
+  for (const target of ["https://api.github.com/repositories/99/issues/7/comments?page=2",
+    "https://api.github.com/repos/ntodd/other/issues/7/comments?page=2", "https://evil.example/repositories/42/issues/7/comments?page=2"]) {
+    const { client, calls } = api((url) => url === "https://api.github.com/repos/ntodd/repo"
+      ? Response.json({ id: 42, full_name: "ntodd/repo" }) : Response.json([], { headers: { link: `<${target}>; rel="next"` } }));
+    await assert.rejects(client.comments(7), /pagination/);
+    assert.equal(calls.some((c) => c.url === target), false);
+  }
+  const wrong = api((url) => url === "https://api.github.com/repos/ntodd/repo"
+    ? Response.json({ id: 42, full_name: "ntodd/other" })
+    : Response.json([], { headers: { link: '<https://api.github.com/repositories/42/issues/7/comments?page=2>; rel="next"' } }));
+  await assert.rejects(wrong.client.comments(7), /pagination/);
+  assert.equal(wrong.calls.some((c) => c.url.includes("/repositories/")), false);
+});
 
 test("migration closing references paginate completely and retain the exact PR identity and head", async () => {
   const head = "a".repeat(40), calls = [];

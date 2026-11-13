@@ -356,7 +356,7 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
     : "The requested maintenance is finished; ongoing work is not authorized", "work-command", key);
   if (!item.evidence.own && item.revisionPending && open.length) return reserve("respond", open[0]);
   if (!open.length && !item.evidence.own && facts.main?.checks && !facts.main.repairWork) {
-    if (facts.main.checks.state === "pending") return wait("agent-waiting", "Wait for current default-branch CI before building on it", "main-ci", facts.main.sha);
+    if (facts.main.checks.state === "pending") return wait("agent-waiting", facts.main.checks.reason ?? "Wait for current default-branch CI before building on it", "main-ci", facts.main.sha);
     if (facts.main.checks.state === "failure") {
       if (!facts.main.repairIssue) return mainQuestion(`The default branch fails at ${facts.main.sha}. Admit its repair issue first. A human repair issue can end with <!-- factory:repair-base=${facts.main.sha} -->; registered main-red producers use that SHA as their source key.`);
       const target = `${facts.main.sha}:${facts.main.repairIssue}`, due = item.status?.wait?.kind === "main-green" && item.status.wait.target === target

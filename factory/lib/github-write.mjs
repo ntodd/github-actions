@@ -4,10 +4,23 @@ import { GitHubError } from "./store.mjs";
 export function writeClient({ token, repo, apiUrl = "https://api.github.com", fetch = globalThis.fetch }) {
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error("Invalid repository");
   const root = `${apiUrl}/repos/${repo}`, origin = new URL(apiUrl).origin;
+  let canonicalRoot;
   const headers = { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "factory" };
   async function call(method, path, body) {
     const url = path.startsWith("https://") ? path : `${root}${path}`;
-    if (new URL(url).origin !== origin || !new URL(url).href.startsWith(`${root}/`)) throw new Error("Unexpected GitHub API target");
+    const target = new URL(url);
+    if (target.origin !== origin) throw new Error("Unexpected GitHub API target");
+    let sameRepository = target.href.startsWith(`${root}/`) || method === "GET" && target.href === root;
+    if (!sameRepository && method === "GET" && target.href.startsWith(`${apiUrl}/repositories/`)) {
+      if (canonicalRoot === undefined) {
+        const { data } = await call("GET", "");
+        if (Number.isSafeInteger(data.id) && data.id > 0 && data.full_name?.toLowerCase() === repo.toLowerCase()) {
+          canonicalRoot = `${apiUrl}/repositories/${data.id}/`;
+        }
+      }
+      sameRepository = canonicalRoot !== undefined && target.href.startsWith(canonicalRoot);
+    }
+    if (!sameRepository) throw new Error("Unexpected GitHub API target");
     const res = await fetch(url, { method, headers: body ? { ...headers, "content-type": "application/json" } : headers,
       ...(body ? { body: JSON.stringify(body) } : {}) });
     if (!res.ok) throw new GitHubError(res.status, method, new URL(url).pathname);

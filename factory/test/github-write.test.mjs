@@ -9,6 +9,22 @@ function fixture(handler) {
   } });
   return { api, calls };
 }
+
+test("receipt inventories follow only verified same-repository numeric pagination aliases", async () => {
+  const root = "https://api.github.com/repos/ntodd/project";
+  const next = "https://api.github.com/repositories/42/issues/7/comments?page=2";
+  const f = fixture((url) => url === root ? Response.json({ id: 42, full_name: "ntodd/project" })
+    : url === next ? Response.json([{ id: 2 }]) : Response.json([{ id: 1 }], { headers: { link: `<${next}>; rel="next"` } }));
+  for (let i = 0; i < 2; i++) assert.deepEqual(await f.api.comments(7), [{ id: 1 }, { id: 2 }]);
+  assert.equal(f.calls.filter((c) => c.url === root).length, 1);
+  for (const target of [next.replace("/42/", "/99/"), next.replace("api.github.com", "evil.example"),
+    "https://api.github.com/repos/ntodd/other/issues/7/comments?page=2"]) {
+    const wrong = fixture((url) => url === root ? Response.json({ id: 42, full_name: "ntodd/project" })
+      : Response.json([], { headers: { link: `<${target}>; rel="next"` } }));
+    await assert.rejects(wrong.api.comments(7), /target|pagination/);
+    assert.equal(wrong.calls.some((c) => c.url === target), false);
+  }
+});
 test("reaction endpoints distinguish conversation and review comments and reject injected identities", async () => {
   const f = fixture(() => Response.json({ id: 1, content: "eyes" }));
   await f.api.react("issue-comment", 12, "eyes"); await f.api.react("review-comment", 34, "eyes");

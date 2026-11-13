@@ -10,6 +10,7 @@ export function readClient({ token, repo, apiUrl = "https://api.github.com", fet
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error("Invalid repository");
   const [owner, name] = repo.split("/");
   const origin = new URL(apiUrl).origin, root = `${apiUrl}/repos/${repo}`;
+  let repositoryId;
   const headers = { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "factory" };
   async function request(url, method = "GET", body) {
     if (new URL(url).origin !== origin) throw new Error("Refusing to send GitHub credentials to another origin");
@@ -18,11 +19,24 @@ export function readClient({ token, repo, apiUrl = "https://api.github.com", fet
     if (!res.ok) throw new GitHubError(res.status, method, new URL(url).pathname);
     return { res, data: await res.json() };
   }
+  async function repository() {
+    const { data } = await request(root);
+    if (positive(data.id) && data.full_name?.toLowerCase() === repo.toLowerCase()) repositoryId = String(data.id);
+    return data;
+  }
   async function list(path, pick = (data) => data, limit = 1000000) {
     let next = `${root}${path}${path.includes("?") ? "&" : "?"}per_page=100`;
     const seen = new Set(), all = [];
     while (next) {
-      if (seen.has(next) || seen.size >= 10000 || !new URL(next).href.startsWith(`${root}/`)) throw new Error("Invalid or excessive GitHub pagination");
+      const target = new URL(next);
+      let sameRepository = target.href.startsWith(`${root}/`);
+      // GitHub's Link header uses its numeric repository URL on later pages.
+      // Verify that ID through the original repository before following it.
+      if (!sameRepository && target.origin === origin && target.href.startsWith(`${apiUrl}/repositories/`)) {
+        if (repositoryId === undefined) await repository();
+        sameRepository = repositoryId !== undefined && target.href.startsWith(`${apiUrl}/repositories/${repositoryId}/`);
+      }
+      if (seen.has(next) || seen.size >= 10000 || !sameRepository) throw new Error("Invalid or excessive GitHub pagination");
       seen.add(next);
       const { res, data } = await request(next), values = pick(data);
       if (!Array.isArray(values)) throw new Error("Malformed GitHub list response");
@@ -97,7 +111,7 @@ export function readClient({ token, repo, apiUrl = "https://api.github.com", fet
   }
   return {
     apiUrl,
-    repository: async () => (await request(root)).data,
+    repository,
     workflows: () => list("/actions/workflows", (data) => data.workflows, 1000),
     liveWorkflowRuns: async (id) => {
       if (!Number.isSafeInteger(id) || id < 1) throw new Error("Invalid workflow identity");

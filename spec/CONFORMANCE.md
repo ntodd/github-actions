@@ -647,3 +647,11 @@ closed; a missing record or incomplete inventory withholds activation.
 The closing-reference reader has complete-pagination and exact-head scenarios.
 Its live sandbox probe could not authenticate: local `gh` credentials were
 rejected with HTTP 401. This supplies no positive live evidence for that reader.
+
+GitHub pagination is outside the Quint projection. Regression scenarios retain
+required CI beyond 100 check runs and accept numeric `/repositories/<id>/`
+pagination only after verifying the original repository's ID and name. Both
+read and receipt adapters reject other repositories and origins. A read-only
+probe of Next main `a397ced37caee6efe0d692fe3f85fcce3b8d0125` retrieved 131
+checks, including successful required `Test` from App 15368 on page two.
+Observation failures now retain their reason instead of claiming CI is running.
