@@ -2,7 +2,7 @@
 // branch. In particular, a PR-context review hop cannot mint the App token.
 export function controllerWakeup(eventName, event) {
   return eventName !== "workflow_run" || event?.workflow_run?.path !== ".github/workflows/factory.yml"
-    || event.workflow_run.event === "workflow_dispatch";
+    || event.workflow_run.event === "workflow_dispatch" && event.workflow_run.display_title === "factory worker";
 }
 
 export async function verifyEntry({ api, env, context }) {

@@ -69,13 +69,16 @@ test("mismatched, suspended, overprivileged and incomplete installations do not 
 test("inspection is an exact internal request and controller-completion events do not allocate more controllers", () => {
   assert.deepEqual(parseRequest('{"kind":"inspect"}'), { kind: "inspect" });
   for (const value of [{ kind: "inspect", target: 7 }, { kind: "inspect", item: "issue:7" }, { kind: "inspect", operation: "op-1" }]) assert.throws(() => parseRequest(JSON.stringify(value)));
-  assert.equal(controllerWakeup("workflow_run", { workflow_run: { path: ".github/workflows/factory.yml", event: "workflow_dispatch" } }), true);
+  assert.equal(controllerWakeup("workflow_run", { workflow_run: { path: ".github/workflows/factory.yml", event: "workflow_dispatch", display_title: "factory worker" } }), true);
+  for (const display_title of ["factory reconcile", "factory", undefined]) {
+    assert.equal(controllerWakeup("workflow_run", { workflow_run: { path: ".github/workflows/factory.yml", event: "workflow_dispatch", display_title } }), false);
+  }
   for (const event of ["workflow_run", "issue_comment", "push", "schedule"]) {
     assert.equal(controllerWakeup("workflow_run", { workflow_run: { path: ".github/workflows/factory.yml", event } }), false);
   }
   assert.equal(controllerWakeup("workflow_run", { workflow_run: { path: ".github/workflows/ci.yml", event: "push" } }), true);
   const shared = parseDocument(readFileSync(new URL("../../.github/workflows/factory-runtime.yml", import.meta.url), "utf8")).toJS();
-  assert.equal(shared.jobs.control.if, "github.event_name != 'workflow_run' || github.event.workflow_run.path != '.github/workflows/factory.yml' || github.event.workflow_run.event == 'workflow_dispatch'");
+  assert.equal(shared.jobs.control.if, "github.event_name != 'workflow_run' || github.event.workflow_run.path != '.github/workflows/factory.yml' || (github.event.workflow_run.event == 'workflow_dispatch' && github.event.workflow_run.display_title == 'factory worker')");
 });
 
 test("the real controller inspection entry performs GETs only, emits no worker, and exports no credential or state", (t) => {

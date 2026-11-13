@@ -7,11 +7,14 @@ import { parseDocument } from "../vendor/yaml.mjs";
 
 test("the control job rejects controller completions and accepts worker completions", () => {
   const workflow = parseDocument(readFileSync(new URL("../../.github/workflows/factory-runtime.yml", import.meta.url), "utf8")).toJS();
-  const accepts = (eventName, path, event) => Function("github", `return (${workflow.jobs.control.if});`)({
-    event_name: eventName, event: { workflow_run: { path, event } },
+  assert.equal(workflow.jobs.control.concurrency["cancel-in-progress"], false);
+  const accepts = (eventName, path, event, display_title = "factory worker") => Function("github", `return (${workflow.jobs.control.if});`)({
+    event_name: eventName, event: { workflow_run: { path, event, display_title } },
   });
   assert.equal(accepts("workflow_run", ".github/workflows/factory.yml", "workflow_run"), false);
   assert.equal(accepts("workflow_run", ".github/workflows/factory.yml", "workflow_dispatch"), true);
+  assert.equal(accepts("workflow_run", ".github/workflows/factory.yml", "workflow_dispatch", "factory reconcile"), false);
+  assert.equal(accepts("workflow_run", ".github/workflows/factory.yml", "workflow_dispatch", "factory"), false);
   assert.equal(accepts("workflow_run", ".github/workflows/ci.yml", "push"), true);
   assert.equal(accepts("issue_comment", undefined, undefined), true);
 });
@@ -70,15 +73,27 @@ test("worker completion has its own thin caller and neither workflow listens to 
     assert.equal(main.jobs.factory.with["completion-entry"], undefined);
     assert.deepEqual(completion.jobs.factory.permissions, main.jobs.factory.permissions);
     assert.deepEqual(completion.jobs.factory.secrets, main.jobs.factory.secrets);
-    const accepts = (path, event) => Function("github", `return (${completion.jobs.factory.if});`)({
-      event_name: "workflow_run", event: { workflow_run: { path, event } },
+    const accepts = (path, event, display_title = "factory worker") => Function("github", `return (${completion.jobs.factory.if});`)({
+      event_name: "workflow_run", event: { workflow_run: { path, event, display_title } },
     });
     assert.equal(accepts(".github/workflows/factory.yml", "workflow_dispatch"), true);
+    assert.equal(accepts(".github/workflows/factory.yml", "workflow_dispatch", "factory reconcile"), false);
     assert.equal(accepts(".github/workflows/factory.yml", "workflow_run"), false);
     assert.equal(accepts(".github/workflows/ci.yml", "workflow_dispatch"), false);
     assert.equal(accepts(".github/workflows/factory-completion.yml", "workflow_dispatch"), false);
     assert.ok(Object.values(completion.jobs).every((job) => job.steps === undefined));
   }
+});
+
+test("only a worker request receives the completion wake-up run name", () => {
+  const caller = parseDocument(callerWorkflow({ defaultBranch: "main", ciWorkflows: ["CI"] })).toJS();
+  assert.equal(typeof caller["run-name"], "string");
+  const expression = caller["run-name"].replace(/^\$\{\{\s*|\s*\}\}$/g, "");
+  const title = (kind, event_name = "workflow_dispatch") => Function("github", "inputs", "fromJSON", `return (${expression});`)(
+    { event_name }, { request: kind ? JSON.stringify({ kind }) : "" }, JSON.parse);
+  assert.equal(title("worker"), "factory worker");
+  for (const kind of ["inspect", "reconcile", "migrate", null]) assert.equal(title(kind), "factory reconcile");
+  assert.equal(title(null, "issues"), "factory reconcile");
 });
 
 test("active callers ignore the verified App's status surfaces without suppressing workers or feedback", () => {

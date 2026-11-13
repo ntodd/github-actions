@@ -287,6 +287,17 @@ remain enabled. The regression reproduces the suppressed and retained event
 classes and failed before the fix. This changes routing, not protocol or Quint
 semantics; the ledger representation and its measured read cost are unchanged.
 
+Canceled reconciliation dispatch `43349718541` also exposed redundant completion
+jobs competing with real worker requests. The generated primary caller now
+names worker dispatches `factory worker` and all other runs `factory reconcile`.
+Both the completion caller and the shared control job require the worker name
+before entering control concurrency; the in-code wake-up guard agrees. The
+name is only a scheduling hint: collection still requires recorded ownership
+and verified run/artifact provenance. Regressions reject inspection, migration,
+reconcile and unnamed dispatch completions, while retaining worker and CI
+wake-ups. The regression failed before the fix; no protocol/model semantics
+changed.
+
 The implementation now includes a bounded controller I/O runner, a clean Git
 bundle publisher with a journaled draft-PR effect, a read-only Crew worker,
 an API-only update job and a reusable Actions workflow. Scenario tests drive

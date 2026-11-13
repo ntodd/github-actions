@@ -34,9 +34,9 @@ permissions: {}
 jobs:
   control:
     name: factory-control
-    # Only dispatched worker completions need collection. Controller/CI-event
-    # completions must not allocate another controller in a wake-up chain.
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.path != '.github/workflows/factory.yml' || github.event.workflow_run.event == 'workflow_dispatch'
+    # Only named worker dispatch completions need collection. Inspection,
+    # migration and reconciliation completions must not queue another control.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.path != '.github/workflows/factory.yml' || (github.event.workflow_run.event == 'workflow_dispatch' && github.event.workflow_run.display_title == 'factory worker')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     concurrency:
