@@ -7,10 +7,11 @@
   },
   "scripts": {
     "test": "node --test",
-    "model:check": "quint typecheck spec/factory.qnt && quint test spec/factory.qnt --backend=rust --max-samples=1",
-    "model:simulate": "npm run model:chaos && npm run model:recovery",
+    "model:check": "quint typecheck spec/factory.qnt && quint test spec/factory.qnt --backend=rust --max-samples=1 && quint typecheck spec/scheduling.qnt && quint test spec/scheduling.qnt --backend=rust --max-samples=1",
+    "model:simulate": "npm run model:chaos && npm run model:recovery && npm run model:scheduling",
     "model:chaos": "quint run spec/factory.qnt --backend=rust --invariant=safety --max-samples=10000 --max-steps=100 --n-threads=1 --seed=20261111 --verbosity=1 --witnesses duplicateDelivery recoveredPush staleRejected stoppedWithLiveWorker budgetExhausted partialCompletion fullCompletion artifactExpired latePushAfterStop baseMovedBeforePush",
     "model:recovery": "quint run spec/factory.qnt --backend=rust --invariant=safety --max-samples=10000 --max-steps=100 --n-threads=1 --seed=20261111 --verbosity=1 --step=recoveryStep --witnesses recoveredPush partialCompletion fullCompletion",
+    "model:scheduling": "quint run spec/scheduling.qnt --backend=rust --invariant=safety --max-samples=10000 --max-steps=100 --n-threads=1 --seed=20261111 --verbosity=1 --witnesses ignoredWakeup displacedWorker lostRequest recoveredDispatch exhaustedDispatch collectedResult",
     "model:replay": "node spec/replay.mjs",
     "vendor:build": "node factory/build/vendor.mjs",
     "vendor:check": "node factory/build/vendor.mjs --check"

@@ -1,9 +1,10 @@
 # Design and model conformance
 
 This is a manual semantic audit of [DESIGN.md](../DESIGN.md) against
-[factory.qnt](factory.qnt), not a proof that the two are equivalent.
-The model covers a bounded ownership and publishing protocol within the
-design. It does not model the entire issue-handling system.
+[factory.qnt](factory.qnt) and [scheduling.qnt](scheduling.qnt), not a proof
+that they are equivalent. The models cover bounded ownership, publishing,
+controller queue admission and dispatch recovery within the design.
+They do not model the entire issue-handling system.
 
 ## Corrections from the audit
 
@@ -41,6 +42,7 @@ properties checked on sampled traces, not that every trace is proved safe.
 | Design contract | Model actions and properties | Scenario tests |
 | --- | --- | --- |
 | [Dispatch and recovery](../DESIGN.md#dispatch-and-recovery): reserve before dispatch; duplicate delivery does not allocate a second owner or budget | `reserve`, `dispatch`, `claim`, `rejectDelivery`; `oneOwner`, `boundedAttempts` | `duplicateDispatchTest`, `changedHeadCannotClaimTest`, `deadWorkerRetryTest` |
+| Controller queue admission and recovery before claim | `scheduling.qnt`: `arrive`, `deliver`, `cancelPending`, `crashControl`, `dispatch`, `ask`; `filteredBeforeQueue`, `boundedDispatch`, `oneOwner` | `selfSurfacesPreserveWorkerTest`, `nonWorkerCompletionsPreserveWorkerTest`, `displacedWorkerRetriesSameReservationTest`, `exhaustedDispatchesAskTest`, `lostCompletionBackstopCollectsTest` |
 | A queued owner still owns the operation; cancellation request is not termination | `live`, `running`, `requestCancellation`, `crashWorker`, `recoverDeadWorker`; `oneOwner` | `queuedOwnerCannotBeReplacedTest`, `deadWorkerRetryTest` |
 | Stop invalidates new work from the old generation; it waits for a live publisher's lock | `stop`, `resume`, `discardStale`, `authorizePublish`, `push`; `authorizedPublishRequests` | `stopFencesResultTest`, `stopWaitsForPublisherTest`, `noNewRequestAfterStopTest` |
 | [Worker contract](../DESIGN.md#worker-contract-and-releasing-crew): workers return artifacts, controller advances state | `uploadResult`, `finishWorker`, `collectResult`; `acceptedResultHasOwner`, `waitsReleaseCrew` | `workerCannotAdvanceLedgerTest`, `crashAfterArtifactUploadTest` |
@@ -63,7 +65,7 @@ properties checked on sampled traces, not that every trace is proved safe.
 | --- | --- | --- |
 | Accepted issues and PR membership | Starts with one authorized issue and two known required PRs | Admission, content revisions, grouped-issue authority, PR creation, membership changes |
 | Durable Git ledger | State transitions stand for successful atomic ledger transactions; the long publisher lock is explicit | Git ref conflicts, schema migration, missing/corrupt state, real branch protections or storage durability |
-| Controller serialization | An unlocked controller action executes atomically; other controller actions wait while `locked` | Actual Actions concurrency semantics, multiple repositories/items, pending-job replacement or discovery of lost commands |
+| Controller serialization | `factory.qnt` abstracts atomic controller actions and the publisher lock. `scheduling.qnt` separately represents one active/one pending control job, pending replacement and pre-queue filtering | Actual Actions enforcement, multiple repositories/items or discovery of lost commands. The two models are separate projections, not a composed whole-system proof |
 | Run identity and artifact provenance | `(operation, runId)` represents a unique operation and complete run/attempt identity | GitHub identity authentication, artifact digests, schema/content validation, token isolation or forged API responses |
 | Publishing | One proposed commit and one branch effect per operation; no force pushes; an uncertain remote request remains pending | Multi-effect publishes, comment/PR deduplication, attachments, branch creation, repository hooks, actual API consistency |
 | Expected-head update | `applyPush` atomically checks the PR head; main and ledger are separate | That a chosen GitHub adapter implements this guard correctly; sandbox tests must establish it |
@@ -327,6 +329,26 @@ executing/configuration commit. Missing event identity, a reopened PR, a moved
 default head and mismatched repository/head/base facts remain rejected. The
 existing open-PR entry checks are retained. This is adapter coverage outside
 the Quint model, with a regression that failed on the prior implementation.
+
+The live pre-claim cancellations exposed an omission in the original ownership
+model. [`scheduling.qnt`](scheduling.qnt) now represents the Actions controller
+queue, pending-job replacement, lost dispatch delivery, cancellation/crash
+before claim, durable dispatch backoff and exhaustion, and lost completion
+wake-ups. Thirteen named scenarios exercise those failures and recovery;
+the sampled profile explores 10,000 traces of up to 100 steps. Progress still
+requires a delivered backstop, available APIs and eventual scheduling; neither
+model proves fairness or inevitable completion.
+
+[`scheduling-replay.mjs`](scheduling-replay.mjs) compares the model's twelve
+event classes with the generated caller subscriptions, job filters and worker
+run-name, the shared job filter and the in-code completion guard. It feeds
+dispatch, claim, exhaustion and collection through the actual reconciler and
+reducer and compares durable state after every transition. Queue replacement
+does not create another coding reservation or retire its owner. Temporary
+weakened variants were rejected for both App surface admission and non-worker
+completion admission. Platform payloads, runner placement, rate limits and
+cache correctness remain outside these models; their adapter and live checks
+are still required.
 
 The implementation now includes a bounded controller I/O runner, a clean Git
 bundle publisher with a journaled draft-PR effect, a read-only Crew worker,

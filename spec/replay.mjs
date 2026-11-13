@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { admit, emptyLedger, evolve, revisionOf } from "../factory/lib/protocol.mjs";
 import { completionGaps, publicationDigest, landedCommits } from "../factory/lib/effects.mjs";
+import { replayScheduling } from "./scheduling-replay.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), "factory-replay-"));
@@ -162,4 +163,5 @@ try {
   const files = readdirSync(dir).filter((file) => file.endsWith(".json"));
   const transitions = files.reduce((sum, file) => sum + replay(join(dir, file)), 0);
   console.log(`Replayed ${files.length} Quint traces and ${transitions} lifecycle transitions through the controller protocol.`);
+  replayScheduling({ dir, run, decode });
 } finally { rmSync(dir, { recursive: true, force: true }); }

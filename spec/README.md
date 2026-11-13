@@ -1,7 +1,9 @@
 # Factory model
 
 `factory.qnt` models the ownership and publishing protocol in
-[DESIGN.md](../DESIGN.md). It uses Quint's lightweight Rust simulator;
+[DESIGN.md](../DESIGN.md). `scheduling.qnt` models the controller queue,
+event filters and recovery of worker deliveries before claim.
+Both use Quint's lightweight Rust simulator;
 there is no JVM, TLC, Apalache or running service required.
 The [conformance audit](CONFORMANCE.md) maps modeled contracts to scenarios
 and lists every abstraction boundary. The full design is not modeled.
@@ -17,10 +19,12 @@ npm run model:replay
 
 Quint is pinned in `package-lock.json`. The CLI fetches its matching Rust
 evaluator on first use. Set `QUINT_HOME` if its cache should live elsewhere.
-Both simulation profiles explicitly select `--backend=rust`, a fixed seed,
+All three simulation profiles explicitly select `--backend=rust`, a fixed seed,
 one thread, 10,000 samples each and 100 steps per sample. The hostile profile
 changes inputs and stops workers; the recovery profile keeps inputs stable
-while retaining duplicate deliveries and publisher crashes. A seed does not
+while retaining duplicate deliveries and publisher crashes. The scheduling
+profile explores lost requests, pending-job replacement, controller crashes,
+filtered events, dispatch backoff and result collection. A seed does not
 replace `--max-samples`: without that option Quint runs only one seeded sample.
 
 To explore another seed or save a trace:
@@ -84,6 +88,25 @@ main changes during publication.
 
 ## Limits and assumptions
 
+The scheduling model starts with one reserved operation and explicitly
+represents Actions' default one running/one pending control job. A new
+admitted job replaces the pending job. The factory App's status surfaces and
+non-worker controller completions are filtered before that queue; returning
+from Node after admission would be too late. Other valid events can still
+displace a worker delivery. The reservation survives, redispatch uses the same
+operation, and three exhausted requests lead to a question. A scheduled
+backstop can also collect a result whose completion wake-up was lost.
+
+Scheduling replay executes the actual generated callers' job filters,
+subscriptions and run-name expression, the shared control filter and the
+in-code completion guard. It checks dispatch/collection decisions against
+`decideItem` and phase, owner, request count and questions against `evolve`.
+It covers twelve event classes, not every GitHub payload or reconciler branch.
+Queue behavior is an explicit platform assumption, supported by live failures;
+Quint cannot establish what GitHub actually delivers. Runner isolation, REST
+response shapes, permissions, rate-limit headers and immutable-object cache
+correctness remain adapter and live tests.
+
 This is sampled exploration of a design, not exhaustive verification or a
 test of the current JavaScript implementation. It does not prove liveness:
 random exploration may stop making progress forever. Progress requires
@@ -111,5 +134,6 @@ Keep GitHub sandbox tests for protections, identity, artifact provenance,
 event delivery, actual compare-and-update behavior and approval semantics.
 The replay command runs named Quint scenarios and sampled traces through
 the real operation protocol and compares its durable state projection at
-every step. This establishes correspondence for that protocol, not for
-the future full reconciler or live GitHub API adapters.
+every step. Scheduling traces additionally check workflow routing and the
+dispatch/collection decision table. This establishes correspondence for those
+contracts, not the full reconciler or live GitHub API adapters.
