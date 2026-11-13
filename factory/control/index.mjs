@@ -114,5 +114,6 @@ main(async () => {
     publish: cleanPublisher({ api, write, store, actions, repo, readToken: env.GITHUB_TOKEN, writeToken: token,
       appLogin, serverUrl: env.GITHUB_SERVER_URL, assertRuntime, attachmentToken }),
   });
+  console.log(JSON.stringify(result, null, 2));
   summary(`Factory ${dryRun ? "read-only plan" : "controller pass"}\n\n${JSON.stringify(result, null, 2)}`);
 });

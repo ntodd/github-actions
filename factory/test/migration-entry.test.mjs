@@ -116,6 +116,8 @@ globalThis.fetch=async(url,options={})=>{const path=new URL(url).pathname, metho
   const runtime = execute({ kind: "reconcile" }, "runtime", { FACTORY_DRY_RUN: "false", ACTIVE_RUNTIME: "true" });
   assert.equal(runtime.result.status, 0, runtime.result.stderr);
   assert.equal(runtime.report.outcomes.some((o) => o.status === "interrupted"), false);
+  assert.ok(runtime.result.stdout.endsWith(JSON.stringify(runtime.report, null, 2) + "\n"));
+  assert.doesNotMatch(runtime.result.stdout, /PRIVATE KEY|private-job-token/);
   const mint = runtime.observed.requests.findIndex((r) => r.path.endsWith("/access_tokens"));
   assert.ok(mint > 0);
   assert.ok(runtime.observed.requests.slice(0, mint).some((r) => r.path.endsWith("/actions/runs/100/attempts/1") && r.credential === "job"));

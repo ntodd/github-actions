@@ -95,6 +95,31 @@ test("accepted dispatch receipts survive a later pass without redispatching a qu
   assert.equal(f.state.items["issue:7"].attempts.length, 1);
 });
 
+test("acknowledged work dispatches before repository status projection", async () => {
+  const f = fixture(), order = [];
+  const result = await f.pass({ maxPasses: 1,
+    write: { dispatch: async () => { order.push("dispatch"); return { id: "500", attempt: 1 }; } },
+    surfaces: { acknowledge: async () => { order.push("acknowledge"); return []; }, render: async (state) => {
+      order.push("render");
+      assert.equal(state.operations["op-1"]?.dispatch.attempts[0].run.id, "500");
+    } },
+  });
+  assert.deepEqual(order, ["acknowledge", "dispatch", "render"]);
+  assert.equal(result.outcomes.some((o) => o.status === "interrupted"), false);
+});
+
+test("publication waits retain the adapter diagnostic without exposing its error properties", async () => {
+  const f = fixture(); await f.pass();
+  await claimOperation({ api: f.api, store: f.store, repo: "ntodd/project", itemKey: "issue:7", operationId: "op-1", run,
+    context: { sha: A, defaultBranch: "main", config: {} } });
+  f.finish(); await f.pass({ maxPasses: 1 });
+  const error = Object.assign(new Error("Attachment response did not contain a receipt"), { requestBody: "private" });
+  const result = await f.pass({ maxPasses: 1, publish: async () => ({ status: "waiting", reason: "Publication interrupted", error }) });
+  const outcome = result.outcomes.find((o) => o.action === "publish");
+  assert.equal(outcome.error, error.message);
+  assert.doesNotMatch(JSON.stringify(result), /private|requestBody/);
+});
+
 test("a later accepted dispatch retains the reservation's original queue deadline", async () => {
   const f = fixture(), delivery = { id: "500", attempt: 1 };
   let calls = 0;
@@ -116,9 +141,10 @@ test("handover and review-bot readiness keep the observed head when a push races
     f.finish(); await f.pass({ maxPasses: 1 }); await f.pass({ maxPasses: 1 });
     assert.equal(f.state.operations["op-1"].phase, "done");
     let calls = 0, changed = false;
-    const surfaces = { acknowledge: async () => [], render: async () => {
+    const surfaces = { acknowledge: async () => {
       if (!changed) { f.pr.head.sha = D; changed = true; }
-    }, handover: async () => { calls++; return { status: "applied" }; } };
+      return [];
+    }, render: async () => {}, handover: async () => { calls++; return { status: "applied" }; } };
     let extra = {};
     if (readyOnly) extra = { observe: async () => ({ authorization: { valid: true, revision: f.state.items["issue:7"].revision },
       feedback: [], prs: [{ number: 9, state: "open", headSha: C, baseSha: A, mergeable: "MERGEABLE", draft: true,

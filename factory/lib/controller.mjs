@@ -143,9 +143,10 @@ export async function runController({ api, write, store, actions, repo, toolingS
   await store.transact(decide);
   const outcomes = [];
   outcomes.push(...discoveryErrors.map((error) => ({ action: "discover", status: "interrupted", ...error })));
+  // Acknowledge commands before work; project repository status once after
+  // immediate transitions so metadata refreshes cannot consume dispatch time.
   if (surfaces) {
     outcomes.push(...await surfaces.acknowledge());
-    await surfaces.render((await store.load()).state, context, outcomes);
   }
   const save = (key, event) => store.transact((s) => evolve(s, key, { at: now(), ...event }));
   for (const { key, action } of plans) {
@@ -256,7 +257,8 @@ export async function runController({ api, write, store, actions, repo, toolingS
           if (!publish) throw new Error("The clean publisher adapter is required");
           const result = await publish({ key, operationId: op.id, context, run });
           if (result?.status === "waiting") {
-            outcomes.push({ key, action: action.type, status: "waiting", reason: result.reason });
+            outcomes.push({ key, action: action.type, status: "waiting", reason: result.reason,
+              ...(result.error ? { error: result.error.message } : {}) });
             continue;
           }
           break;
