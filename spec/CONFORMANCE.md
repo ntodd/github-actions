@@ -309,6 +309,16 @@ placement and preserves those credential/checkout boundaries. Runner placement
 is outside the bounded Quint model; ownership and publication semantics are
 unchanged.
 
+Live controller failures exposed the cost of rereading every ledger object on
+every transaction. The data adapter now keeps a per-job cache of immutable Git
+objects addressed by SHA, capped at 32 MiB and 20,000 entries. Ref reads remain
+uncached, cached values are copied, and failed reads and writes are never
+cached or blindly retried. The ledger layout, CAS and unknown-write recovery
+are unchanged. The measured cold costs remain 5 GETs for one item and 205 with
+200 historical operations; a subsequent no-op transaction takes 1 GET in both
+cases. Errors expose only selected numeric rate-limit headers and a fixed
+quota classification, never response text or credentials.
+
 The implementation now includes a bounded controller I/O runner, a clean Git
 bundle publisher with a journaled draft-PR effect, a read-only Crew worker,
 an API-only update job and a reusable Actions workflow. Scenario tests drive

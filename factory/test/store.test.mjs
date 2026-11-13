@@ -90,9 +90,48 @@ test("ledger reads report GET counts for one item and 200 historical operations"
     assert.equal(loadCount, 5 + operations);
     requests.length = 0;
     await measured.transact((s) => s);
-    assert.equal(requests.length, loadCount);
+    assert.equal(requests.length, 1);
+    assert.match(requests[0], /\/git\/ref\/heads\/factory-state$/);
     t.diagnostic(`1 item, ${operations} operations: load=${loadCount} GETs; no-op transact=${requests.length} GETs`);
   }
+});
+
+test("immutable Git object reads are cached without caching refs or sharing mutable response objects", async () => {
+  const a = "a".repeat(40), b = "b".repeat(40), calls = [];
+  let tip = a;
+  const git = githubData({ token: "secret", repo: "ntodd/project", fetch: async (url) => {
+    calls.push(url);
+    return Response.json(url.includes("/git/ref/") ? { object: { sha: tip } } : { tree: { sha: a } });
+  } });
+  const first = await git.commit(a); first.tree.sha = b;
+  assert.equal((await git.commit(a)).tree.sha, a);
+  assert.equal(calls.length, 1);
+  assert.equal(await git.ref("factory-state"), a);
+  tip = b;
+  assert.equal(await git.ref("factory-state"), b);
+  assert.equal(calls.length, 3);
+  await git.commit(b);
+  assert.equal(calls.length, 4);
+});
+
+test("failed immutable reads are not cached and rate diagnostics never expose response text or credentials", async () => {
+  const a = "a".repeat(40); let reads = 0;
+  const git = githubData({ token: "private-token", repo: "ntodd/project", fetch: async () => {
+    reads++;
+    return reads === 1 ? Response.json({ message: "private-server-detail" }, { status: 403,
+      headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1794538800" } }) : Response.json({ tree: { sha: a } });
+  } });
+  await assert.rejects(git.commit(a), (error) => error.status === 403 && error.rateLimitRemaining === 0
+    && error.rateLimitReset === 1794538800 && /rate limit/.test(error.message)
+    && !error.message.includes("private"));
+  await git.commit(a); await git.commit(a);
+  assert.equal(reads, 2);
+  let writes = 0;
+  const denied = githubData({ token: "secret", repo: "ntodd/project", fetch: async () => {
+    writes++; return Response.json({ message: "private-server-detail" }, { status: 503 });
+  } });
+  await assert.rejects(denied.advance("factory-state", a), (error) => error.status === 503 && !error.message.includes("private"));
+  assert.equal(writes, 1);
 });
 
 test("setup makes an independent data branch; load never recreates lost state", async () => {

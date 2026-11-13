@@ -20,7 +20,13 @@ const encodedRef = (s) => s.split("/").map(encodeURIComponent).join("/");
 export function githubData({ token, repo, apiUrl = "https://api.github.com", fetch = globalThis.fetch }) {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) throw new Error("Invalid repository name");
   const base = `/repos/${repo}`;
+  // Git objects are immutable by SHA; refs remain fresh on every read. Keep
+  // this cache local to one adapter/job and bound its serialized payload size.
+  const objects = new Map(); let objectBytes = 0;
   async function call(method, path, body) {
+    const immutable = method === "GET" && /^\/git\/(?:(?:commits|blobs)\/[a-f\d]{40}|trees\/[a-f\d]{40}\?recursive=1)$/.test(path);
+    const cached = immutable && objects.get(path);
+    if (cached) { objects.delete(path); objects.set(path, cached); return JSON.parse(cached.text); }
     const res = await fetch(`${apiUrl}${base}${path}`, {
       method,
       headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json",
@@ -29,8 +35,30 @@ export function githubData({ token, repo, apiUrl = "https://api.github.com", fet
     });
     // Never include request bodies or credentials in error messages. In
     // particular, do not blindly retry a write on 5xx or a network timeout.
-    if (!res.ok) throw new GitHubError(res.status, method, path);
-    return res.status === 204 ? null : res.json();
+    if (!res.ok) {
+      const error = new GitHubError(res.status, method, path);
+      const remaining = res.headers?.get("x-ratelimit-remaining"), reset = res.headers?.get("x-ratelimit-reset");
+      if (/^\d{1,10}$/.test(remaining ?? "")) error.rateLimitRemaining = Number(remaining);
+      if (/^\d{1,11}$/.test(reset ?? "")) error.rateLimitReset = Number(reset);
+      if ([403, 429].includes(res.status)) {
+        const data = await res.json().catch(() => null);
+        if (typeof data?.message === "string" && /secondary rate limit/i.test(data.message)) error.message += " (secondary API rate limit)";
+        else if (error.rateLimitRemaining === 0) error.message += " (API rate limit exhausted)";
+        if (error.rateLimitReset) error.message += `; rate limit resets at ${new Date(error.rateLimitReset * 1000).toISOString()}`;
+      }
+      throw error;
+    }
+    const value = res.status === 204 ? null : await res.json();
+    if (immutable) {
+      const text = JSON.stringify(value), bytes = Buffer.byteLength(text), limit = 32 * 1024 * 1024;
+      if (bytes <= limit) {
+        while (objects.size && (objects.size >= 20000 || objectBytes + bytes > limit)) {
+          const oldest = objects.keys().next().value; objectBytes -= objects.get(oldest).bytes; objects.delete(oldest);
+        }
+        objects.set(path, { text, bytes }); objectBytes += bytes;
+      }
+    }
+    return value;
   }
   return {
     ref: async (branch) => (await call("GET", `/git/ref/heads/${encodedRef(branch)}`)).object.sha,
