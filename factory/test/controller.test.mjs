@@ -108,6 +108,46 @@ test("acknowledged work dispatches before repository status projection", async (
   assert.equal(result.outcomes.some((o) => o.status === "interrupted"), false);
 });
 
+test("unknown acknowledgement delivery does not block a freshly authorized work command", async () => {
+  const f = fixture();
+  f.api.comments = async () => [{ id: 999, body: "/agent build", user: { login: "ntodd" }, created_at: at, updated_at: at }];
+  const result = await f.pass({ maxPasses: 1, surfaces: {
+    acknowledge: async () => [{ key: "issue:7", surface: "acknowledgement", status: "waiting" }], render: async () => {},
+  } });
+  assert.equal(Object.values(f.state.items["issue:7"].commands)[0].acknowledgement, "pending");
+  assert.equal(f.state.operations["op-1"]?.phase, "prepared");
+  assert.equal(f.effects.filter((e) => e[0] === "dispatch").length, 1);
+  assert.equal(result.outcomes.some((o) => o.status === "interrupted"), false);
+});
+
+test("reservation rechecks the command source and pending stops after acknowledgement processing", async () => {
+  for (const change of ["deleted", "edited", "stop"]) {
+    const f = fixture(), original = { id: 999, body: "/agent build", user: { login: "ntodd" }, created_at: at, updated_at: at };
+    let comments = [original]; f.api.comments = async () => comments;
+    await f.pass({ maxPasses: 1, surfaces: { acknowledge: async () => {
+      await f.store.transact((s) => { for (const command of Object.values(s.items["issue:7"].commands)) command.acknowledgement = "done"; return s; });
+      comments = change === "deleted" ? [] : change === "edited" ? [{ ...original, body: "/agent respond", updated_at: "2026-11-12T12:00:01.000Z" }]
+        : [original, { ...original, id: 1000, body: "/agent stop" }];
+      return [];
+    }, render: async () => {} } });
+    assert.equal(f.state.items["issue:7"].activeOperation, null, change);
+    assert.equal(f.effects.filter((e) => e[0] === "dispatch").length, 0, change);
+  }
+});
+
+test("a stop is recorded while acknowledgement delivery remains unknown", async () => {
+  const f = fixture(); await f.pass();
+  f.api.comments = async () => [{ id: 999, body: "/agent stop", user: { login: "ntodd" }, created_at: at, updated_at: at }];
+  await f.pass({ maxPasses: 1, surfaces: {
+    acknowledge: async () => [{ key: "issue:7", surface: "acknowledgement", status: "waiting" }], render: async () => {},
+  } });
+  assert.equal(f.state.items["issue:7"].paused, true);
+  assert.equal(f.state.operations["op-1"].phase, "superseded");
+  assert.equal(f.effects.filter((e) => e[0] === "dispatch").length, 1);
+  assert.equal((await claimOperation({ api: f.api, store: f.store, repo: "ntodd/project", itemKey: "issue:7", operationId: "op-1", run,
+    context: { sha: A, defaultBranch: "main", config: {} } })).claimed, false);
+});
+
 test("publication waits retain the adapter diagnostic without exposing its error properties", async () => {
   const f = fixture(); await f.pass();
   await claimOperation({ api: f.api, store: f.store, repo: "ntodd/project", itemKey: "issue:7", operationId: "op-1", run,

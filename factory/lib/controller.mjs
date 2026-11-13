@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { admit, evolve, validateLedger } from "./protocol.mjs";
 import { inspectIssue, inspectOwnPr, classifyText, readFeedback } from "./admission.mjs";
 import { threadTargets } from "./threads.mjs";
-import { ingestCommands, revalidateCommands, applyControls, resolveRoute, requestRoute } from "./commands.mjs";
+import { ingestCommands, revalidateCommands, applyControls, resolveRoute, requestRoute, pendingControls } from "./commands.mjs";
 import { loadConfig, withFactoryApp, parseConfig } from "./config.mjs";
 import { factoryReadApi } from "./identity.mjs";
 import { observeItem, observeAuthorization, publishObservation } from "./observe.mjs";
@@ -143,8 +143,8 @@ export async function runController({ api, write, store, actions, repo, toolingS
   await store.transact(decide);
   const outcomes = [];
   outcomes.push(...discoveryErrors.map((error) => ({ action: "discover", status: "interrupted", ...error })));
-  // Acknowledge commands before work; project repository status once after
-  // immediate transitions so metadata refreshes cannot consume dispatch time.
+  // Attempt acknowledgements before work; delivery is not admission authority.
+  // Project status after immediate transitions to preserve dispatch time.
   if (surfaces) {
     outcomes.push(...await surfaces.acknowledge());
   }
@@ -169,15 +169,14 @@ export async function runController({ api, write, store, actions, repo, toolingS
           break;
         }
         case "reserve": {
-          if (surfaces && action.commandIds.some((id) => item.commands[id]?.acknowledgement !== "done")) {
-            outcomes.push({ key, action: action.type, status: "waiting", reason: "Recover the command acknowledgement before starting its worker" });
-            continue;
-          }
           // Fresh reads immediately before reservation. Publishing will check
           // them again; a head change never permits overwriting someone else.
           const latest = { ...await loadConfig(api), repo };
           const fresh = await observe({ api, actions, ledger: state, key, context: latest, rules, now, landingLimit: 0 });
           if (!fresh.authorization.valid || fresh.authorization.revision !== item.revision) break;
+          if (action.commandIds.some((id) => !fresh.feedback?.some((fact) => fact.sourceId === item.commands[id]?.sourceId
+            && fact.revision === item.commands[id]?.revision && fact.authority === "instruction" && fact.command))
+            || pendingControls(item, fresh.feedback ?? [], action.commandIds).length) break;
           const pr = action.pr ? fresh.prs.find((p) => p.number === action.pr && p.state === "open") : null;
           if (action.pr && !pr) break;
           if (pr && (pr.unsupported || pr.baseRef !== latest.defaultBranch)) break;
