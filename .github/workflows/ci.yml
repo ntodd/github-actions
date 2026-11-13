@@ -12,6 +12,24 @@ concurrency:
 permissions: {}
 
 jobs:
+  # Controller design checks use Quint's Rust simulator, without a JVM.
+  model:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run vendor:check
+      - run: npm run model:check
+      - run: npm run model:simulate
+      - run: npm run model:replay
+
   # The unit tests, and the formatter and scripts against a real Mix
   # project, on the oldest Elixir flake-hunt supports and the newest.
   test:
@@ -62,7 +80,7 @@ jobs:
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
           echo "$RUNNER_TEMP/shellcheck-$SHELLCHECK_VERSION" >> "$GITHUB_PATH"
       - run: actionlint -color
-      - run: shellcheck flake-hunt/run/*.sh flake-hunt/diagnose/*.sh agent-ready/run/*.sh agent-ready/*.sh
+      - run: shellcheck flake-hunt/run/*.sh flake-hunt/diagnose/*.sh agent-ready/run/*.sh agent-ready/*.sh factory/*.sh
       - name: Every action pinned by commit SHA
         run: |
           unpinned=$(grep -nE '^[[:space:]]*(-[[:space:]]+)?uses:' ./.github/workflows/*.yml ./*/*/action.yml 2>/dev/null |
