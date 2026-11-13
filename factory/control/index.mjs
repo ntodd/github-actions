@@ -25,9 +25,9 @@ main(async () => {
   if (attachmentToken) { mask(attachmentToken); delete env.AGENT_ATTACH_TOKEN; }
   const api = readClient({ token: env.GITHUB_TOKEN, repo, apiUrl });
   const context = { ...await loadConfig(api), repo };
-  await verifyEntry({ api, env, context });
-  const request = parseRequest(env.FACTORY_REQUEST);
   const event = JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, "utf8"));
+  await verifyEntry({ api, env, context, event });
+  const request = parseRequest(env.FACTORY_REQUEST);
   if (!controllerWakeup(env.GITHUB_EVENT_NAME, event)) { summary("Factory controller completion: no worker wake-up."); return; }
   const run = { id: env.GITHUB_RUN_ID, attempt: Number(env.GITHUB_RUN_ATTEMPT) };
   const dryRun = env.FACTORY_DRY_RUN === "true";

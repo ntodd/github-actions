@@ -29,7 +29,7 @@ test("pull_request_target verifies the default-branch base independently of the 
   const api = { run: async () => targetRun };
   assert.equal((await verifyEntry({ api, context, env: targetEnv })).head_sha, head);
   await assert.rejects(verifyEntry({ api, context, env: { ...targetEnv, GITHUB_REF: `refs/heads/${branch}` } }), /identity/);
-  for (const changed of [{ event: "pull_request" }, { pull_requests: [] }, { head_sha: A }, { head_branch: "other" },
+  for (const changed of [{ event: "pull_request" }, { pull_requests: [] }, { pull_requests: { 0: pr, length: 1 } }, { head_sha: A }, { head_branch: "other" },
     { pull_requests: [{ ...pr, base: { ...pr.base, sha: head } }] },
     { pull_requests: [{ ...pr, base: { ...pr.base, ref: "other" } }] },
     { pull_requests: [{ ...pr, base: { ...pr.base, repo: { id: 99 } } }] },
@@ -50,5 +50,26 @@ test("the completion caller can enter only through a verified default-branch wor
   }
   for (const changed of [{ event: "workflow_dispatch" }, { path: actual.path }, { head_branch: "topic" }, { head_repository: { id: 99 } }]) {
     await assert.rejects(verifyEntry({ api: { run: async () => ({ ...actual, path, event: "workflow_run", ...changed }) }, context, env: completionEnv }), /identity/);
+  }
+});
+
+test("closed PR target runs with empty API membership require fresh same-repository PR and current default-head proof", async () => {
+  const head = "b".repeat(40), oldBase = "c".repeat(40), branch = "factory/setup-example";
+  const targetEnv = { ...env, GITHUB_EVENT_NAME: "pull_request_target", GITHUB_REF: "refs/heads/main" };
+  const targetContext = { ...context, sha: A }, event = { action: "closed", number: 17, pull_request: { number: 17 } };
+  const targetRun = { ...actual, event: "pull_request_target", head_sha: head, head_branch: branch, pull_requests: [] };
+  const pr = { number: 17, state: "closed", base: { ref: "main", sha: oldBase, repo: { id: 42 } },
+    head: { ref: branch, sha: head, repo: { id: 42 } } };
+  const api = { run: async () => targetRun, pull: async (number) => { assert.equal(number, 17); return pr; }, branchSha: async (name) => { assert.equal(name, "main"); return A; } };
+  assert.equal((await verifyEntry({ api, context: targetContext, env: targetEnv, event })).id, 100);
+  for (const changed of [{ number: 18 }, { state: "open" }, { head: { ...pr.head, sha: oldBase } },
+    { head: { ...pr.head, ref: "other" } }, { head: { ...pr.head, repo: { id: 99 } } },
+    { base: { ...pr.base, ref: "other" } }, { base: { ...pr.base, repo: { id: 99 } } }]) {
+    await assert.rejects(verifyEntry({ api: { ...api, pull: async () => ({ ...pr, ...changed }) }, context: targetContext, env: targetEnv, event }), /identity/);
+  }
+  await assert.rejects(verifyEntry({ api: { ...api, branchSha: async () => oldBase }, context: targetContext, env: targetEnv, event }), /identity/);
+  await assert.rejects(verifyEntry({ api, context: { ...targetContext, sha: oldBase }, env: targetEnv, event }), /identity/);
+  for (const changed of [{ action: "opened" }, { pull_request: { number: 18 } }, { number: 0 }]) {
+    await assert.rejects(verifyEntry({ api, context: targetContext, env: targetEnv, event: { ...event, ...changed } }), /identity/);
   }
 });

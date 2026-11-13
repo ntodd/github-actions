@@ -319,6 +319,15 @@ are unchanged. The measured cold costs remain 5 GETs for one item and 205 with
 cases. Errors expose only selected numeric rate-limit headers and a fixed
 quota classification, never response text or credentials.
 
+Merged sandbox PR #23 produced run `43352257485` with an empty API
+`pull_requests` list. Closed PR target events now use the runner event only
+to select a lookup number, then require a fresh closed same-repository PR
+whose head matches the run and a current default-branch SHA matching the
+executing/configuration commit. Missing event identity, a reopened PR, a moved
+default head and mismatched repository/head/base facts remain rejected. The
+existing open-PR entry checks are retained. This is adapter coverage outside
+the Quint model, with a regression that failed on the prior implementation.
+
 The implementation now includes a bounded controller I/O runner, a clean Git
 bundle publisher with a journaled draft-PR effect, a read-only Crew worker,
 an API-only update job and a reusable Actions workflow. Scenario tests drive
