@@ -89,20 +89,23 @@ main changes during publication.
 ## Limits and assumptions
 
 The scheduling model starts with one reserved operation and explicitly
-represents Actions' default one running/one pending control job. A new
-admitted job replaces the pending job. The factory App's status surfaces and
-non-worker controller completions are filtered before that queue; returning
-from Node after admission would be too late. Other valid events can still
-displace a worker delivery. The reservation survives, redispatch uses the same
+represents Actions' `queue: max`: one running and up to 100 pending control
+jobs, ordered by admission to the concurrency group. A full queue rejects the
+new arrival and preserves existing jobs. Named scenarios retain four worker
+deliveries and exercise overflow; those additional jobs are opaque queue
+entries, not four modeled operation lifecycles. The factory App's status
+surfaces and non-worker completions are filtered before queue admission.
+Lost or canceled deliveries retain their reservation, redispatch uses the same
 operation, and three exhausted requests lead to a question. A scheduled
 backstop can also collect a result whose completion wake-up was lost.
 
 Scheduling replay executes the actual generated callers' job filters,
 subscriptions and run-name expression, the shared control filter and the
-in-code completion guard. It checks dispatch/collection decisions against
+in-code completion guard. It checks the configured queue policy and each queue
+transition, and dispatch/collection decisions against
 `decideItem` and phase, owner, request count and questions against `evolve`.
 It covers twelve event classes, not every GitHub payload or reconciler branch.
-Queue behavior is an explicit platform assumption, supported by live failures;
+Queue behavior is an explicit platform assumption from GitHub's documented policy;
 Quint cannot establish what GitHub actually delivers. Runner isolation, REST
 response shapes, permissions, rate-limit headers and immutable-object cache
 correctness remain adapter and live tests.

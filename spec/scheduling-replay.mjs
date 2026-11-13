@@ -17,7 +17,8 @@ export function replayScheduling({ dir, run, decode }) {
   const shared = parseDocument(readFileSync(new URL("../.github/workflows/factory-runtime.yml", import.meta.url), "utf8")).toJS();
   assert.equal(shared.jobs.control.concurrency.group, "factory-control");
   assert.equal(shared.jobs.control.concurrency["cancel-in-progress"], false);
-  assert.equal(shared.jobs.control.concurrency["queue"], undefined, "This model assumes Actions' default single pending slot");
+  assert.equal(shared.jobs.control.concurrency.queue, "max", "The queue model requires Actions' 100 pending slots");
+  const capacity = 100;
   for (const workflow of [primary, completion]) assert(!workflow.on.workflow_run.workflows.includes(workflow.name), "A workflow cannot listen to itself");
   assert(primary.on.schedule.length > 0, "Recovery requires the independent backstop");
 
@@ -90,6 +91,19 @@ export function replayScheduling({ dir, run, decode }) {
     for (let i = 1; i < states.length; i++) {
       const before = states[i - 1], state = states[i];
       try {
+        let active = before.active, pending = [...before.pending];
+        const enqueue = (job) => {
+          if (active.kind === "none") active = job;
+          else if (pending.length < capacity) pending.push(job);
+        };
+        if (state.lastAction === "arrive" && state.accepted) enqueue({ kind: state.event, id: 0 });
+        if (state.lastAction === "deliver") enqueue({ kind: "worker", id: state.runId });
+        if (state.lastAction === "batch-workers") for (const id of [1, 2, 3, 4]) enqueue({ kind: "worker", id });
+        if (state.lastAction === "fill-queue") for (let n = 0; n < capacity; n++) enqueue({ kind: "human", id: 0 });
+        if (["finish-control", "crash-control"].includes(state.lastAction)) active = pending.shift() ?? { kind: "none", id: 0 };
+        if (state.lastAction === "cancel-pending") pending.shift();
+        assert.deepEqual(state.active, active);
+        assert.deepEqual(state.pending, pending);
         if (state.lastAction === "arrive") {
           assert.equal(routed(state.event), state.accepted, `Workflow routing disagrees for ${state.event}`);
           checkedEvents.add(state.event);

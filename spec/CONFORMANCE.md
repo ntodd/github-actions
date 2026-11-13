@@ -42,7 +42,7 @@ properties checked on sampled traces, not that every trace is proved safe.
 | Design contract | Model actions and properties | Scenario tests |
 | --- | --- | --- |
 | [Dispatch and recovery](../DESIGN.md#dispatch-and-recovery): reserve before dispatch; duplicate delivery does not allocate a second owner or budget | `reserve`, `dispatch`, `claim`, `rejectDelivery`; `oneOwner`, `boundedAttempts` | `duplicateDispatchTest`, `changedHeadCannotClaimTest`, `deadWorkerRetryTest` |
-| Controller queue admission and recovery before claim | `scheduling.qnt`: `arrive`, `deliver`, `cancelPending`, `crashControl`, `dispatch`, `ask`; `filteredBeforeQueue`, `boundedDispatch`, `oneOwner` | `selfSurfacesPreserveWorkerTest`, `nonWorkerCompletionsPreserveWorkerTest`, `displacedWorkerRetriesSameReservationTest`, `exhaustedDispatchesAskTest`, `lostCompletionBackstopCollectsTest` |
+| Controller queue admission and recovery before claim | `scheduling.qnt`: `arrive`, `deliver`, `cancelPending`, `crashControl`, `dispatch`, `ask`; `filteredBeforeQueue`, `boundedDispatch`, `oneOwner` | `selfSurfacesPreserveWorkerTest`, `nonWorkerCompletionsPreserveWorkerTest`, `fourWorkersRetainedTest`, `overflowKeepsExistingJobsTest`, `exhaustedDispatchesAskTest`, `lostCompletionBackstopCollectsTest` |
 | A queued owner still owns the operation; cancellation request is not termination | `live`, `running`, `requestCancellation`, `crashWorker`, `recoverDeadWorker`; `oneOwner` | `queuedOwnerCannotBeReplacedTest`, `deadWorkerRetryTest` |
 | Stop invalidates new work from the old generation; it waits for a live publisher's lock | `stop`, `resume`, `discardStale`, `authorizePublish`, `push`; `authorizedPublishRequests` | `stopFencesResultTest`, `stopWaitsForPublisherTest`, `noNewRequestAfterStopTest` |
 | [Worker contract](../DESIGN.md#worker-contract-and-releasing-crew): workers return artifacts, controller advances state | `uploadResult`, `finishWorker`, `collectResult`; `acceptedResultHasOwner`, `waitsReleaseCrew` | `workerCannotAdvanceLedgerTest`, `crashAfterArtifactUploadTest` |
@@ -65,7 +65,7 @@ properties checked on sampled traces, not that every trace is proved safe.
 | --- | --- | --- |
 | Accepted issues and PR membership | Starts with one authorized issue and two known required PRs | Admission, content revisions, grouped-issue authority, PR creation, membership changes |
 | Durable Git ledger | State transitions stand for successful atomic ledger transactions; the long publisher lock is explicit | Git ref conflicts, schema migration, missing/corrupt state, real branch protections or storage durability |
-| Controller serialization | `factory.qnt` abstracts atomic controller actions and the publisher lock. `scheduling.qnt` separately represents one active/one pending control job, pending replacement and pre-queue filtering | Actual Actions enforcement, multiple repositories/items or discovery of lost commands. The two models are separate projections, not a composed whole-system proof |
+| Controller serialization | `factory.qnt` abstracts atomic controller actions and the publisher lock. `scheduling.qnt` separately represents one active/up to 100 pending control jobs, overflow rejection and pre-queue filtering | Actual Actions enforcement, multiple repositories/items or discovery of lost commands. Four opaque queue entries do not model four durable lifecycles. The two models are separate projections, not a composed whole-system proof |
 | Run identity and artifact provenance | `(operation, runId)` represents a unique operation and complete run/attempt identity | GitHub identity authentication, artifact digests, schema/content validation, token isolation or forged API responses |
 | Publishing | One proposed commit and one branch effect per operation; no force pushes; an uncertain remote request remains pending | Multi-effect publishes, comment/PR deduplication, attachments, branch creation, repository hooks, actual API consistency |
 | Expected-head update | `applyPush` atomically checks the PR head; main and ledger are separate | That a chosen GitHub adapter implements this guard correctly; sandbox tests must establish it |
@@ -332,9 +332,9 @@ the Quint model, with a regression that failed on the prior implementation.
 
 The live pre-claim cancellations exposed an omission in the original ownership
 model. [`scheduling.qnt`](scheduling.qnt) now represents the Actions controller
-queue, pending-job replacement, lost dispatch delivery, cancellation/crash
+queue with `queue: max`, overflow rejection, lost dispatch delivery, cancellation/crash
 before claim, durable dispatch backoff and exhaustion, and lost completion
-wake-ups. Thirteen named scenarios exercise those failures and recovery;
+wake-ups. Fifteen named scenarios exercise those failures and recovery;
 the sampled profile explores 10,000 traces of up to 100 steps. Progress still
 requires a delivered backstop, available APIs and eventual scheduling; neither
 model proves fairness or inevitable completion.
@@ -343,12 +343,21 @@ model proves fairness or inevitable completion.
 event classes with the generated caller subscriptions, job filters and worker
 run-name, the shared job filter and the in-code completion guard. It feeds
 dispatch, claim, exhaustion and collection through the actual reconciler and
-reducer and compares durable state after every transition. Queue replacement
-does not create another coding reservation or retire its owner. Temporary
+reducer and compares durable state and the queue after every transition. Queue
+overflow does not create another coding reservation or retire its owner. Temporary
 weakened variants were rejected for both App surface admission and non-worker
 completion admission. Platform payloads, runner placement, rate limits and
 cache correctness remain outside these models; their adapter and live checks
 are still required.
+
+The queue policy follows [GitHub's documented `queue: max` semantics](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency):
+one running job, 100 pending jobs, FIFO by time entering the concurrency group,
+and cancellation of new arrivals when full. Dispatch order is not guaranteed.
+The runtime shape regression failed before the policy change. Four independent
+worker deliveries remain in the modeled queue; their lifecycle ownership is
+still covered only by the separate single-operation projection. The pinned
+actionlint 1.7.12 predates this syntax; its exact unknown-key diagnostic is
+ignored only for the runtime file, while model replay checks the actual value.
 
 The sandbox also exposed a concrete serialization mismatch: the Git ledger
 sorts JSON object keys, but API-effect and measured-usage identity checks

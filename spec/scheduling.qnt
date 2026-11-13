@@ -1,15 +1,16 @@
 /// One durable prepared operation and the Actions control concurrency group.
-/// GitHub permits one running and one pending job; a new admitted job replaces
-/// the pending job. Cancellation is not a durable operation transition.
+/// With queue: max GitHub permits one running and 100 pending jobs. An overflow
+/// cancels the new job. Cancellation is not a durable operation transition.
 module scheduling {
   type Job = { kind: str, id: int }
   type State = {
     phase: str, requests: int, owner: int, claimants: Set[int],
-    active: Job, pending: Job, deliveries: Set[int], due: bool, asked: bool,
+    active: Job, pending: List[Job], deliveries: Set[int], due: bool, asked: bool,
     workerDone: bool, displaced: bool, lost: bool, noiseDisplaced: bool,
     lastAction: str, event: str, runId: int, accepted: bool
   }
   pure val NONE = { kind: "none", id: 0 }
+  pure val CAPACITY = 100
   pure val NOISE = Set("app-comment", "app-label", "app-review",
     "controller-completion", "collector-completion", "inspect-completion")
   pure val WAKEUPS = Set("human", "ci", "backstop", "review-hint", "app-pr-opened", "worker-completion")
@@ -18,7 +19,7 @@ module scheduling {
 
   action init = s' = {
     phase: "prepared", requests: 0, owner: 0, claimants: Set(),
-    active: NONE, pending: NONE, deliveries: Set(), due: true, asked: false,
+    active: NONE, pending: [], deliveries: Set(), due: true, asked: false,
     workerDone: false, displaced: false, lost: false, noiseDisplaced: false,
     lastAction: "init", event: "", runId: 0, accepted: false
   }
@@ -26,19 +27,19 @@ module scheduling {
   pure def enqueue(state: State, job: Job): State = {
     ...state,
     active: if (state.active == NONE) job else state.active,
-    pending: if (state.active == NONE) NONE else job,
-    displaced: state.displaced or (state.pending.kind == "worker" and state.pending != job)
+    pending: if (state.active != NONE and state.pending.length() < CAPACITY) state.pending.append(job) else state.pending,
+    displaced: state.displaced or (state.active != NONE and state.pending.length() == CAPACITY and job.kind == "worker")
   }
 
   // A job-level filter runs before admission to control concurrency. A return
-  // inside Node is too late: it would already have replaced the pending job.
+  // inside Node is too late: it would already have consumed a pending slot.
   action arrive(kind: str): bool = all {
     WAKEUPS.union(NOISE).contains(kind),
     kind != "worker-completion" or s.workerDone,
     val admitted = accepts(kind)
     val queued = if (admitted) enqueue(s, { kind: kind, id: 0 }) else s
     s' = { ...queued, lastAction: "arrive", event: kind, runId: 0, accepted: admitted,
-      noiseDisplaced: s.noiseDisplaced or (NOISE.contains(kind) and admitted and s.pending.kind == "worker") }
+      noiseDisplaced: s.noiseDisplaced or (NOISE.contains(kind) and admitted) }
   }
 
   // The request is recorded before the API call. A lost response or a canceled
@@ -62,20 +63,22 @@ module scheduling {
   }
 
   action cancelPending = all {
-    s.pending.kind == "worker",
-    s' = { ...s, pending: NONE, lost: true, lastAction: "cancel-pending" }
+    s.pending.length() > 0, s.pending.head().kind == "worker",
+    s' = { ...s, pending: s.pending.tail(), lost: true, lastAction: "cancel-pending" }
   }
 
   // Finishing or crashing releases only the control job. Claimed workers keep
   // their durable owner after control releases the mutex and Crew starts them.
   action finishControl = all {
     s.active != NONE,
-    s' = { ...s, active: s.pending, pending: NONE, lastAction: "finish-control" }
+    s' = { ...s, active: if (s.pending.length() > 0) s.pending.head() else NONE,
+      pending: if (s.pending.length() > 0) s.pending.tail() else [], lastAction: "finish-control" }
   }
 
   action crashControl = all {
     s.active != NONE,
-    s' = { ...s, active: s.pending, pending: NONE, lost: true, lastAction: "crash-control" }
+    s' = { ...s, active: if (s.pending.length() > 0) s.pending.head() else NONE,
+      pending: if (s.pending.length() > 0) s.pending.tail() else [], lost: true, lastAction: "crash-control" }
   }
 
   action backoffElapsed = all {
@@ -112,7 +115,7 @@ module scheduling {
   val questionFencesClaim = not(s.asked) or (s.phase == "prepared" and s.owner == 0 and s.requests == 3)
   val filteredBeforeQueue = not(s.noiseDisplaced) and
     (s.lastAction != "arrive" or not(NOISE.contains(s.event)) or not(s.accepted))
-  val queueShape = s.active != NONE or s.pending == NONE
+  val queueShape = s.pending.length() <= CAPACITY and (s.active != NONE or s.pending.length() == 0)
   val safety = oneOwner and boundedDispatch and durableOwnership and questionFencesClaim and filteredBeforeQueue and queueShape
 
   val ignoredWakeup = s.lastAction == "arrive" and not(s.accepted)
@@ -140,16 +143,32 @@ module scheduling {
 
   run selfSurfacesPreserveWorkerTest = init.then(queuedWorker)
     .then(arrive("app-comment")).then(arrive("app-label")).then(arrive("app-review"))
-    .expect(s.pending == { kind: "worker", id: 1 } and safety)
+    .expect(s.pending == [{ kind: "worker", id: 1 }] and safety)
 
   run nonWorkerCompletionsPreserveWorkerTest = init.then(queuedWorker)
     .then(arrive("controller-completion")).then(arrive("collector-completion")).then(arrive("inspect-completion"))
-    .expect(s.pending == { kind: "worker", id: 1 } and safety)
+    .expect(s.pending == [{ kind: "worker", id: 1 }] and safety)
 
-  run displacedWorkerRetriesSameReservationTest = init.then(queuedWorker).then(arrive("human"))
-    .then(finishControl).then(backoffElapsed).then(dispatch).then(deliver(2))
+  run humanAndCiPreserveWorkerTest = init.then(queuedWorker).then(arrive("human")).then(arrive("ci"))
     .then(finishControl).then(claim)
-    .expect(s.displaced and s.requests == 2 and s.owner == 2 and safety)
+    .expect(not(s.displaced) and s.requests == 1 and s.owner == 1 and s.pending.length() == 2 and safety)
+
+  // These are opaque deliveries for four independent operations. Their queue
+  // retention is modeled here; the durable lifecycle projection remains one operation.
+  action batchWorkers = s' = { ...List(1, 2, 3, 4).foldl(s, (state, id) => enqueue(state, { kind: "worker", id: id })),
+    lastAction: "batch-workers" }
+  run fourWorkersRetainedTest = init.then(arrive("backstop")).then(batchWorkers)
+    .expect(s.pending.foldl(List(), (ids, job) => ids.append(job.id)) == List(1, 2, 3, 4) and safety)
+    .then(finishControl).expect(s.active.id == 1)
+    .then(finishControl).expect(s.active.id == 2)
+    .then(finishControl).expect(s.active.id == 3)
+    .then(finishControl).expect(s.active.id == 4 and s.pending.length() == 0 and safety)
+
+  action fillQueue = s' = { ...1.to(CAPACITY).fold(s, (state, _) => enqueue(state, { kind: "human", id: 0 })),
+    lastAction: "fill-queue" }
+  run overflowKeepsExistingJobsTest = init.then(arrive("backstop")).then(fillQueue)
+    .then(dispatch).then(deliver(1))
+    .expect(s.displaced and s.pending.length() == CAPACITY and s.pending.foldl(true, (ok, job) => ok and job.kind == "human") and safety)
 
   run lostDispatchBackstopTest = init.then(lostRequestRound).then(arrive("backstop"))
     .then(dispatch).then(deliver(2)).then(finishControl).then(claim)

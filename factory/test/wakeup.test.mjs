@@ -5,6 +5,11 @@ import { wakeReview } from "../lib/wakeup.mjs";
 import { callerWorkflow } from "../lib/caller.mjs";
 import { parseDocument } from "../vendor/yaml.mjs";
 
+test("worker requests queue behind the controller without replacing each other", () => {
+  const workflow = parseDocument(readFileSync(new URL("../../.github/workflows/factory-runtime.yml", import.meta.url), "utf8")).toJS();
+  assert.deepEqual(workflow.jobs.control.concurrency, { group: "factory-control", queue: "max", "cancel-in-progress": false });
+});
+
 test("the control job rejects controller completions and accepts worker completions", () => {
   const workflow = parseDocument(readFileSync(new URL("../../.github/workflows/factory-runtime.yml", import.meta.url), "utf8")).toJS();
   assert.equal(workflow.jobs.control.concurrency["cancel-in-progress"], false);

@@ -41,6 +41,7 @@ jobs:
     timeout-minutes: 15
     concurrency:
       group: factory-control
+      queue: max
       cancel-in-progress: false
     permissions:
       contents: read
