@@ -12,12 +12,34 @@ export function readClient({ token, repo, apiUrl = "https://api.github.com", fet
   const origin = new URL(apiUrl).origin, root = `${apiUrl}/repos/${repo}`;
   let repositoryId;
   const headers = { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "factory" };
-  async function request(url, method = "GET", body) {
+  const responses = new Map(); let responseBytes = 0;
+  async function request(url, method = "GET", body, conditional = true) {
     if (new URL(url).origin !== origin) throw new Error("Refusing to send GitHub credentials to another origin");
-    const res = await fetch(url, { method, redirect: "error", signal: AbortSignal.timeout(20_000), headers: body ? { ...headers, "content-type": "application/json" } : headers,
+    const cached = method === "GET" && conditional && responses.get(url);
+    const res = await fetch(url, { method, redirect: "error", signal: AbortSignal.timeout(20_000), headers: { ...headers,
+      ...(cached ? { "if-none-match": cached.etag } : {}), ...(body ? { "content-type": "application/json" } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}) });
+    // Every mutable read still reaches GitHub. Only its authenticated 304
+    // response establishes that the saved representation remains current.
+    if (res.status === 304 && cached) {
+      responses.delete(url); responses.set(url, cached);
+      return { res, data: JSON.parse(cached.text) };
+    }
     if (!res.ok) throw await GitHubError.fromResponse(res, method, new URL(url).pathname);
-    return { res, data: await res.json() };
+    const data = await res.json(), etag = res.headers.get("etag");
+    if (method === "GET" && conditional && typeof etag === "string" && etag.length <= 1024 && /^(?:W\/)?"[^"\r\n]*"$/.test(etag)) {
+      const text = JSON.stringify(data), bytes = Buffer.byteLength(text), limit = 8 * 1024 * 1024;
+      if (responses.has(url)) { responseBytes -= responses.get(url).bytes; responses.delete(url); }
+      if (bytes <= limit) {
+        while (responses.size && (responses.size >= 1000 || responseBytes + bytes > limit)) {
+          const oldest = responses.keys().next().value; responseBytes -= responses.get(oldest).bytes; responses.delete(oldest);
+        }
+        responses.set(url, { text, bytes, etag }); responseBytes += bytes;
+      }
+    } else if (method === "GET" && responses.has(url)) {
+      responseBytes -= responses.get(url).bytes; responses.delete(url);
+    }
+    return { res, data };
   }
   async function repository() {
     const { data } = await request(root);
@@ -38,7 +60,9 @@ export function readClient({ token, repo, apiUrl = "https://api.github.com", fet
       }
       if (seen.has(next) || seen.size >= 10000 || !sameRepository) throw new Error("Invalid or excessive GitHub pagination");
       seen.add(next);
-      const { res, data } = await request(next), values = pick(data);
+      // A new last page can change Link without changing this page's body.
+      // Read every list page in full rather than reusing pagination metadata.
+      const { res, data } = await request(next, "GET", undefined, false), values = pick(data);
       if (!Array.isArray(values)) throw new Error("Malformed GitHub list response");
       all.push(...values);
       if (all.length > limit) throw new Error("GitHub listing exceeded its item limit");

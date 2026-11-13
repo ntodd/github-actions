@@ -35,31 +35,40 @@ const encodedRef = (s) => s.split("/").map(encodeURIComponent).join("/");
 export function githubData({ token, repo, apiUrl = "https://api.github.com", fetch = globalThis.fetch }) {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) throw new Error("Invalid repository name");
   const base = `/repos/${repo}`;
-  // Git objects are immutable by SHA; refs remain fresh on every read. Keep
-  // this cache local to one adapter/job and bound its serialized payload size.
+  // Git objects are immutable by SHA; refs are revalidated on every read.
+  // Keep this cache local to one adapter/job and bound its serialized size.
   const objects = new Map(); let objectBytes = 0;
   async function call(method, path, body) {
     const immutable = method === "GET" && /^\/git\/(?:(?:commits|blobs)\/[a-f\d]{40}|trees\/[a-f\d]{40}\?recursive=1)$/.test(path);
-    const cached = immutable && objects.get(path);
-    if (cached) { objects.delete(path); objects.set(path, cached); return JSON.parse(cached.text); }
+    const revalidate = method === "GET" && path.startsWith("/git/ref/heads/");
+    const cached = (immutable || revalidate) && objects.get(path);
+    if (immutable && cached) { objects.delete(path); objects.set(path, cached); return JSON.parse(cached.text); }
     const res = await fetch(`${apiUrl}${base}${path}`, {
       method,
       headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json",
-        "x-github-api-version": "2022-11-28", "user-agent": "factory", ...(body ? { "content-type": "application/json" } : {}) },
+        "x-github-api-version": "2022-11-28", "user-agent": "factory", ...(revalidate && cached ? { "if-none-match": cached.etag } : {}),
+        ...(body ? { "content-type": "application/json" } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
     // Never include request bodies or credentials in error messages. In
     // particular, do not blindly retry a write on 5xx or a network timeout.
+    if (res.status === 304 && revalidate && cached) {
+      objects.delete(path); objects.set(path, cached); return JSON.parse(cached.text);
+    }
     if (!res.ok) throw await GitHubError.fromResponse(res, method, path);
     const value = res.status === 204 ? null : await res.json();
-    if (immutable) {
+    const etag = res.headers.get("etag");
+    if (immutable || revalidate && typeof etag === "string" && etag.length <= 1024 && /^(?:W\/)?"[^"\r\n]*"$/.test(etag)) {
       const text = JSON.stringify(value), bytes = Buffer.byteLength(text), limit = 32 * 1024 * 1024;
+      if (objects.has(path)) { objectBytes -= objects.get(path).bytes; objects.delete(path); }
       if (bytes <= limit) {
         while (objects.size && (objects.size >= 20000 || objectBytes + bytes > limit)) {
           const oldest = objects.keys().next().value; objectBytes -= objects.get(oldest).bytes; objects.delete(oldest);
         }
-        objects.set(path, { text, bytes }); objectBytes += bytes;
+        objects.set(path, { text, bytes, ...(revalidate ? { etag } : {}) }); objectBytes += bytes;
       }
+    } else if (revalidate && objects.has(path)) {
+      objectBytes -= objects.get(path).bytes; objects.delete(path);
     }
     return value;
   }

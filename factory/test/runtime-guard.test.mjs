@@ -1,9 +1,33 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { assertRuntimeIsolation, LIVE_RUN_STATUSES, LEGACY_WORKFLOW, RuntimeConflict } from "../lib/runtime-guard.mjs";
 import { readClient } from "../lib/github.mjs";
 
 const legacy = { id: 123, path: LEGACY_WORKFLOW, state: "disabled_manually" };
+
+test("repeated runtime guards revalidate every check while avoiding unchanged primary-quota charges", async (t) => {
+  const sha = "a".repeat(40), root = "/repos/ntodd/project";
+  const active = ["factory.yml", "factory-completion.yml", "ci.yml"].map((name, i) => ({ id: 124 + i, path: `.github/workflows/${name}`, state: "active" }));
+  let requests = 0, charged = 0, live = false;
+  const client = readClient({ token: "read-only", repo: "ntodd/project", fetch: async (url, init) => {
+    requests++;
+    const path = new URL(url).pathname;
+    const data = path === root ? { id: 42, full_name: "ntodd/project", default_branch: "main" }
+      : path.endsWith("/actions/workflows") ? { workflows: [legacy, ...active] }
+        : path.endsWith("/git/ref/heads/main") ? { object: { sha } }
+          : path.includes("/contents/") ? { type: "file", encoding: "base64", size: 10, content: Buffer.from("jobs: {}\n\n").toString("base64") }
+            : { total_count: live ? 1 : 0, workflow_runs: live ? [{ id: 99, status: "queued" }] : [] };
+    const etag = `"${createHash("sha1").update(JSON.stringify(data)).digest("hex")}"`;
+    if (init.headers["if-none-match"] === etag) return new Response(null, { status: 304 });
+    charged++; return Response.json(data, { headers: { etag } });
+  } });
+  for (let i = 0; i < 100; i++) await assertRuntimeIsolation(client);
+  assert.equal(requests, 1100); assert.equal(charged, 110);
+  t.diagnostic(`100 runtime guards: ${requests} fresh GETs, ${charged} primary-quota responses, ${requests - charged} revalidated 304 responses`);
+  live = true;
+  await assert.rejects(assertRuntimeIsolation(client), /still has live/);
+});
 
 test("legacy reusable callers must also be disabled with no live runs", async () => {
   const caller = { id: 124, path: ".github/workflows/agent-ready-caller.yml", state: "active" };

@@ -132,6 +132,48 @@ test("config content reads require a commit and verify size; no mutating endpoin
   assert.equal(client.merge, undefined);
 });
 
+test("conditional reads revalidate fresh facts and never replace failures with cached authority", async () => {
+  let current = "a".repeat(40), denied = false, calls = 0, charged = 0;
+  const client = readClient({ token: "secret", repo: "ntodd/repo", fetch: async (_url, init) => {
+    calls++; assert.equal(init.headers.authorization, "Bearer secret");
+    if (denied) return Response.json({ message: "denied" }, { status: 403 });
+    const etag = `"${current}"`;
+    if (init.headers["if-none-match"] === etag) return new Response(null, { status: 304 });
+    charged++; return Response.json({ object: { sha: current } }, { headers: { etag } });
+  } });
+  assert.equal(await client.branchSha("main"), current);
+  assert.equal(await client.branchSha("main"), current);
+  assert.equal(charged, 1);
+  current = "b".repeat(40);
+  assert.equal(await client.branchSha("main"), current);
+  denied = true;
+  await assert.rejects(client.branchSha("main"), (error) => error.status === 403);
+  assert.equal(calls, 4); assert.equal(charged, 2);
+  const missing = readClient({ token: "secret", repo: "ntodd/repo", fetch: async () => new Response(null, { status: 304 }) });
+  await assert.rejects(missing.branchSha("main"), (error) => error.status === 304);
+});
+
+test("conditional caches isolate returned objects and keep paginated conversations fresh", async () => {
+  let added = false;
+  const { client, calls } = api((url, _body, calls) => {
+    const headers = calls.at(-1).init.headers;
+    if (url.includes("/comments")) {
+      assert.equal(headers["if-none-match"], undefined);
+      if (url.includes("page=2")) return Response.json([{ id: 2, node_id: "IC_2", lastEditedAt: null }]);
+      return Response.json([{ id: 1, node_id: "IC_1", lastEditedAt: null }], { headers: { etag: '"same-page-body"',
+        ...(added ? { link: '<https://api.github.com/repos/ntodd/repo/issues/7/comments?page=2>; rel="next"' } : {}) } });
+    }
+    if (headers["if-none-match"]) return new Response(null, { status: 304 });
+    return Response.json({ id: 42, full_name: "ntodd/repo", default_branch: "main" }, { headers: { etag: '"repository"' } });
+  });
+  const first = await client.repository(); first.default_branch = "altered";
+  assert.equal((await client.repository()).default_branch, "main");
+  assert.equal(calls.at(-1).init.headers["if-none-match"], '"repository"');
+  assert.equal((await client.comments(7)).length, 1);
+  added = true;
+  assert.equal((await client.comments(7)).length, 2);
+});
+
 test("edited comments include their fully paginated editor history", async () => {
   const { client } = api((url, body) => {
     if (url.includes("/comments")) return Response.json([{ id: 1, node_id: "IC_1", body: "edited", created_at: "before", updated_at: "after" }]);

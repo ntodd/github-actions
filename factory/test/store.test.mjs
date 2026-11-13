@@ -114,6 +114,25 @@ test("immutable Git object reads are cached without caching refs or sharing muta
   assert.equal(calls.length, 4);
 });
 
+test("ledger refs use server revalidation and never hide a changed tip or a failed read", async () => {
+  let tip = "a".repeat(40), calls = 0, charged = 0, denied = false;
+  const git = githubData({ token: "secret", repo: "ntodd/project", fetch: async (_url, init) => {
+    calls++; assert.equal(init.method, "GET");
+    if (denied) return Response.json({ message: "denied" }, { status: 403 });
+    const etag = `W/"${tip}"`;
+    if (init.headers["if-none-match"] === etag) return new Response(null, { status: 304 });
+    charged++; return Response.json({ object: { sha: tip } }, { headers: { etag } });
+  } });
+  assert.equal(await git.ref("factory-state"), tip);
+  assert.equal(await git.ref("factory-state"), tip);
+  assert.equal(charged, 1);
+  tip = "b".repeat(40);
+  assert.equal(await git.ref("factory-state"), tip);
+  denied = true;
+  await assert.rejects(git.ref("factory-state"), (error) => error.status === 403);
+  assert.equal(calls, 4); assert.equal(charged, 2);
+});
+
 test("failed immutable reads are not cached and rate diagnostics never expose response text or credentials", async () => {
   const a = "a".repeat(40); let reads = 0;
   const git = githubData({ token: "private-token", repo: "ntodd/project", fetch: async () => {
