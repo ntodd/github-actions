@@ -269,6 +269,13 @@ gate. A regression reproduces the live response and rejects mismatched bases,
 heads, repositories, event kinds and refs. It failed before the fix; all 790
 Node tests pass afterward. This adapter correction changes no Quint semantics.
 
+Administrator setup created the sandbox's four managed rulesets, then stopped
+because GitHub returned the state-writer `update` rule without its optional
+false `update_allows_fetch_and_merge` parameter. Verification now accepts that
+omission while still rejecting an explicit true value. The live response is
+covered by a regression that failed before the fix; all 791 Node tests pass.
+The administrator journal retains the successful creates for setup recovery.
+
 The implementation now includes a bounded controller I/O runner, a clean Git
 bundle publisher with a journaled draft-PR effect, a read-only Crew worker,
 an API-only update job and a reusable Actions workflow. Scenario tests drive

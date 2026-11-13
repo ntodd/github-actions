@@ -52,6 +52,14 @@ test("verification rejects weakened server policy, omitted bypass metadata and w
   assert.equal(verifySetupRulesets(stronger, expected).valid, true);
 });
 
+test("state writer verification accepts GitHub's omitted false update option but rejects upstream updates", () => {
+  const expected = setupRulesets(app.id, checks), observed = structuredClone(expected);
+  delete observed[0].rules.find((r) => r.type === "update").parameters;
+  assert.equal(verifySetupRulesets(observed, expected).valid, true);
+  observed[0].rules.find((r) => r.type === "update").parameters = { update_allows_fetch_and_merge: true };
+  assert.equal(verifySetupRulesets(observed, expected).valid, false);
+});
+
 test("the setup plan produces a read-only thin caller, strict protections and only public configuration", () => {
   const plan = setupPlan(args), caller = parseDocument(plan.files[0].content).toJS();
   assert.equal(plan.mode, "read-only");

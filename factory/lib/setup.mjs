@@ -63,6 +63,10 @@ export function setupRulesets(appId, checks) {
 function ruleSatisfies(actual, expected) {
   if (actual.type !== expected.type) return false;
   const a = actual.parameters ?? {}, e = expected.parameters ?? {};
+  // GitHub omits the optional update parameters when this option is false.
+  if (expected.type === "update" && e.update_allows_fetch_and_merge === false) {
+    return a.update_allows_fetch_and_merge === undefined || a.update_allows_fetch_and_merge === false;
+  }
   if (expected.type === "pull_request") return positive(a.required_approving_review_count) && a.require_last_push_approval === true;
   if (expected.type === "required_status_checks") return a.strict_required_status_checks_policy === true
     && a.do_not_enforce_on_create === false && Array.isArray(a.required_status_checks)
