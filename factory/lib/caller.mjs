@@ -1,10 +1,12 @@
 // Setup renders this file into the target repository. Triggers and permission
 // ceilings live there; authorization, execution and recovery remain shared.
+import { validAppLogin } from "./identity.mjs";
 export function callerWorkflow({ toolingRepository = "ntodd/github-actions", ref = "main", defaultBranch,
-  ciWorkflows, dryRun = true, attachments = false, completion = false } = {}) {
+  ciWorkflows, dryRun = true, attachments = false, completion = false, appLogin = null } = {}) {
   if (!/^[\w.-]+\/[\w.-]+$/.test(toolingRepository) || !/^[a-z\d][\w./-]{0,199}$/i.test(ref) || ref.includes("..")
     || typeof defaultBranch !== "string" || !/^[a-z\d][\w./-]{0,199}$/i.test(defaultBranch) || defaultBranch.includes("..")
-    || typeof dryRun !== "boolean" || typeof attachments !== "boolean" || typeof completion !== "boolean" || !Array.isArray(ciWorkflows) || !ciWorkflows.length || ciWorkflows.length > 50
+    || typeof dryRun !== "boolean" || typeof attachments !== "boolean" || typeof completion !== "boolean" || appLogin !== null && !validAppLogin(appLogin)
+    || !Array.isArray(ciWorkflows) || !ciWorkflows.length || ciWorkflows.length > 50
     || ciWorkflows.some((s) => typeof s !== "string" || !s.trim() || s.length > 100 || /[\x00-\x1f]|\$\{\{/.test(s)
       || ["factory", "factory completion"].includes(s.trim().toLowerCase()))) {
     throw new Error("Caller needs a valid shared ref, default branch and explicit CI workflow names");
@@ -40,8 +42,9 @@ export function callerWorkflow({ toolingRepository = "ntodd/github-actions", ref
         type: string
         default: ''
 `;
+  const ownSurfaces = !dryRun && appLogin ? ` && !(github.actor == '${appLogin}' && (contains(fromJSON('["issues","issue_comment"]'), github.event_name) || (github.event_name == 'pull_request_target' && contains(fromJSON('["labeled","unlabeled"]'), github.event.action))))` : "";
   const entryCondition = completion ? "github.event_name == 'workflow_run' && github.event.workflow_run.path == '.github/workflows/factory.yml' && github.event.workflow_run.event == 'workflow_dispatch'"
-    : "${{ !contains(fromJSON('[\"pull_request_review\",\"pull_request_review_comment\"]'), github.event_name) }}";
+    : `\${{ !contains(fromJSON('["pull_request_review","pull_request_review_comment"]'), github.event_name)${ownSurfaces} }}`;
   const request = completion ? "''" : "${{ github.event_name == 'workflow_dispatch' && inputs.request || '' }}";
   return `name: ${completion ? "factory completion" : "factory"}
 
@@ -52,7 +55,7 @@ permissions: {}
 
 jobs:
 ${completion ? "" : `  wake-up:
-    if: contains(fromJSON('["pull_request_review","pull_request_review_comment"]'), github.event_name)
+    if: contains(fromJSON('["pull_request_review","pull_request_review_comment"]'), github.event_name)${!dryRun && appLogin ? ` && github.actor != '${appLogin}'` : ""}
     permissions:
       contents: read
       actions: write

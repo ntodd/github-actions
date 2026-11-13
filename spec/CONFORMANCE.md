@@ -276,6 +276,17 @@ omission while still rejecting an explicit true value. The live response is
 covered by a regression that failed before the fix; all 791 Node tests pass.
 The administrator journal retains the successful creates for setup recovery.
 
+The first active sandbox pass admitted issue #20 and reserved one build, but
+worker dispatch `43348593956` was canceled before claiming: App-written status
+comments and labels created newer jobs in the same single-pending concurrency
+group. Active caller generation now uses setup's verified App login to skip
+its issue/comment surfaces, PR label surfaces and review-reply wake-ups before
+the reusable job enters that group. Human and producer events, other review
+bots, App worker dispatches, PR publication/head changes and worker completion
+remain enabled. The regression reproduces the suppressed and retained event
+classes and failed before the fix. This changes routing, not protocol or Quint
+semantics; the ledger representation and its measured read cost are unchanged.
+
 The implementation now includes a bounded controller I/O runner, a clean Git
 bundle publisher with a journaled draft-PR effect, a read-only Crew worker,
 an API-only update job and a reusable Actions workflow. Scenario tests drive

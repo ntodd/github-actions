@@ -124,7 +124,7 @@ export function setupPlan({ repository, app, configText, checks, ciWorkflows,
     variable: { name: "AGENT_APP_ID", value: String(app.id) }, settings: { allow_auto_merge: true },
     rulesets: setupRulesets(app.id, checks), labels: Object.entries(descriptions).map(([name, [color, description]]) => ({ name, color, description })),
     files: [
-      { path: ".github/workflows/factory.yml", content: callerWorkflow({ defaultBranch: repository.default_branch, ciWorkflows, toolingRepository, ref, dryRun, attachments }) },
+      { path: ".github/workflows/factory.yml", content: callerWorkflow({ defaultBranch: repository.default_branch, ciWorkflows, toolingRepository, ref, dryRun, attachments, appLogin: `${app.slug.toLowerCase()}[bot]` }) },
       { path: ".github/factory.yml", content: configText.endsWith("\n") ? configText : `${configText}\n` },
       { path: ".github/workflows/factory-completion.yml", content: callerWorkflow({ defaultBranch: repository.default_branch,
         ciWorkflows, toolingRepository, ref, dryRun, attachments, completion: true }) },

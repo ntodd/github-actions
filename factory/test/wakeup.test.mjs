@@ -81,10 +81,36 @@ test("worker completion has its own thin caller and neither workflow listens to 
   }
 });
 
+test("active callers ignore the verified App's status surfaces without suppressing workers or feedback", () => {
+  const caller = parseDocument(callerWorkflow({ defaultBranch: "main", ciWorkflows: ["CI"], dryRun: false,
+    appLogin: "factory-app[bot]" })).toJS();
+  const expression = caller.jobs.factory.if.replace(/^\$\{\{\s*|\s*\}\}$/g, "");
+  const accepts = (actor, event_name, action) => Function("github", "contains", "fromJSON", `return (${expression});`)(
+    { actor, event_name, event: { action } }, (values, value) => values.includes(value), JSON.parse);
+  for (const [event, action] of [["issues", "labeled"], ["issues", "closed"], ["issue_comment", "created"],
+    ["issue_comment", "edited"], ["pull_request_target", "labeled"], ["pull_request_target", "unlabeled"]]) {
+    assert.equal(accepts("factory-app[bot]", event, action), false);
+    assert.equal(accepts("ntodd", event, action), true);
+    assert.equal(accepts("github-actions[bot]", event, action), true);
+    assert.equal(accepts("reviewer[bot]", event, action), true);
+  }
+  for (const [event, action] of [["workflow_dispatch"], ["workflow_run"], ["push"], ["schedule"],
+    ["pull_request_target", "opened"], ["pull_request_target", "synchronize"]]) {
+    assert.equal(accepts("factory-app[bot]", event, action), true);
+  }
+  assert.equal(accepts("ntodd", "pull_request_review", "submitted"), false);
+  const review = (actor) => Function("github", "contains", "fromJSON", `return (${caller.jobs["wake-up"].if});`)(
+    { actor, event_name: "pull_request_review_comment" }, (values, value) => values.includes(value), JSON.parse);
+  assert.equal(review("factory-app[bot]"), false);
+  assert.equal(review("reviewer[bot]"), true);
+  assert.equal(review("ntodd"), true);
+});
+
 test("caller generation rejects YAML/expression injection and missing CI names", () => {
   for (const extra of [{ ciWorkflows: [] }, { ciWorkflows: ["CI\n  malicious: true"] }, { ciWorkflows: ["${{ secrets.KEY }}"] },
     { defaultBranch: "main\nother: true" }, { ref: "main@other" }, { toolingRepository: "owner/repo\nother" },
-    { ciWorkflows: ["factory"] }, { ciWorkflows: ["factory completion"] }, { completion: "true" }]) {
+    { ciWorkflows: ["factory"] }, { ciWorkflows: ["factory completion"] }, { completion: "true" },
+    { appLogin: "bad' || true" }, { appLogin: "ntodd" }]) {
     assert.throws(() => callerWorkflow({ defaultBranch: "main", ciWorkflows: ["CI"], ...extra }));
   }
 });

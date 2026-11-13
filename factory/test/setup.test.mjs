@@ -76,6 +76,8 @@ test("the setup plan produces a read-only thin caller, strict protections and on
   assert.deepEqual(plan.variable, { name: "AGENT_APP_ID", value: "123" });
   assert.equal(plan.labels.length, 14);
   assert.equal(JSON.stringify(plan).includes("PRIVATE KEY"), false);
+  const active = parseDocument(setupPlan({ ...args, dryRun: false }).files[0].content).toJS();
+  assert.match(active.jobs.factory.if, /github.actor == 'ntodd-agent\[bot\]'/);
 });
 
 test("setup refuses an overprivileged App, self-review policy, missing checks and non-admin access", () => {
