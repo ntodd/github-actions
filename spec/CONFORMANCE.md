@@ -260,6 +260,15 @@ reviews and thread lists. Large nested pagination is exercised by API fakes;
 production artifact, token, worker, publish and event-delivery checks remain
 part of the sandbox rollout.
 
+The sandbox caller-upgrade PR exposed an additional live event boundary:
+`pull_request_target` run `43345761427` reports the PR head SHA/branch in the
+Actions API, while its job executes the default-branch base. Entry validation
+now checks that base SHA, branch and repository against the run's PR metadata,
+independently checks the reported head, and retains the default-branch caller
+gate. A regression reproduces the live response and rejects mismatched bases,
+heads, repositories, event kinds and refs. It failed before the fix; all 790
+Node tests pass afterward. This adapter correction changes no Quint semantics.
+
 The implementation now includes a bounded controller I/O runner, a clean Git
 bundle publisher with a journaled draft-PR effect, a read-only Crew worker,
 an API-only update job and a reusable Actions workflow. Scenario tests drive

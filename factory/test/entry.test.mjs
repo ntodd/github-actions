@@ -21,6 +21,23 @@ test("the server's workflow attempt, repository, branch and commit must match th
   }
 });
 
+test("pull_request_target verifies the default-branch base independently of the reported PR head", async () => {
+  const head = "b".repeat(40), branch = "factory/setup-example";
+  const targetEnv = { ...env, GITHUB_EVENT_NAME: "pull_request_target", GITHUB_REF: "refs/heads/main" };
+  const pr = { base: { ref: "main", sha: A, repo: { id: 42 } }, head: { ref: branch, sha: head, repo: { id: 42 } } };
+  const targetRun = { ...actual, event: "pull_request_target", head_sha: head, head_branch: branch, pull_requests: [pr] };
+  const api = { run: async () => targetRun };
+  assert.equal((await verifyEntry({ api, context, env: targetEnv })).head_sha, head);
+  await assert.rejects(verifyEntry({ api, context, env: { ...targetEnv, GITHUB_REF: `refs/heads/${branch}` } }), /identity/);
+  for (const changed of [{ event: "pull_request" }, { pull_requests: [] }, { head_sha: A }, { head_branch: "other" },
+    { pull_requests: [{ ...pr, base: { ...pr.base, sha: head } }] },
+    { pull_requests: [{ ...pr, base: { ...pr.base, ref: "other" } }] },
+    { pull_requests: [{ ...pr, base: { ...pr.base, repo: { id: 99 } } }] },
+    { pull_requests: [{ ...pr, head: { ...pr.head, repo: { id: 99 } } }] }]) {
+    await assert.rejects(verifyEntry({ api: { run: async () => ({ ...targetRun, ...changed }) }, context, env: targetEnv }), /identity/);
+  }
+});
+
 test("the completion caller can enter only through a verified default-branch workflow_run", async () => {
   const path = ".github/workflows/factory-completion.yml", completionEnv = { ...env, GITHUB_EVENT_NAME: "workflow_run",
     GITHUB_WORKFLOW_REF: `ntodd/project/${path}@refs/heads/main`, FACTORY_COMPLETION_ENTRY: "true" };
