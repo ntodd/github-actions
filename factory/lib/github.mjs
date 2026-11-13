@@ -16,7 +16,7 @@ export function readClient({ token, repo, apiUrl = "https://api.github.com", fet
     if (new URL(url).origin !== origin) throw new Error("Refusing to send GitHub credentials to another origin");
     const res = await fetch(url, { method, redirect: "error", signal: AbortSignal.timeout(20_000), headers: body ? { ...headers, "content-type": "application/json" } : headers,
       ...(body ? { body: JSON.stringify(body) } : {}) });
-    if (!res.ok) throw new GitHubError(res.status, method, new URL(url).pathname);
+    if (!res.ok) throw await GitHubError.fromResponse(res, method, new URL(url).pathname);
     return { res, data: await res.json() };
   }
   async function repository() {

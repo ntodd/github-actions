@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { emptyLedger, recordFactoryApp } from "../lib/protocol.mjs";
 import { A, B } from "./fixtures.mjs";
 
-test("the real migration entry plans and imports on a read-only caller with only ledger write access and no worker", (t) => {
+test("the real entry preserves migration boundaries and uses the installation for active reconciliation", (t) => {
   const directory = mkdtempSync(join(tmpdir(), "factory-migration-entry-")); t.after(() => rmSync(directory, { recursive: true, force: true }));
   const shim = join(directory, "fetch.mjs"), seed = join(directory, "seed.json"), event = join(directory, "event.json");
   writeFileSync(seed, JSON.stringify(recordFactoryApp(emptyLedger("42"), { id: "123", login: "factory-app[bot]" })));
@@ -31,7 +31,8 @@ const issue={number:7,title:'Fix it',body:'Accepted task',state:'open',user:{log
 const pr={number:9,title:'Legacy fix',body:'Fixes #7',state:'open',user:{login:'factory-app[bot]'},labels:[],head:{sha:B,ref:'agent-ready/issue-7',repo:{full_name:'ntodd/project'}},base:{sha:A,ref:'main'}};
 const connection=nodes=>({nodes,pageInfo:{hasNextPage:false,endCursor:null}});
 globalThis.fetch=async(url,options={})=>{const path=new URL(url).pathname, method=options.method??'GET',body=options.body?JSON.parse(options.body):null;
-  requests.push({method,path,...(path.endsWith('/access_tokens')?{permissions:body.permissions}: {})});
+  const authorization=options.headers?.authorization;
+  requests.push({method,path,credential:authorization==='Bearer private-job-token'?'job':authorization==='Bearer fake-installation-token'?'app':'jwt',...(path.endsWith('/access_tokens')?{permissions:body.permissions}: {})});
   if(method==='POST'&&path==='/graphql'){
     const q=body.query;if(/\\bmutation\\b/.test(q))throw new Error('Migration attempted a GraphQL mutation');let object;
     if(q.includes('closingIssuesReferences'))object={number:9,headRefOid:B,closingIssuesReferences:connection([{number:7,repository:{nameWithOwner:'ntodd/project'}}])};
@@ -43,7 +44,8 @@ globalThis.fetch=async(url,options={})=>{const path=new URL(url).pathname, metho
     return Response.json({data:{repository:{[q.includes('issue(number:')?'issue':'pullRequest']:object}}});
   }
   if(method==='POST'&&path==='/app/installations/7/access_tokens'){
-    if(JSON.stringify(body.permissions)!==JSON.stringify({contents:'write'})||body.repositories.join(',')!=='project')throw new Error('Migration token exceeds ledger access');
+    const expected=process.env.ACTIVE_RUNTIME==='true'?{contents:'write',issues:'write',pull_requests:'write',actions:'write',checks:'read',statuses:'read'}:{contents:'write'};
+    if(JSON.stringify(body.permissions)!==JSON.stringify(expected)||body.repositories.join(',')!=='project')throw new Error('Token exceeds the requested role');
     return Response.json({token:'fake-installation-token',expires_at:'2099-01-01T00:00:00Z'});
   }
   if(method==='POST'&&path===root+'/git/trees'){
@@ -63,8 +65,9 @@ globalThis.fetch=async(url,options={})=>{const path=new URL(url).pathname, metho
   if(path===root+'/actions/runs/100/attempts/1')return Response.json({id:100,run_attempt:1,path:'.github/workflows/factory.yml',repository:{id:42},head_repository:{id:42},head_branch:'main',head_sha:A,status:'in_progress',event:'workflow_dispatch',actor:{login:'ntodd',type:'User'},triggering_actor:{login:'ntodd',type:'User'}});
   if(path===root+'/actions/workflows')return Response.json({workflows:[{id:1,path:'.github/workflows/agent-ready.yml',state:process.env.MIGRATION_LEGACY_STATE??'disabled_manually'}]});
   if(path===root+'/actions/workflows/1/runs')return Response.json({total_count:0,workflow_runs:[]});
-  if(path===root+'/issues')return Response.json([issue]);
-  if(path===root+'/pulls')return Response.json([pr]);
+  if(path===root+'/issues')return Response.json(process.env.ACTIVE_RUNTIME==='true'?[]:[issue]);
+  if(path===root+'/pulls')return Response.json(process.env.ACTIVE_RUNTIME==='true'?[]:[pr]);
+  if(path===root+'/rules/branches/main')return Response.json([]);
   if(path===root+'/issues/7')return Response.json(issue);
   if(path===root+'/pulls/9')return Response.json(pr);
   if(path===root+'/issues/7/events')return Response.json([{id:123,event:'labeled',label:{name:'agent-ready'},actor:{login:'ntodd'},created_at:'2026-11-11T12:00:00Z'}]);
@@ -110,4 +113,17 @@ globalThis.fetch=async(url,options={})=>{const path=new URL(url).pathname, metho
   const conflict = execute(planned.report.applyRequest, "conflict", { MIGRATION_LEGACY_STATE: "active", FACTORY_APP_PRIVATE_KEY: "must-not-be-used" });
   assert.equal(conflict.result.status, 1); assert.equal(conflict.observed.requests.some((r) => r.path.endsWith("/access_tokens")), false);
   assert.deepEqual(conflict.observed.state.items, {});
+  const runtime = execute({ kind: "reconcile" }, "runtime", { FACTORY_DRY_RUN: "false", ACTIVE_RUNTIME: "true" });
+  assert.equal(runtime.result.status, 0, runtime.result.stderr);
+  assert.equal(runtime.report.outcomes.some((o) => o.status === "interrupted"), false);
+  const mint = runtime.observed.requests.findIndex((r) => r.path.endsWith("/access_tokens"));
+  assert.ok(mint > 0);
+  assert.ok(runtime.observed.requests.slice(0, mint).some((r) => r.path.endsWith("/actions/runs/100/attempts/1") && r.credential === "job"));
+  for (const path of ["/repos/ntodd/project/issues", "/repos/ntodd/project/pulls", "/repos/ntodd/project/rules/branches/main"]) {
+    const requests = runtime.observed.requests.filter((r) => r.path === path);
+    assert.ok(requests.length > 0); assert.ok(requests.every((r) => r.credential === "app"));
+  }
+  const deniedRuntime = execute({ kind: "reconcile" }, "denied-runtime", { FACTORY_DRY_RUN: "false", ACTIVE_RUNTIME: "true", GITHUB_SHA: B });
+  assert.equal(deniedRuntime.result.status, 1);
+  assert.equal(deniedRuntime.observed.requests.some((r) => r.path.endsWith("/access_tokens")), false);
 });

@@ -373,6 +373,15 @@ Legacy or lost responses keep the previous bounded unknown-delivery behavior.
 Actual receipt persistence under GitHub delivery and API failures still needs
 live validation; the API response never grants work authority by itself.
 
+Active runtime API observations use the verified App installation after entry
+provenance and legacy isolation pass with the job's read token. The requested
+checks/status read permissions are already required by setup. Inspection and
+migration retain their existing credential boundaries; the real-entry subprocess
+regression verifies both the credential switch and rejection before token minting
+for a mismatched entry head. API adapters retain bounded numeric rate-limit
+diagnostics without echoing response bodies or retrying requests. These are
+adapter tests outside Quint's projection, not proof of live API capacity.
+
 The sandbox also exposed a concrete serialization mismatch: the Git ledger
 sorts JSON object keys, but API-effect and measured-usage identity checks
 compared insertion-ordered JSON strings. Recovery now compares those objects

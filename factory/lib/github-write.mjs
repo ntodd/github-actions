@@ -23,7 +23,7 @@ export function writeClient({ token, repo, apiUrl = "https://api.github.com", fe
     if (!sameRepository) throw new Error("Unexpected GitHub API target");
     const res = await fetch(url, { method, headers: { ...headers, "x-github-api-version": version, ...(body ? { "content-type": "application/json" } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}) });
-    if (!res.ok) throw new GitHubError(res.status, method, new URL(url).pathname);
+    if (!res.ok) throw await GitHubError.fromResponse(res, method, new URL(url).pathname);
     return { data: [202, 204].includes(res.status) ? null : await res.json(), link: res.headers.get("link") };
   }
   const commentPath = (kind, id) => {
@@ -35,7 +35,7 @@ export function writeClient({ token, repo, apiUrl = "https://api.github.com", fe
     const res = await fetch(url, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({
       query: "mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{number headRefOid isDraft}}}", variables: { id: nodeId },
     }) });
-    if (!res.ok) throw new GitHubError(res.status, "POST", "/graphql");
+    if (!res.ok) throw await GitHubError.fromResponse(res, "POST", "/graphql");
     const result = await res.json();
     if (result.errors?.length || !result.data?.markPullRequestReadyForReview?.pullRequest) throw new Error("Ready-for-review response is uncertain");
     return result.data.markPullRequestReadyForReview.pullRequest;
@@ -43,7 +43,7 @@ export function writeClient({ token, repo, apiUrl = "https://api.github.com", fe
   async function threadMutation(query, variables, field) {
     const url = apiUrl.endsWith("/api/v3") ? `${origin}/api/graphql` : `${apiUrl}/graphql`;
     const res = await fetch(url, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ query, variables }) });
-    if (!res.ok) throw new GitHubError(res.status, "POST", "/graphql");
+    if (!res.ok) throw await GitHubError.fromResponse(res, "POST", "/graphql");
     const result = await res.json();
     if (result.errors?.length || !result.data?.[field]) throw new Error("Thread mutation response is uncertain");
     return result.data[field];

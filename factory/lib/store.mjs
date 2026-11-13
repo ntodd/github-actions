@@ -4,6 +4,21 @@ import { emptyLedger, validateLedger, ProtocolError } from "./protocol.mjs";
 
 export class GitHubError extends Error {
   constructor(status, method, path) { super(`GitHub ${method} ${path}: ${status}`); this.name = "GitHubError"; this.status = status; }
+  static async fromResponse(res, method, path) {
+    const error = new GitHubError(res.status, method, path);
+    const remaining = res.headers?.get("x-ratelimit-remaining"), reset = res.headers?.get("x-ratelimit-reset"), retry = res.headers?.get("retry-after");
+    if (/^\d{1,10}$/.test(remaining ?? "")) error.rateLimitRemaining = Number(remaining);
+    if (/^\d{1,11}$/.test(reset ?? "")) error.rateLimitReset = Number(reset);
+    if (/^\d{1,6}$/.test(retry ?? "") && Number(retry) <= 86400) error.retryAfter = Number(retry);
+    if ([403, 429].includes(res.status)) {
+      const data = await res.json().catch(() => null);
+      if (typeof data?.message === "string" && /secondary rate limit/i.test(data.message)) error.message += " (secondary API rate limit)";
+      else if (error.rateLimitRemaining === 0) error.message += " (API rate limit exhausted)";
+      if (error.rateLimitReset) error.message += `; rate limit resets at ${new Date(error.rateLimitReset * 1000).toISOString()}`;
+      if (error.retryAfter !== undefined) error.message += `; retry after ${error.retryAfter}s`;
+    }
+    return error;
+  }
 }
 export class UncertainStateWrite extends Error {
   constructor(commit, cause) { super(`Cannot establish whether state commit ${commit} was applied`, { cause }); this.name = "UncertainStateWrite"; this.commit = commit; }
@@ -35,19 +50,7 @@ export function githubData({ token, repo, apiUrl = "https://api.github.com", fet
     });
     // Never include request bodies or credentials in error messages. In
     // particular, do not blindly retry a write on 5xx or a network timeout.
-    if (!res.ok) {
-      const error = new GitHubError(res.status, method, path);
-      const remaining = res.headers?.get("x-ratelimit-remaining"), reset = res.headers?.get("x-ratelimit-reset");
-      if (/^\d{1,10}$/.test(remaining ?? "")) error.rateLimitRemaining = Number(remaining);
-      if (/^\d{1,11}$/.test(reset ?? "")) error.rateLimitReset = Number(reset);
-      if ([403, 429].includes(res.status)) {
-        const data = await res.json().catch(() => null);
-        if (typeof data?.message === "string" && /secondary rate limit/i.test(data.message)) error.message += " (secondary API rate limit)";
-        else if (error.rateLimitRemaining === 0) error.message += " (API rate limit exhausted)";
-        if (error.rateLimitReset) error.message += `; rate limit resets at ${new Date(error.rateLimitReset * 1000).toISOString()}`;
-      }
-      throw error;
-    }
+    if (!res.ok) throw await GitHubError.fromResponse(res, method, path);
     const value = res.status === 204 ? null : await res.json();
     if (immutable) {
       const text = JSON.stringify(value), bytes = Buffer.byteLength(text), limit = 32 * 1024 * 1024;

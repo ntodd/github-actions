@@ -90,7 +90,7 @@ export function actionsClient({ token, repo, apiUrl = "https://api.github.com", 
     const url = path.startsWith("https://") ? path : `${root}${path}`;
     if (new URL(url).origin !== origin || !url.startsWith(`${root}/`)) throw new Error("Unexpected Actions API target");
     const res = await fetch(url, { headers, redirect: "manual", signal: AbortSignal.timeout(20_000) }).catch((error) => { throw new ReadUnavailable(error); });
-    if (!res.ok && res.status !== 302) throw new GitHubError(res.status, "GET", new URL(url).pathname);
+    if (!res.ok && res.status !== 302) throw await GitHubError.fromResponse(res, "GET", new URL(url).pathname);
     return res;
   }
   async function list(path, pick) {

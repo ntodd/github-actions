@@ -23,7 +23,7 @@ main(async () => {
   const env = process.env, repo = env.GITHUB_REPOSITORY, apiUrl = env.GITHUB_API_URL;
   const attachmentToken = env.AGENT_ATTACH_TOKEN;
   if (attachmentToken) { mask(attachmentToken); delete env.AGENT_ATTACH_TOKEN; }
-  const api = readClient({ token: env.GITHUB_TOKEN, repo, apiUrl });
+  let api = readClient({ token: env.GITHUB_TOKEN, repo, apiUrl });
   const context = { ...await loadConfig(api), repo };
   const event = JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, "utf8"));
   await verifyEntry({ api, env, context, event });
@@ -69,10 +69,13 @@ main(async () => {
     if (!key) throw new Error("The clean controller requires its App credential");
     const app = { appId: env.FACTORY_APP_ID, privateKey: key, repo, apiUrl };
     const installation = await installationToken({ ...app, permissions: request.kind === "migrate" ? { contents: "write" }
-      : { contents: "write", issues: "write", pull_requests: "write", actions: "write" } });
+      : { contents: "write", issues: "write", pull_requests: "write", actions: "write", checks: "read", statuses: "read" } });
     token = installation.token; mask(token);
     appLogin = `${await appSlug(app)}[bot]`;
     delete env.FACTORY_APP_PRIVATE_KEY;
+    // Provenance and legacy isolation were checked with the job's read token.
+    // Use the already-authorized installation for the bulk runtime API reads.
+    if (request.kind !== "migrate") api = readClient({ token, repo, apiUrl });
   }
   const store = stateStore({ repositoryId: context.repositoryId, git: githubData({ token, repo, apiUrl }) });
   const { state } = await store.load();
