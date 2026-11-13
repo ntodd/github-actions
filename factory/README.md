@@ -287,9 +287,6 @@ the configured Claude worker on Crew.
 
 ## Remaining work
 
-- Complete verified consumption of App-inspection reports for administrator
-  setup without a local key, then exercise the owner-only inspection in the sandbox.
-
 - Add attachments. Verify restart, stop/continue, close/reopen evidence, thread replies/resolution, status,
   acknowledgements, notifications and review effects with the App in the
   sandbox, including review-request behavior on draft PRs.

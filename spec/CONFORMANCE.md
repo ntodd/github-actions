@@ -187,7 +187,7 @@ and retains the administrator exemption, but contains no strict status checks
 or state-branch protections. No mutations were attempted. These observations
 establish outstanding setup work, not permission or approval enforcement.
 The connector rejected the workflow-catalog endpoint; it supplies no current
-legacy-isolation inventory. CLI authentication remains unresolved.
+legacy-isolation inventory. CLI authentication was unresolved at that point.
 
 The previously approved [sandbox PR #17](https://github.com/ntodd/agent-ready-sandbox/pull/17)
 was merged at `f7b354d438ec6250b146ffedefadf9c7f4a23872` at 17:12 UTC.
@@ -203,8 +203,8 @@ error and there is no job log. The user supplied GitHub's validation message:
 not a successful controller or event-loop test.
 The separate [CI push run](https://github.com/ntodd/agent-ready-sandbox/actions/runs/43266941198)
 failed `Tipper.TipLogTest` with seed `656758`; no test source changed in #17.
-Owner-only App inspection has not been dispatched: the CLI keyring token is
-invalid and computer-use inventory reports no browser session.
+At that point owner-only App inspection had not been dispatched: the CLI
+keyring token was invalid and computer-use inventory reported no browser session.
 
 Sandbox correction `0e08851b2b0f7e62e911b53c0d61bd1064d27db8` removed only
 `factory` from the installed read-only caller's completion subscriptions.
@@ -233,6 +233,25 @@ caller. JavaScript scenarios cover these boundaries and both generated
 callers pass cross-workflow actionlint. The new completion caller has not yet
 been deployed; live worker recovery remains required. These workflow-routing
 details remain outside Quint's ownership projection.
+
+After the owner refreshed CLI authentication, the read-only
+[App inspection](https://github.com/ntodd/agent-ready-sandbox/actions/runs/43344832874)
+succeeded on 2026-11-13 at default head
+`0e08851b2b0f7e62e911b53c0d61bd1064d27db8`, shared SHA
+`d2a6b3fc40695b397bb86694f2b81f09bb8fccba`, attempt 1. Both actor fields
+were `ntodd`; worker/update jobs were skipped. Artifact `14001650564` has digest
+`sha256:9716d874b56b2269ec4dbd48467e706eb2ae59a274b1d2d374fcac87df3ee448`.
+The production `readAppInspection` adapter downloaded and accepted it against
+the live run/job/caller identities, digest, current App variable and current
+repository state, using only the administrator's GitHub login and no local
+App key. It verified App `5656598` (`ntodd-agent`) and active installation
+`179581506`, with contents/issues/pull-requests/actions write and checks/statuses
+read. Neither permission map grants administration or workflows access.
+`factory-state` still returned 404 afterward. This proves declared identity,
+installation metadata and authenticated artifact consumption for this run;
+state setup, effective write restrictions, Crew isolation and approval
+enforcement remain separate live gates. The report is deliberately fresh-run
+and current-head bound, not a reusable authorization file.
 
 Config parsing uses a pinned bundled YAML parser, regenerated and checked
 against its source by the build scripts. GitHub read queries have also been
@@ -479,8 +498,9 @@ token minting, state access or worker output. Bootstrap CLI preview runs
 without local App credentials or mutations; publishing scenarios restrict it
 to the pinned read-only caller/config and recover a lost PR response. The
 shared job filters controller completion wake-ups before allocating a runner;
-unit/workflow-shape checks cover that filter, not real event delivery. Live
-inspection and authenticated artifact consumption still require validation.
+unit/workflow-shape checks cover that filter, not worker completion delivery.
+Owner-only inspection and authenticated artifact consumption passed the live
+check recorded above; App-backed mutations and worker recovery remain unverified.
 
 Legacy migration is also outside the fixed-admission, fixed-PR model. The
 manual default-branch request produces a read-only inventory, then requires
