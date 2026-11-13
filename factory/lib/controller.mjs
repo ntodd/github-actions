@@ -28,11 +28,17 @@ export function parseRequest(value) {
 }
 
 export async function discover({ api, store, context, target = null }) {
-  const [issues, prs] = await Promise.all([api.openIssues(), api.openPulls()]);
-  const candidates = new Map([...issues, ...prs].map((s) => [s.number, s]));
-  if (target && !candidates.has(target)) {
+  let candidates;
+  // Targets narrow discovery, never authorization or reconciliation of the
+  // already-tracked items. A targetless backstop still scans the repository.
+  if (target) {
+    const { state } = await store.load();
+    if (Object.values(state.items).some((i) => i.key === `issue:${target}` || i.key === `pr:${target}` || i.prs.some((p) => p.number === target))) return { errors: [] };
     const issue = await api.issue(target);
-    candidates.set(target, issue.pull_request ? await api.pull(target) : issue);
+    candidates = new Map([[target, issue.pull_request ? await api.pull(target) : issue]]);
+  } else {
+    const [issues, prs] = await Promise.all([api.openIssues(), api.openPulls()]);
+    candidates = new Map([...issues, ...prs].map((s) => [s.number, s]));
   }
   const errors = [];
   for (const [number, subject] of candidates) {

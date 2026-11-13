@@ -148,6 +148,52 @@ test("a stop is recorded while acknowledgement delivery remains unknown", async 
     context: { sha: A, defaultBranch: "main", config: {} } })).claimed, false);
 });
 
+test("targeted wake-ups skip discovery for tracked issues and their PRs", async () => {
+  for (const target of [7, 9]) {
+    const f = fixture(); await f.pass();
+    await claimOperation({ api: f.api, store: f.store, repo: "ntodd/project", itemKey: "issue:7", operationId: "op-1", run,
+      context: { sha: A, defaultBranch: "main", config: {} } });
+    f.finish(); await f.pass();
+    let listings = 0;
+    f.api.openIssues = async () => { listings++; return [f.source]; };
+    f.api.openPulls = async () => { listings++; return [f.pr]; };
+    const result = await f.pass({ target, dryRun: true });
+    assert.equal(listings, 0, String(target));
+    assert.deepEqual(result.admissions, []);
+    assert.equal(result.plans.length, 1);
+  }
+});
+
+test("new target discovery is focused while a backstop retains full discovery", async () => {
+  for (const target of [8, null]) {
+    const f = fixture(), other = { ...f.source, number: 8 };
+    let listings = 0;
+    f.api.issue = async (n) => n === 8 ? other : f.source;
+    f.api.openIssues = async () => { listings++; return [f.source]; };
+    f.api.openPulls = async () => { listings++; return []; };
+    const result = await f.pass({ target, dryRun: true });
+    assert.equal(listings, target ? 0 : 2);
+    assert.deepEqual(result.admissions.map(a => a.key), [target ? "issue:8" : "issue:7"]);
+    assert.deepEqual(f.state.items, {});
+  }
+});
+
+test("a targeted wake-up still observes stops on other tracked items", async () => {
+  const f = fixture(), other = { ...f.source, number: 8 }, events = f.api.events;
+  f.api.issue = async (n) => n === 8 ? other : f.source;
+  f.api.events = async (n) => (await events()).map(e => ({ ...e, id: e.id + n }));
+  f.api.openIssues = async () => [f.source, other];
+  let sequence = 0; await f.pass({ operationId: () => `op-${++sequence}` });
+  let listings = 0;
+  f.api.openIssues = async () => { listings++; return [f.source, other]; };
+  f.api.openPulls = async () => { listings++; return []; };
+  f.api.comments = async (n) => n === 8 ? [{ id: 999, body: "/agent stop", user: { login: "ntodd" }, created_at: at, updated_at: at }] : [];
+  await f.pass({ target: 7, maxPasses: 1 });
+  assert.equal(f.state.items["issue:8"].paused, true);
+  assert.equal(f.state.operations["op-2"].phase, "superseded");
+  assert.equal(listings, 0);
+});
+
 test("publication waits retain the adapter diagnostic without exposing its error properties", async () => {
   const f = fixture(); await f.pass();
   await claimOperation({ api: f.api, store: f.store, repo: "ntodd/project", itemKey: "issue:7", operationId: "op-1", run,
