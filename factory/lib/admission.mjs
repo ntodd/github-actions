@@ -56,8 +56,11 @@ export function classifyText(fact, kind, config, { target, thread, state, head }
   const trustedEdits = Array.isArray(fact.editors) && fact.editors.length > 0 && fact.editors.every((editor) => trustedHuman(config, editor));
   const trusted = trustedHuman(config, author) && (unedited(fact) || trustedEdits);
   const bot = author !== config.factoryAppLogin && config.reviewBots.some((b) => b === author);
+  // Minimizing a comment changes REST updated_at without editing its text.
+  // Preserve existing unedited-command identities when GraphQL confirms this.
+  const editedAt = fact.lastEditedAt === null ? fact.created_at ?? fact.createdAt : fact.lastEditedAt;
   const revision = fingerprint([body, state ?? fact.state ?? null, head ?? fact.commit_id ?? null,
-    fact.lastEditedAt ?? fact.updated_at ?? fact.updatedAt ?? fact.created_at ?? null]);
+    editedAt ?? fact.updated_at ?? fact.updatedAt ?? fact.created_at ?? null]);
   return { sourceId: `${kind}:${sourceId}`, revision, body, author, target, thread,
     state: state ?? fact.state ?? null, head: head ?? fact.commit_id ?? null,
     createdAt: fact.createdAt ?? fact.created_at ?? fact.submitted_at,

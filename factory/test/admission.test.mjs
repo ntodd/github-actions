@@ -2,11 +2,24 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseConfig, withFactoryApp } from "../lib/config.mjs";
 import { authorizeIssue, authorizeOwnPr, classifyText, classifyLabel, parseCommand, sourceMarker, readFeedback, inspectIssue, inspectOwnPr } from "../lib/admission.mjs";
+import { ingestCommands } from "../lib/commands.mjs";
+import { initial } from "./fixtures.mjs";
 const config = parseConfig("trusted-users: [ntodd]\nproducers: [flake-hunt, main-red]\nreview-bots: [reviewer[bot]]".replace("[reviewer[bot]]", "['reviewer[bot]']"));
 const issue = { number: 7, title: "Fix it", body: "Task", state: "open", user: { login: "ntodd" }, labels: [{ name: "agent-ready" }] };
 const label = { id: 10, event: "labeled", created_at: "2026-11-12T00:00:00Z", label: { name: "agent-ready" }, actor: { login: "ntodd" } };
 const comment = (id, body, login = "ntodd") => ({ id, body, user: { login }, created_at: "2026-11-12T00:00:00Z", updated_at: "2026-11-12T00:00:00Z" });
 const auth = (over = {}) => authorizeIssue({ issue, editors: [], events: [label], config, ...over });
+
+test("metadata-only comment updates preserve the original command identity", () => {
+  const original = comment(20, "/agent update");
+  const before = classifyText(original, "issue-comment", config, { target: 9 });
+  const after = classifyText({ ...original, lastEditedAt: null, updated_at: "2026-11-15T13:00:00Z" }, "issue-comment", config, { target: 9 });
+  assert.equal(after.command.action, "update"); assert.equal(after.revision, before.revision);
+  const state = ingestCommands(ingestCommands(initial(), "issue:7", [before]), "issue:7", [after]);
+  assert.equal(Object.keys(state.items["issue:7"].commands).length, 1);
+  assert.notEqual(classifyText({ ...original, body: "/agent stop", lastEditedAt: null }, "issue-comment", config).revision, before.revision);
+  assert.equal(classifyText({ ...original, lastEditedAt: original.created_at }, "issue-comment", config).command, null);
+});
 
 test("admission follows original trusted evidence across relabels and status changes", () => {
   const first = auth();
