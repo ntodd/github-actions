@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { admit, emptyLedger, evolve, revisionOf } from "../factory/lib/protocol.mjs";
+import { admit, emptyLedger, evolve, revisionOf, TERMINAL } from "../factory/lib/protocol.mjs";
 import { completionGaps, publicationDigest, landedCommits } from "../factory/lib/effects.mjs";
 import { replayScheduling } from "./scheduling-replay.mjs";
 
@@ -50,6 +50,7 @@ function replay(file) {
   function update(event) { ledger = evolve(ledger, "issue:7", { at, publisher: { id: "900", attempt: 1 }, ...event }); }
   function obs(m) { return { authorization: { valid: true, revision }, open: !m.merged.includes(m.target) && m.defaultRef === m.expectedDefaultRef,
     head: sha(m.heads[m.target]), baseSha: sha(m.main) }; }
+  let checkedMetadataRecovery = false;
   for (let n = 1; n < states.length; n++) {
     const a = states[n - 1], b = states[n], id = `op-${b.op}`;
     const event = (type, extra = {}) => update({ type, operationId: id, ...extra });
@@ -129,6 +130,21 @@ function replay(file) {
           at, checks: 1, source: "main", ref: baseRef(b.defaultRef), destination: sha(b.main), method: b.main === 100 + op ? "commit" : "ancestor" } });
       } else if (b.complete !== a.complete) event("close-out");
 
+      const current = ledger.items["issue:7"], active = ledger.operations[current.activeOperation];
+      const open = current.prs.filter((p) => p.required && p.state === "open");
+      if (!checkedMetadataRecovery && !current.question && !current.complete && !current.authorizationRevoked
+        && open.length && (!active || TERMINAL.has(active.phase))) {
+        // Mergeability-question recovery stutters in the lifecycle model:
+        // it cannot change ownership, authorization, attempts or a pause.
+        const before = structuredClone(ledger);
+        event("ask", { reason: "GitHub has not determined mergeability; the wait deadline was exceeded" });
+        event("resolve-mergeability-question", { authorization: { valid: true, revision },
+          prs: open.map((p) => ({ number: p.number, headSha: sha(b.heads[p.number]), baseSha: sha(b.main), mergeable: "MERGEABLE" })) });
+        const after = structuredClone(ledger);
+        for (const state of [before, after]) for (const field of ["question", "lastQuestion", "questionSequence"]) delete state.items["issue:7"][field];
+        assert.deepEqual(after, before);
+        checkedMetadataRecovery = true;
+      }
       const item = ledger.items["issue:7"], op = ledger.operations[id];
       assert.equal(item.generation, b.generation);
       assert.equal(item.paused, b.paused);

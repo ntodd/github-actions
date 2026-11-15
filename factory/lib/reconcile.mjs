@@ -28,7 +28,10 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
       deadline ??= item.status?.wait?.kind === kind && JSON.stringify(item.status.wait.target) === JSON.stringify(target)
         ? item.status.wait.deadline : null;
       deadline ??= new Date(instant + config.timeouts.ciMinutes * minute).toISOString();
-      if (instant >= Date.parse(deadline)) return ask(`${reason}; the wait deadline was exceeded`);
+      if (instant >= Date.parse(deadline)) {
+        if (kind === "mergeability") return finish(null, label, `${reason}; automatic checks continue`, { kind, target, deadline });
+        return ask(`${reason}; the wait deadline was exceeded`);
+      }
     }
     return finish(null, label, reason, { kind, target, deadline });
   };
@@ -265,6 +268,14 @@ export function decideItem(ledger, key, facts, config, { now = new Date().toISOS
     return finish({ type: "continue-issue", commandId: command.id }, "agent-waiting", "Reopen the issue before continuing its existing PRs");
   }
   if (item.paused) return wait("agent-stopped", "Automatic work is paused", "work-command", key);
+  if (item.question?.kind === null && !item.question.operation
+    && item.question.reason === "GitHub has not determined mergeability; the wait deadline was exceeded"
+    && !facts.observationError && !item.authorizationRevoked && facts.authorization?.valid === true
+    && facts.authorization.revision === item.revision && (!op || TERMINAL.has(op.phase))
+    && open.length && open.every((pr) => ["MERGEABLE", "CONFLICTING"].includes(pr.mergeable))) {
+    observe({ type: "resolve-mergeability-question", authorization: facts.authorization,
+      prs: open.map(({ number, headSha, baseSha, mergeable }) => ({ number, headSha, baseSha, mergeable })) });
+  }
   if (item.question) return wait(item.status?.state === "agent-failed" ? "agent-failed" : "agent-needs-you", item.question.reason, "answer", key);
   if (facts.observationError) return op?.phase === "result-ready"
     ? finish({ type: "publish", operationId: op.id }, "agent-waiting", "Reobserve the accepted result's publication preconditions")

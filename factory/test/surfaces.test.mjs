@@ -60,6 +60,40 @@ function fixture() {
     } };
 }
 
+test("work commands acknowledge with one reaction and no conversation reply", async () => {
+  const f = fixture(), command = await f.command("/agent update"), service = f.service();
+  await service.acknowledge(); await service.acknowledge();
+  assert.equal(f.writes.filter(([kind]) => kind === "reaction").length, 1);
+  assert.equal(f.writes.filter(([kind]) => kind === "comment").length, 0);
+  assert.equal(f.state.items["issue:7"].commands[command.id].acknowledgement, "done");
+  assert.equal(Object.values(f.state.items["issue:7"].apiEffects).some((e) => e.slot.startsWith("ack-reply:")), false);
+});
+
+test("API recovery stays in the journal and Actions diagnostics without additional comments", async () => {
+  const f = fixture(), service = f.service(), original = f.write.comment, outcomes = [];
+  const marker = "<!-- factory:notice=lost -->";
+  f.write.comment = async (n, body) => { if (body.includes(marker)) throw new Error("Response unknown"); return original(n, body); };
+  await service.execute("issue:7", "lost-notice", { kind: "comment-create", target: 9, payload: { marker, body: marker } });
+  f.tick("2026-11-12T12:16:00Z");
+  await service.render(f.state, f.context, outcomes); await service.render(f.state, f.context, outcomes);
+  const alert = Object.values(f.state.items["issue:7"].apiAlerts)[0];
+  assert.equal(alert.status, "active"); assert.equal(f.state.items["issue:7"].question, null);
+  assert.equal(f.rows.get(9).length, 1);
+  const visible = f.rows.get(9)[0].body.replace(/<!--[\s\S]*?-->/g, "");
+  assert.doesNotMatch(visible, /Needs attention|Request:|[a-f0-9]{64}/);
+  assert.match(visible, /https:\/\/github.com\/ntodd\/project\/actions\/workflows\/factory.yml/);
+  assert.ok(outcomes.some((o) => o.surface === "api-recovery" && o.request === alert.request));
+  assert.equal(f.state.items["issue:7"].apiEffects[alert.effect].requests.length, 1);
+});
+
+test("paused status keeps the in-flight warning while request details stay in diagnostics", () => {
+  const state = evolve(pending(), "issue:7", { type: "stop" });
+  const body = projectItem(state, "issue:7").find((p) => p.target === 9).body;
+  assert.match(body.replace(/<!--[\s\S]*?-->/g, ""), /Previously sent requests may still finish/);
+  assert.doesNotMatch(body.replace(/<!--[\s\S]*?-->/g, ""), /op-1\/push\/1/);
+  assert.match(body, /op-1\/push\/1/);
+});
+
 test("status is edited in place and factory label repair preserves unrelated human labels", async () => {
   const f = fixture(), service = f.service();
   await service.render(f.state, f.context); await service.render(f.state, f.context);
@@ -73,7 +107,7 @@ test("status is edited in place and factory label repair preserves unrelated hum
   assert.match(f.rows.get(9)[0].body, /Waiting for CI/);
 });
 
-test("label inventory failures produce one durable observation notice and recover it in place", async () => {
+test("label inventory failures retain durable diagnostics and recover without a notification", async () => {
   const f = fixture(), service = f.service(), issue = f.api.issue;
   await service.render(f.state, f.context); let reads = 0;
   f.api.issue = async (n) => { if (n === 9) { reads++; throw Object.assign(new Error("private read detail"), { status: 403 }); } return issue(n); };
@@ -81,13 +115,13 @@ test("label inventory failures produce one durable observation notice and recove
   const alerts = Object.values(f.state.items["issue:7"].apiAlerts);
   assert.equal(alerts.length, 1); assert.equal(alerts[0].source, "preflight"); assert.equal(alerts[0].kind, "labels");
   assert.equal(alerts[0].request, undefined); assert.equal(f.state.items["issue:7"].question, null);
-  const notice = f.rows.get(9).find((r) => r.body.includes("factory:attention="));
-  assert.match(notice.body, /Observation:/); assert.doesNotMatch(notice.body, /Request:|undefined|private read detail/);
+  assert.equal(f.rows.get(9).filter((r) => r.body.includes("factory:attention=")).length, 0);
+  const status = f.rows.get(9).find((r) => r.body.includes("factory:status="));
+  assert.doesNotMatch(status.body, /private read detail/);
   f.tick("2026-11-12T12:04:00Z"); await service.render(f.state, f.context); assert.equal(reads, 3);
   f.api.issue = issue; f.tick("2026-11-12T12:07:00Z"); await service.render(f.state, f.context);
   assert.equal(f.state.items["issue:7"].apiAlerts[alerts[0].id].resolution, "observed");
-  assert.equal(f.rows.get(9).filter((r) => r.body.includes("factory:attention=")).length, 1);
-  assert.match(f.rows.get(9).find((r) => r.id === notice.id).body, /Recovered/);
+  assert.equal(f.rows.get(9).length, 1); assert.equal(f.rows.get(9)[0].id, status.id);
   assert.equal(f.state.items["issue:7"].attempts.length, 0);
 });
 
@@ -100,7 +134,7 @@ test("a failed status lookup still permits label repair and cannot recursively n
   assert.deepEqual(f.labels.get(9).sort(), ["agent-review", "bug"]);
   const item = f.state.items["issue:7"], alerts = Object.values(item.apiAlerts);
   assert.equal(alerts.length, 1); assert.equal(alerts[0].kind, "status"); assert.equal(alerts[0].source, "preflight");
-  assert.ok(Object.values(item.preflights).some((r) => r.kind === "notification"));
+  assert.equal(Object.values(item.apiEffects ?? {}).some((e) => e.slot.startsWith("attention:")), false);
   assert.equal(Object.values(item.preflights).find((r) => r.kind === "status").failures, 3);
   assert.ok(Object.values(item.apiEffects).filter((e) => e.definition.kind === "comment-create" && e.definition.target === 9)
     .every((e) => e.requests.length === 0));
@@ -134,7 +168,7 @@ test("a runtime conflict before surface submission leaves an unsent intent witho
   assert.ok(outcomes.some((o) => o.reason === "Legacy runtime conflict"));
 });
 
-test("a trusted label gets one acknowledgement without trying to react to a timeline event", async () => {
+test("a trusted label is acknowledged without a conversation reply or a timeline reaction", async () => {
   const f = fixture(), originalEvents = f.api.events;
   const event = { id: 124, event: "labeled", created_at: at, actor: { login: "ntodd" }, label: { name: "effort:high" } };
   f.api.events = async () => [...await originalEvents(), event];
@@ -142,8 +176,8 @@ test("a trusted label gets one acknowledgement without trying to react to a time
   const service = f.service();
   await service.acknowledge(); await service.acknowledge();
   assert.equal(f.writes.filter(([kind]) => kind === "reaction").length, 0);
-  assert.equal(f.writes.filter(([kind]) => kind === "comment").length, 1);
-  assert.match(f.rows.get(7)[0].body, /Using high effort/);
+  assert.equal(f.writes.filter(([kind]) => kind === "comment").length, 0);
+  assert.equal(f.state.items["issue:7"].effort, "high");
   assert.equal(Object.values(f.state.items["issue:7"].commands)[0].acknowledgement, "done");
 });
 
@@ -181,16 +215,16 @@ test("failed status receipt reads back off and recover from a subsequent authori
   assert.equal(Object.values(f.state.items["issue:7"].preflights).find((r) => r.kind === "status").status, "observed");
 });
 
-test("mentions get eyes immediately and a single action acknowledgement after routing", async () => {
+test("mentions get eyes immediately and complete acknowledgement after routing without a reply", async () => {
   const f = fixture(), command = await f.command("@ntodd-agent rebase this"), service = f.service();
   await service.acknowledge();
   assert.equal(f.writes.filter(([kind]) => kind === "reaction").length, 1);
   assert.equal(f.writes.filter(([kind]) => kind === "comment").length, 0);
   await f.store.transact((s) => resolveRoute(s, "issue:7", command.id, "update"));
   await service.acknowledge(); await service.acknowledge();
-  assert.equal(f.writes.filter(([kind]) => kind === "comment").length, 1);
+  assert.equal(f.writes.filter(([kind]) => kind === "comment").length, 0);
   assert.equal(f.state.items["issue:7"].commands[command.id].acknowledgement, "done");
-  assert.match(f.rows.get(9).at(-1).body, /with a merge/);
+  assert.equal(f.writes.filter(([kind]) => kind === "reaction").length, 1);
 });
 
 test("edited or deleted commands cannot cause acknowledgements", async () => {
@@ -198,18 +232,20 @@ test("edited or deleted commands cannot cause acknowledgements", async () => {
   await f.service().acknowledge(); assert.equal(f.writes.length, 0);
 });
 
-test("a stop acknowledgement lists the exact in-flight writes without resuming publication", async () => {
+test("a stop reaction leaves in-flight details in status without resuming publication", async () => {
   const f = fixture();
   await f.store.transact(() => { const state = pending(); state.items["issue:7"].prs.pop(); return state; });
   await f.command("/agent stop"); await f.service().acknowledge();
-  const reply = f.rows.get(9).find((r) => r.body.includes("factory:ack="));
-  assert.match(reply.body, /Work is paused/); assert.match(reply.body, /op-1\/push\/1/);
+  await f.service().render(f.state, f.context);
+  const status = f.rows.get(9).find((r) => r.body.includes("factory:status="));
+  assert.match(status.body, /Automatic work is paused/); assert.match(status.body, /op-1\/push\/1/);
+  assert.equal(f.rows.get(9).some((r) => r.body.includes("factory:ack=")), false);
   assert.equal(f.state.operations["op-1"].phase, "publishing");
   assert.equal(f.state.items["issue:7"].paused, true);
   assert.equal(projectItem(f.state, "issue:7").find((p) => p.target === 9).status.state, "agent-stopped");
 });
 
-test("an unresolved surface request notifies once without blocking code and is edited after recovery", async () => {
+test("an unresolved surface request recovers without notifying or blocking code", async () => {
   const f = fixture(), service = f.service(), original = f.write.comment;
   const marker = "<!-- factory:notice=unresolved -->", body = `Public request\n${marker}`;
   let requests = 0;
@@ -222,13 +258,13 @@ test("an unresolved surface request notifies once without blocking code and is e
   const alerts = Object.values(f.state.items["issue:7"].apiAlerts);
   assert.equal(alerts.length, 1); assert.equal(alerts[0].status, "active");
   assert.equal(f.state.items["issue:7"].question, null);
-  assert.equal(f.rows.get(9).filter((r) => r.body.includes("factory:attention=")).length, 1);
+  assert.equal(f.rows.get(9).filter((r) => r.body.includes("factory:attention=")).length, 0);
   assert.equal(requests, 1);
   f.rows.get(9).push({ id: 2000, body, user: { login: "ntodd-agent[bot]" }, issue_url: "https://api.github.com/repos/ntodd/project/issues/9", created_at: at, updated_at: at });
   f.tick("2026-11-12T12:17:00Z"); await service.render(f.state, f.context);
   assert.equal(f.state.items["issue:7"].apiAlerts[alerts[0].id].status, "resolved");
-  assert.match(f.rows.get(9).find((r) => r.body.includes("factory:attention=")).body, /Recovered/);
-  assert.equal(f.rows.get(9).filter((r) => r.body.includes("factory:attention=")).length, 1);
+  assert.equal(f.rows.get(9).filter((r) => r.body.includes("factory:attention=")).length, 0);
+  assert.equal(f.rows.get(9).filter((r) => r.body.includes("factory:status=")).length, 1);
 });
 
 test("questions notify once per occurrence and request review while preserving the draft state", async () => {
@@ -260,7 +296,7 @@ test("question review preflights back off without creating an attention loop", a
   assert.ok(Object.values(f.state.items["issue:7"].preflights).every((r) => r.status === "observed"));
 });
 
-test("closure questions stay on the affected PR and their acknowledgement names the accepted disposition", async () => {
+test("closure questions stay on the affected PR and status names the accepted disposition", async () => {
   const f = fixture();
   f.pr.state = "closed"; f.rows.set(10, []); f.labels.set(10, []);
   f.api.pull = async (number) => number === 10 ? { ...f.pr, number: 10, state: "open" } : f.pr;
@@ -277,7 +313,8 @@ test("closure questions stay on the affected PR and their acknowledgement names 
   await f.store.transact((s) => evolve(s, "issue:7", { type: "accept-closure", number: 9, commandId: command.id,
     authorization: { valid: true, revision: s.items["issue:7"].revision }, at }));
   await f.service().acknowledge();
-  assert.match(f.rows.get(9).find((row) => row.body.includes(`factory:ack=${command.id}`)).body, /closure of PR #9 is accepted/);
+  assert.equal(f.rows.get(9).some((row) => row.body.includes(`factory:ack=${command.id}`)), false);
+  assert.match(projectItem(f.state, "issue:7").find((row) => row.target === 9).body, /Closed with an accepted disposition/);
   assert.equal(f.state.items["issue:7"].complete, false);
 });
 

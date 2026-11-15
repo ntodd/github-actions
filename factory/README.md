@@ -159,10 +159,11 @@ are present; no target repository has an active factory caller yet.
   reviewer requests and issue close-out. Lost create/close responses are
   inspected rather than resent. Repeatable projections have a daily request
   budget, and unrelated human labels are preserved.
-  Stop acknowledgements list uncertain requests. Sent API effects that
-  remain unknown or rejected raise one attention notice per incident,
-  corrected in place after recovery. These alerts do not replace coding
-  ownership or recursively generate more alerts when notification fails.
+  Commands receive reactions; status is edited in place without routine
+  acknowledgement replies. Stop status warns about uncertain requests.
+  API recovery details stay in the ledger and Actions diagnostics, linked
+  from status without separate attention comments. These alerts do not
+  replace coding ownership or authorize another worker.
   Close/reopen writes exclude other pending state changes to the same
   target across items. Recovery uses the factory App's state event after
   the recorded preflight cursor and request time; current state alone

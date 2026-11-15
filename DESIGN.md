@@ -269,8 +269,8 @@ authorize a new publish request.
 Stop takes effect when acknowledged after the state write. A request sent
 to GitHub before that point may still complete afterward, including after
 the publisher crashed and released its Actions lock. Stop cannot retract
-that request or undo an applied commit. Its acknowledgment lists unresolved
-writes, and their outcomes are reconciled without resuming the item.
+that request or undo an applied commit. Its status warns about unresolved
+writes and links to Actions diagnostics; outcomes are reconciled without resuming the item.
 Restart also advances the generation and records each close operation
 before admitting replacement work.
 
@@ -543,13 +543,12 @@ You can talk across several comments and mention the agent in the last one.
   words go to that run as its instructions. However the comment is
   worded, the controller accepts only a validated action from that menu.
   The publisher never merges, approves or pushes to `main`.
-- It says what it understood before anything long runs: 👀 on your
-  comment right away, then a one-line reply ("Merging main into this
-  branch. It conflicts in `navbar.ex`, so a resolve run is starting.").
+- It acknowledges your comment with 👀 and records what it understood in
+  the existing status comment. Routine acknowledgements do not add replies.
   If it got you wrong, `@ntodd-agent stop`.
 - "Rebase" means bring it up to date. The factory merges `main` in
   instead of rebasing, so nothing is force-pushed and the review history
-  stays, and the reply says it merged: update when the branch is only
+  stays, and the status says it merged: update when the branch is only
   behind, resolve when it conflicts.
 - A mention inside a review thread is about that thread, and the respond
   run starts from it.
@@ -770,6 +769,10 @@ Status comments expose known totals and missing coverage separately.
 
 Every external wait records its target, reason and deadline. The hourly
 pass discovers missed completion events, overdue waits and cancelled jobs.
+An unavailable mergeability result remains an automatic observation wait
+after its deadline; it does not ask a person to answer an API query. Fresh,
+complete PR observations can settle the old mergeability-timeout question
+without clearing another decision or resuming stopped work.
 There is no promise of recovery within an hour: Actions schedules can be
 late. A trusted `/agent status` or `/agent retry` wakes the same controller
 from any client without needing a separate administrative path.
@@ -831,10 +834,12 @@ or recover a publish receipt. It never trusts their prose as instructions.
 Controller API effects are recorded on the work item with their targets,
 request identities and receipts. Status edits and factory-label repairs
 can converge again after later changes, within a daily request budget.
-Sent API effects that remain unknown or rejected past their deadline raise
-an attention notice with the exact request identity. This does not discard
-valid code or authorize another worker. A known outcome settles that notice
-in place. Notification failures do not recursively generate notifications.
+Sent API effects that remain unknown or rejected past their deadline remain
+in the ledger and Actions diagnostics with their exact request identities.
+The status comment links to those diagnostics without separate attention
+comments or repeated request lists. This does not discard valid code or
+authorize another worker. A known outcome settles the recorded alert.
+Notification failures do not recursively generate notifications.
 An uncertain comment creation or issue closure is inspected, not resent on
 an absent result. A missing status comment can be replaced only after its
 previous successful creation and subsequent deletion are established.

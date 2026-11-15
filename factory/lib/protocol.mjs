@@ -669,6 +669,20 @@ export function evolve(ledger, key, event) {
       for (const command of Object.values(item.commands)) if (command.action === "clarify" && command.status === "queued") command.status = "applied";
       break;
     }
+    case "resolve-mergeability-question": {
+      const q = item.question, op = s.operations[item.activeOperation];
+      const required = item.prs.filter((p) => p.required && p.state === "open");
+      requireThat(q?.kind === null && !q.operation
+        && q.reason === "GitHub has not determined mergeability; the wait deadline was exceeded"
+        && !item.authorizationRevoked && event.authorization?.valid === true && event.authorization.revision === item.revision
+        && (!op || TERMINAL.has(op.phase)) && required.length > 0 && Array.isArray(event.prs)
+        && event.prs.length === required.length && new Set(event.prs.map((p) => p.number)).size === required.length
+        && event.prs.every((p) => required.some((r) => r.number === p.number) && /^[a-f\d]{40}$/.test(p.headSha)
+          && /^[a-f\d]{40}$/.test(p.baseSha) && ["MERGEABLE", "CONFLICTING"].includes(p.mergeable)),
+      "pending", "Only complete known mergeability observations can settle the legacy machine question");
+      item.lastQuestion = { ...q, resolution: "mergeability-observed", resolvedAt: time(event.at) }; item.question = null;
+      break;
+    }
     case "register-main-repair": {
       const r = event.registration;
       requireThat(r?.revision === item.revision && r.sourceId === item.evidence.sourceId && !item.evidence.own && !item.requestOnly && !item.authorizationRevoked && !item.complete

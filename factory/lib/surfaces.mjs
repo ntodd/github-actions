@@ -5,7 +5,7 @@ import { loadConfig } from "./config.mjs";
 import { readFeedback } from "./admission.mjs";
 import { observeAuthorization, observeItem } from "./observe.mjs";
 import { pendingControls } from "./commands.mjs";
-import { pendingWrites, pendingText, preflightRead, preflightId } from "./recovery.mjs";
+import { pendingWrites, preflightRead, preflightId } from "./recovery.mjs";
 import { evolve, TERMINAL } from "./protocol.mjs";
 import { factoryReadApi } from "./identity.mjs";
 import { itemUsage, usageText } from "./usage.mjs";
@@ -13,7 +13,6 @@ import { completionGaps, publishedPushes } from "./effects.mjs";
 const hash = (v) => createHash("sha256").update(v).digest("hex");
 const ownNumber = (item) => Number(item.key.split(":")[1]);
 const hidden = (value) => JSON.stringify(value).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
-const alertReference = (alert) => alert.source === "preflight" ? `Observation: \`${alert.read}\`` : `Request: \`${alert.request}\``;
 const nextText = (status) => ({ answer: "Answer the question with /agent answer <text>.", "work-command": "A work command resumes this item.",
   ci: "The current commit's CI result wakes the controller.", signals: "The configured review/check results wake the controller.",
   "main-green": "Work resumes after the default branch's required checks pass.", "owner-terminal": "The worker's completion wakes the controller.",
@@ -24,7 +23,7 @@ const nextText = (status) => ({ answer: "Answer the question with /agent answer 
   none: "The next relevant GitHub event or backstop pass checks this item again." })[status.next]
   ?? `Next: ${status.next.replaceAll("-", " ")}.`;
 
-export function projectItem(ledger, key) {
+export function projectItem(ledger, key, { repo } = {}) {
   const item = ledger.items[key], op = ledger.operations[item.activeOperation];
   const pending = pendingWrites(ledger, key);
   const usage = itemUsage(ledger, key);
@@ -48,9 +47,11 @@ export function projectItem(ledger, key) {
       generation: item.generation, operation: op?.id ?? null, run: op?.owner?.id ?? null, prs, pendingWrites: pending, alerts, usage };
     const lines = [`**${status.state}:** ${status.reason}`, "", nextText(status)];
     const relevantAlerts = target === ownNumber(item) ? alerts : alerts.filter((a) => a.target === target);
-    if (relevantAlerts.length) lines.push("", "**Needs attention:**", ...relevantAlerts.map((a) => `- ${a.reason} ${alertReference(a)}.`));
     const relevant = target === ownNumber(item) ? pending : pending.filter((w) => w.target === target);
-    if (relevant.length) lines.push(pendingText(relevant));
+    if (relevantAlerts.length || relevant.length) {
+      const diagnostics = repo ? `[Actions diagnostics](https://github.com/${repo}/actions/workflows/factory.yml)` : "Actions diagnostics";
+      lines.push("", `${item.paused && relevant.length ? "Previously sent requests may still finish." : "Some automation requests are awaiting confirmation."} See ${diagnostics}.`);
+    }
     if (target === ownNumber(item) && !item.evidence.own && prs.length) {
       lines.push("", ...prs.map((p) => `- #${p.number}: ${p.state} — ${p.reason}`));
     }
@@ -155,25 +156,6 @@ export function surfaceService({ api, write, store, repo, appLogin, run, now = (
     }));
     return results;
   }
-  const acknowledgementText = (command, item, ledger) => {
-    if (command.clarification) return `This request needs clarification: ${command.clarification}`;
-    if (command.status === "superseded") return "This request was superseded by a later command.";
-    if (command.mainAnswer) return command.mainAnswer;
-    if (command.issueClosureDecision === "stop") return `Work is paused. An earlier reopening request may still finish.${pendingText(pendingWrites(ledger, item.key))}`;
-    if (command.issueClosureDecision === "continue") return command.issueClosureOutcome === "done" ? "The issue reopening for this request is recorded."
-      : command.issueClosureOutcome === "superseded" ? `The continue request stopped: ${command.issueClosureReason}`
-        : "Reopening the issue before continuing its existing work.";
-    const disposition = item.prs.find((p) => p.acceptedClosure && p.dispositions?.some((d) => d.commandId === command.id));
-    if (disposition) return `The closure of PR #${disposition.number} is accepted. Completion still requires every other required PR to be accounted for.`;
-    if (command.action === "answer" && item.completionAcceptance?.sourceId === command.sourceId) return "The recorded merged work was explicitly accepted; recording completion.";
-    return ({ stop: `Work is paused. A request already sent may still finish.${pendingText(pendingWrites(ledger, item.key))}`,
-      status: `${item.status?.state ?? "Queued"}: ${item.status?.reason ?? "Accepted work is queued"}. ${nextText(item.status ?? { next: "dispatch" })}`,
-      effort: `Using ${command.effort} effort for subsequent runs.`, answer: "Resuming the existing work with your answer.",
-      respond: "Working on the existing PR with your feedback.", resolve: "Merging the default branch in and resolving conflicts.",
-      update: "Bringing the branch up to date with a merge. Conflicts will start a resolve run.", build: "Working on this issue and its existing PRs, if any.",
-      restart: "Closing the recorded open PRs before starting a replacement build.", retry: "Inspecting the previous attempt and retrying within its limits.",
-      clarify: command.text || "Specify the action you want with /agent <action>." })[command.action];
-  };
   async function acknowledge() {
     const { state } = await store.load(), notes = []; let count = 0;
     for (const item of Object.values(state.items)) for (const command of Object.values(item.commands).filter((c) => c.acknowledgement === "pending")) {
@@ -184,10 +166,7 @@ export function surfaceService({ api, write, store, repo, appLogin, run, now = (
           : await execute(item.key, `ack-eyes:${command.id}`, { kind: "reaction", target: command.target,
             payload: { id: Number(rawId), sourceKind, content: "eyes" } }, guard);
         if (command.action === "route") continue;
-        const text = acknowledgementText(command, item, (await store.load()).state);
-        const reply = await comment(item.key, `ack-reply:${command.id}`, command.target, text,
-          `<!-- factory:ack=${command.id} -->`, guard);
-        if (reaction.status === "applied" && reply.status === "applied") await store.transact((s) => {
+        if (reaction.status === "applied") await store.transact((s) => {
           s.items[item.key].commands[command.id].acknowledgement = "done"; return s;
         });
         else notes.push({ key: item.key, surface: "acknowledgement", status: "waiting" });
@@ -237,7 +216,7 @@ export function surfaceService({ api, write, store, repo, appLogin, run, now = (
       }
       await store.transact((s) => evolve(s, item.key, { type: "sync-api-alerts", at: now(), timeoutMinutes: context.config.timeouts.publishMinutes ?? 15 }));
       const snapshot = (await store.load()).state;
-      for (const projection of projectItem(snapshot, item.key)) {
+      for (const projection of projectItem(snapshot, item.key, { repo })) {
         let status, projected;
         try {
           status = await statusComment(item.key, projection, snapshot.items[item.key]);
@@ -252,36 +231,12 @@ export function surfaceService({ api, write, store, repo, appLogin, run, now = (
         await store.transact((s) => evolve(s, item.key, { type: "sync-api-alerts", at: now(), timeoutMinutes: context.config.timeouts.publishMinutes ?? 15 }));
         current = await currentItem(item.key);
       }
-      for (const alert of Object.values(current.apiAlerts ?? {})) {
-        try {
-          const slot = `attention:${alert.id}`, marker = `<!-- factory:attention=${alert.id} -->`;
-          if (alert.status === "active" && !current.paused) {
-            const body = `**Needs attention:** ${alert.reason}\n\n${alertReference(alert)}.\n\n${marker}`;
-            const posted = await comment(item.key, slot, alert.target,
-              body,
-              marker, async () => { const fresh = await currentItem(item.key); return !fresh.paused && fresh.apiAlerts?.[alert.id]?.status === "active"; });
-            if (posted.status !== "applied") outcomes.push({ key: item.key, surface: "attention", status: "waiting" });
-            else await execute(item.key, `attention-edit:${alert.id}:${hash(body)}`, { kind: "comment-edit", target: alert.target,
-              payload: { id: posted.receipt.id, body, marker } }, async () => {
-                const fresh = await currentItem(item.key), present = fresh.apiAlerts?.[alert.id];
-                return !fresh.paused && present?.id === alert.id && present.status === "active";
-              });
-          } else if (alert.status === "resolved") {
-            const notice = current.apiEffects?.[apiEffectId(slot)];
-            if (notice?.status === "applied" && current.apiEffects?.[apiEffectId(`attention-resolved:${alert.id}`)]?.status !== "applied") {
-              const body = alert.resolution === "observed" ? `**Recovered:** ${alert.kind} preconditions on #${alert.target} can be observed again.\n\n${marker}`
-                : alert.source === "preflight" ? `**Settled:** ${alert.kind} preconditions on #${alert.target} belong to superseded work.\n\n${marker}`
-                  : alert.resolution === "applied" ? `**Recovered:** ${alert.kind} on #${alert.target} was observed.\n\n${marker}`
-                    : `**Settled:** ${alert.kind} on #${alert.target} was superseded; no new request will be sent.\n\n${marker}`;
-              await execute(item.key, `attention-resolved:${alert.id}`, { kind: "comment-edit", target: alert.target,
-                payload: { id: notice.receipt.id, body, marker } }, async () => {
-                  const present = (await currentItem(item.key)).apiAlerts?.[alert.id];
-                  return present?.id === alert.id && present.status === "resolved";
-                });
-            }
-          }
-        } catch (error) { outcomes.push({ key: item.key, surface: "attention", status: "interrupted", reason: error.message }); }
+      for (const alert of Object.values(current.apiAlerts ?? {}).filter((a) => a.status === "active")) {
+        outcomes.push({ key: item.key, surface: "api-recovery", status: "waiting", kind: alert.kind,
+          reason: alert.reason, request: alert.request, observation: alert.read });
       }
+      const requests = pendingWrites(snapshot, item.key);
+      if (requests.length) outcomes.push({ key: item.key, surface: "pending-writes", status: "waiting", requests });
       if (!item.paused && item.question) {
         const question = item.question, id = question.id ?? hash(`${item.key}:${question.operation}:${question.reason}`);
         const target = question.kind === "pr-closure" ? question.number

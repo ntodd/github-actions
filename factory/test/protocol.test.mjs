@@ -64,6 +64,24 @@ test("only known changes settle a main dependency question, without clearing ano
   assert.equal(settled.items["issue:7"].question, null); assert.equal(settled.items["issue:7"].paused, true);
 });
 
+test("legacy mergeability recovery needs complete known PR observations and cannot settle other questions", () => {
+  const reason = "GitHub has not determined mergeability; the wait deadline was exceeded";
+  const asked = step(initial(), { type: "ask", reason });
+  const prs = [9, 10].map((number) => ({ number, headSha: B, baseSha: A, mergeable: "MERGEABLE" }));
+  const event = { type: "resolve-mergeability-question", authorization: observation.authorization, prs };
+  fails(() => step(asked, { ...event, prs: prs.slice(1) }), "pending");
+  fails(() => step(asked, { ...event, prs: [prs[0], prs[0]] }), "pending");
+  fails(() => step(asked, { ...event, authorization: null }), "pending");
+  fails(() => step(asked, { ...event, prs: prs.map((p) => ({ ...p, mergeable: "UNKNOWN" })) }), "pending");
+  fails(() => step(step(initial(), { type: "ask", reason: "Choose a behavior" }), event), "pending");
+  const worker = structuredClone(asked); worker.items["issue:7"].question.operation = "op-old";
+  fails(() => step(worker, event), "pending");
+  const paused = step(asked, { type: "stop" }), settled = step(paused, event);
+  assert.equal(settled.items["issue:7"].question, null); assert.equal(settled.items["issue:7"].paused, true);
+  assert.equal(settled.items["issue:7"].generation, paused.items["issue:7"].generation);
+  assert.deepEqual(settled.operations, paused.operations); assert.deepEqual(settled.items["issue:7"].attempts, paused.items["issue:7"].attempts);
+});
+
 test("admission is stable and fingerprints issue content independently of metadata", () => {
   const s = initial();
   assert.strictEqual(admit(s, { key: "issue:7", revision, evidence: { sourceId: "label:999" } }), s);

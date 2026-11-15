@@ -19,6 +19,34 @@ test("an unreadable main-CI result explains the observation failure instead of c
   assert.equal(plan.status.wait.kind, "main-ci");
 });
 
+test("a mergeability timeout keeps observing and recovers without a human question", () => {
+  const unknown = facts({ prs: [pr({ mergeable: "UNKNOWN" }), pr({ number: 10, state: "merged", mergedSha: C })] });
+  let state = initial(), plan = decide(state, unknown); state = apply(state, plan);
+  plan = decide(state, unknown, plan.status.wait.deadline);
+  assert.equal(plan.action, null); assert.equal(plan.status.state, "agent-waiting");
+  state = apply(state, plan); assert.equal(state.items["issue:7"].question, null);
+  const recovered = decide(state, facts(), plan.status.wait.deadline);
+  assert.equal(recovered.action.type, "handover");
+  assert.equal(state.items["issue:7"].attempts.length, 0);
+});
+
+test("fresh mergeability settles only the legacy machine question without unpausing work", () => {
+  const reason = "GitHub has not determined mergeability; the wait deadline was exceeded";
+  const asked = step(initial(), { type: "ask", reason });
+  const plan = decide(asked, facts()), settled = apply(asked, plan);
+  assert.equal(settled.items["issue:7"].question, null);
+  assert.equal(settled.items["issue:7"].lastQuestion.resolution, "mergeability-observed");
+  assert.equal(plan.action.type, "handover");
+  for (const f of [facts({ observationError: "incomplete" }), facts({ authorization: null }), facts({ prs: [pr({ mergeable: "UNKNOWN" })] })]) {
+    assert.equal(apply(asked, decide(asked, f)).items["issue:7"].question.id, asked.items["issue:7"].question.id);
+  }
+  const paused = step(asked, { type: "stop" });
+  const waiting = apply(paused, decide(paused, facts()));
+  assert.equal(waiting.items["issue:7"].paused, true); assert.equal(waiting.items["issue:7"].question.id, paused.items["issue:7"].question.id);
+  const workerQuestion = structuredClone(asked); workerQuestion.items["issue:7"].question.operation = "op-old";
+  assert.equal(apply(workerQuestion, decide(workerQuestion, facts())).items["issue:7"].question.id, asked.items["issue:7"].question.id);
+});
+
 test("explicit respond cannot exceed the response-round limit", () => {
   const state = ready();
   operation(state).phase = "failed";
