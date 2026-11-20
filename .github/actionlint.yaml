@@ -1,7 +1,13 @@
+self-hosted-runner:
+  labels: [crew-xs, crew-s, crew-m, crew-l]
 paths:
   # job.workflow_sha and job.workflow_repository arrived in April 2026.
   # actionlint 1.7.12 predates them; the fix (rhysd/actionlint#757) is
   # unreleased. Drop this once a release has it.
-  .github/workflows/{flake-hunt,agent-ready}.yml:
+  .github/workflows/{flake-hunt,agent-ready,factory-runtime,factory-wakeup}.yml:
     ignore:
       - 'property "workflow_(sha|repository)" is not defined'
+  # GitHub supports queue: max since May 2026; actionlint 1.7.12 predates it.
+  .github/workflows/factory-runtime.yml:
+    ignore:
+      - 'unexpected key "queue" for "concurrency" section'

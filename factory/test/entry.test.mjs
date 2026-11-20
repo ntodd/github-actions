@@ -1,0 +1,75 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { verifyEntry } from "../lib/entry.mjs";
+import { A } from "./fixtures.mjs";
+const context = { defaultBranch: "main", repositoryId: "42" };
+const env = { GITHUB_REPOSITORY: "ntodd/project", GITHUB_WORKFLOW_REF: "ntodd/project/.github/workflows/factory.yml@refs/heads/main",
+  GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_RUN_ID: "100", GITHUB_RUN_ATTEMPT: "1", GITHUB_SHA: A };
+const actual = { id: 100, run_attempt: 1, path: ".github/workflows/factory.yml", repository: { id: 42 }, head_repository: { id: 42 }, head_sha: A, head_branch: "main", status: "in_progress" };
+test("privileged entry rejects a PR review or non-default caller before requesting run facts", async () => {
+  let calls = 0;
+  const api = { run: async () => { calls++; return actual; } };
+  await assert.rejects(() => verifyEntry({ api, context, env: { ...env, GITHUB_EVENT_NAME: "pull_request_review" } }), /default-branch/);
+  await assert.rejects(() => verifyEntry({ api, context, env: { ...env, GITHUB_WORKFLOW_REF: env.GITHUB_WORKFLOW_REF.replace("heads/main", "heads/topic") } }), /default-branch/);
+  assert.equal(calls, 0);
+  assert.equal((await verifyEntry({ api, context, env })).id, 100);
+});
+test("the server's workflow attempt, repository, branch and commit must match the entry", async () => {
+  for (const changed of [{ path: ".github/workflows/other.yml" }, { head_sha: "b".repeat(40) }, { run_attempt: 2 },
+    { head_branch: "topic" }, { head_repository: { id: 99 } }, { status: "completed" }]) {
+    await assert.rejects(() => verifyEntry({ api: { run: async () => ({ ...actual, ...changed }) }, context, env }), /identity/);
+  }
+});
+
+test("pull_request_target verifies the default-branch base independently of the reported PR head", async () => {
+  const head = "b".repeat(40), branch = "factory/setup-example";
+  const targetEnv = { ...env, GITHUB_EVENT_NAME: "pull_request_target", GITHUB_REF: "refs/heads/main" };
+  const pr = { base: { ref: "main", sha: A, repo: { id: 42 } }, head: { ref: branch, sha: head, repo: { id: 42 } } };
+  const targetRun = { ...actual, event: "pull_request_target", head_sha: head, head_branch: branch, pull_requests: [pr] };
+  const api = { run: async () => targetRun };
+  assert.equal((await verifyEntry({ api, context, env: targetEnv })).head_sha, head);
+  await assert.rejects(verifyEntry({ api, context, env: { ...targetEnv, GITHUB_REF: `refs/heads/${branch}` } }), /identity/);
+  for (const changed of [{ event: "pull_request" }, { pull_requests: [] }, { pull_requests: { 0: pr, length: 1 } }, { head_sha: A }, { head_branch: "other" },
+    { pull_requests: [{ ...pr, base: { ...pr.base, sha: head } }] },
+    { pull_requests: [{ ...pr, base: { ...pr.base, ref: "other" } }] },
+    { pull_requests: [{ ...pr, base: { ...pr.base, repo: { id: 99 } } }] },
+    { pull_requests: [{ ...pr, head: { ...pr.head, repo: { id: 99 } } }] }]) {
+    await assert.rejects(verifyEntry({ api: { run: async () => ({ ...targetRun, ...changed }) }, context, env: targetEnv }), /identity/);
+  }
+});
+
+test("the completion caller can enter only through a verified default-branch workflow_run", async () => {
+  const path = ".github/workflows/factory-completion.yml", completionEnv = { ...env, GITHUB_EVENT_NAME: "workflow_run",
+    GITHUB_WORKFLOW_REF: `ntodd/project/${path}@refs/heads/main`, FACTORY_COMPLETION_ENTRY: "true" };
+  const api = { run: async () => ({ ...actual, path, event: "workflow_run" }) };
+  assert.equal((await verifyEntry({ api, context, env: completionEnv })).path, path);
+  await assert.rejects(verifyEntry({ api, context, env: { ...completionEnv, FACTORY_COMPLETION_ENTRY: "false" } }), /default-branch/);
+  await assert.rejects(verifyEntry({ api, context, env: { ...env, FACTORY_COMPLETION_ENTRY: "true" } }), /default-branch/);
+  for (const event of ["workflow_dispatch", "issue_comment", "repository_dispatch", "push"]) {
+    await assert.rejects(verifyEntry({ api, context, env: { ...completionEnv, GITHUB_EVENT_NAME: event } }), /default-branch/);
+  }
+  for (const changed of [{ event: "workflow_dispatch" }, { path: actual.path }, { head_branch: "topic" }, { head_repository: { id: 99 } }]) {
+    await assert.rejects(verifyEntry({ api: { run: async () => ({ ...actual, path, event: "workflow_run", ...changed }) }, context, env: completionEnv }), /identity/);
+  }
+});
+
+test("closed PR target runs with empty API membership require fresh same-repository PR and current default-head proof", async () => {
+  const head = "b".repeat(40), oldBase = "c".repeat(40), branch = "factory/setup-example";
+  const targetEnv = { ...env, GITHUB_EVENT_NAME: "pull_request_target", GITHUB_REF: "refs/heads/main" };
+  const targetContext = { ...context, sha: A }, event = { action: "closed", number: 17, pull_request: { number: 17 } };
+  const targetRun = { ...actual, event: "pull_request_target", head_sha: head, head_branch: branch, pull_requests: [] };
+  const pr = { number: 17, state: "closed", base: { ref: "main", sha: oldBase, repo: { id: 42 } },
+    head: { ref: branch, sha: head, repo: { id: 42 } } };
+  const api = { run: async () => targetRun, pull: async (number) => { assert.equal(number, 17); return pr; }, branchSha: async (name) => { assert.equal(name, "main"); return A; } };
+  assert.equal((await verifyEntry({ api, context: targetContext, env: targetEnv, event })).id, 100);
+  for (const changed of [{ number: 18 }, { state: "open" }, { head: { ...pr.head, sha: oldBase } },
+    { head: { ...pr.head, ref: "other" } }, { head: { ...pr.head, repo: { id: 99 } } },
+    { base: { ...pr.base, ref: "other" } }, { base: { ...pr.base, repo: { id: 99 } } }]) {
+    await assert.rejects(verifyEntry({ api: { ...api, pull: async () => ({ ...pr, ...changed }) }, context: targetContext, env: targetEnv, event }), /identity/);
+  }
+  await assert.rejects(verifyEntry({ api: { ...api, branchSha: async () => oldBase }, context: targetContext, env: targetEnv, event }), /identity/);
+  await assert.rejects(verifyEntry({ api, context: { ...targetContext, sha: oldBase }, env: targetEnv, event }), /identity/);
+  for (const changed of [{ action: "opened" }, { pull_request: { number: 18 } }, { number: 0 }]) {
+    await assert.rejects(verifyEntry({ api, context: targetContext, env: targetEnv, event: { ...event, ...changed } }), /identity/);
+  }
+});

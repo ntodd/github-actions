@@ -22,7 +22,7 @@ const WITHHELD = [
 
 const MISSING = "You ended the phase without writing outcome.json. Write it now, exactly as the phase asked, and stop.";
 
-export function claudeRunner({ bin = "claude", sessionId, stateDir, cwd, model, effort, maxTurns, systemPromptFile, mcpConfig, env, timeoutMs, spawn = nodeSpawn, log, onEvent = () => {} }) {
+export function claudeRunner({ bin = "claude", sessionId, stateDir, cwd, model, effort, maxTurns, systemPromptFile, mcpConfig, env, timeoutMs, spawn = nodeSpawn, log, onEvent = () => {}, onInvocation = () => {} }) {
   let started = false;
   // A resumed session's result reports the session's running cost.
   let spent = 0;
@@ -45,6 +45,10 @@ export function claudeRunner({ bin = "claude", sessionId, stateDir, cwd, model, 
       });
       let result = null;
       let timedOut = false;
+      let measured = false;
+      const measure = (completed) => {
+        if (!measured) { measured = true; onInvocation({ phase, result, completed }); }
+      };
       const timer = setTimeout(() => {
         timedOut = true;
         child.kill("SIGTERM");
@@ -64,10 +68,12 @@ export function claudeRunner({ bin = "claude", sessionId, stateDir, cwd, model, 
       });
       child.on("error", (err) => {
         clearTimeout(timer);
+        measure(false);
         reject(err);
       });
       child.on("close", (code) => {
         clearTimeout(timer);
+        measure(!timedOut);
         if (timedOut) return reject(new Error(`${phase}: timed out after ${Math.round(limit / 60_000)} minutes`));
         resolve({ code, result });
       });

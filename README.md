@@ -7,6 +7,7 @@ Reusable workflows and actions for my repos, mostly meant to run on
 |---|---|
 | [flake-hunt](flake-hunt/) | Runs a Mix project's suite many times and files an issue for each flaky test, with a diagnosis from Claude. |
 | [agent-ready](agent-ready/) | Works an issue labeled `agent-ready` into draft PRs, then keeps at them until CI is green and review threads are answered. Resolves their conflicts when the default branch moves, and any PR's on `/resolve`. |
+| [factory](factory/) | Issue handling with durable ownership, read-only coding workers and validated publishing. In development; existing callers have not migrated. |
 
 ## Using them
 
@@ -37,3 +38,19 @@ node --test
 ```
 
 The tests that run Mix need `elixir` on the PATH (`mise install`).
+
+The [factory design](DESIGN.md) has an executable
+[Quint model](spec/README.md) for operation ownership, recovery and merging.
+Its development dependency is separate from the dependency-free actions:
+
+```sh
+npm ci --ignore-scripts
+npm run model:check
+npm run model:simulate
+npm run model:replay
+```
+
+Both simulation profiles use Quint's Rust backend. These checks exercise
+the proposed protocol and replay it through the new [controller core](factory/).
+The new runtime is under development; the existing agent-ready caller has
+not migrated to it.
