@@ -39,6 +39,10 @@ export function replayScheduling({ dir, run, decode }) {
     "controller-completion": { event_name: "workflow_run", event: { workflow_run: { name: "factory", path: ".github/workflows/factory.yml", event: "workflow_run", display_title: title("reconcile") } } },
     "inspect-completion": { event_name: "workflow_run", event: { workflow_run: { name: "factory", path: ".github/workflows/factory.yml", event: "workflow_dispatch", display_title: title("inspect") } } },
     "collector-completion": { event_name: "workflow_run", event: { workflow_run: { name: "factory completion", path: ".github/workflows/factory-completion.yml", event: "workflow_run", display_title: "factory completion" } } },
+    "stacked-pr": { event_name: "pull_request_target", actor: "ntodd", event: { action: "synchronize", pull_request: { number: 8, base: { ref: "stack/parent" } } } },
+    "stacked-ci": { event_name: "workflow_run", event: { workflow_run: { name: "CI", path: ".github/workflows/ci.yml", event: "pull_request",
+      head_branch: "stack/child", pull_requests: [{ number: 8, base: { ref: "stack/parent" } }] } } },
+    "stacked-review": { event_name: "pull_request_review", actor: "ntodd", event: { action: "submitted", pull_request: { number: 8, base: { ref: "stack/parent" } } } },
   };
   function routed(kind) {
     const github = events[kind];

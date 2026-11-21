@@ -42,7 +42,7 @@ properties checked on sampled traces, not that every trace is proved safe.
 | Design contract | Model actions and properties | Scenario tests |
 | --- | --- | --- |
 | [Dispatch and recovery](../DESIGN.md#dispatch-and-recovery): reserve before dispatch; duplicate delivery does not allocate a second owner or budget | `reserve`, `dispatch`, `claim`, `rejectDelivery`; `oneOwner`, `boundedAttempts` | `duplicateDispatchTest`, `changedHeadCannotClaimTest`, `deadWorkerRetryTest` |
-| Controller queue admission and recovery before claim | `scheduling.qnt`: `arrive`, `deliver`, `cancelPending`, `crashControl`, `dispatch`, `ask`; `filteredBeforeQueue`, `boundedDispatch`, `oneOwner` | `selfSurfacesPreserveWorkerTest`, `nonWorkerCompletionsPreserveWorkerTest`, `fourWorkersRetainedTest`, `overflowKeepsExistingJobsTest`, `exhaustedDispatchesAskTest`, `lostCompletionBackstopCollectsTest` |
+| Controller queue admission and recovery before claim | `scheduling.qnt`: `arrive`, `deliver`, `cancelPending`, `crashControl`, `dispatch`, `ask`; `filteredBeforeQueue`, `boundedDispatch`, `oneOwner` | `selfSurfacesPreserveWorkerTest`, `stackedEventsPreserveWorkerTest`, `nonWorkerCompletionsPreserveWorkerTest`, `fourWorkersRetainedTest`, `overflowKeepsExistingJobsTest`, `exhaustedDispatchesAskTest`, `lostCompletionBackstopCollectsTest` |
 | A queued owner still owns the operation; cancellation request is not termination | `live`, `running`, `requestCancellation`, `crashWorker`, `recoverDeadWorker`; `oneOwner` | `queuedOwnerCannotBeReplacedTest`, `deadWorkerRetryTest` |
 | Stop invalidates new work from the old generation; it waits for a live publisher's lock | `stop`, `resume`, `discardStale`, `authorizePublish`, `push`; `authorizedPublishRequests` | `stopFencesResultTest`, `stopWaitsForPublisherTest`, `noNewRequestAfterStopTest` |
 | [Worker contract](../DESIGN.md#worker-contract-and-releasing-crew): workers return artifacts, controller advances state | `uploadResult`, `finishWorker`, `collectResult`; `acceptedResultHasOwner`, `waitsReleaseCrew` | `workerCannotAdvanceLedgerTest`, `crashAfterArtifactUploadTest` |
@@ -300,6 +300,23 @@ reconcile and unnamed dispatch completions, while retaining worker and CI
 wake-ups. The regression failed before the fix; no protocol/model semantics
 changed.
 
+A 17-level `gh stack` in a consuming repository exposed stacked-PR traffic in
+the same group. Every level above the bottom targets another PR's branch, so
+its `pull_request_target` runs ended at the `OffDefaultBase` skip, while its CI
+completions and review wake-ups ran full reconcile passes that cannot admit
+those PRs. One restack queued 40 control jobs behind the single active slot.
+The generated caller now drops pull request events and review wake-ups whose
+base is not the default branch, and CI completions whose only associated PR
+has a non-default base, before the job enters the group. A clause drops an
+event only when the payload names that base. A missing field, a default-branch
+head or several associated PRs still reach entry verification, and the
+`OffDefaultBase` skip remains the backstop. `queue: max` is unchanged: replacing
+pending jobs would displace worker admissions and spend their bounded dispatch
+requests. The model's noise set gains three stacked classes,
+`stackedEventsPreserveWorkerTest` keeps a queued worker behind them, and the
+replay maps each class to its platform payload shape. The caller regression
+failed before the fix; protocol semantics are unchanged.
+
 The owner changed the execution-placement requirement during rollout: every
 factory job must use Crew, including API-only work. The design now states that
 policy explicitly. Control and clean update use `crew-s`, review wake-ups use
@@ -334,12 +351,12 @@ The live pre-claim cancellations exposed an omission in the original ownership
 model. [`scheduling.qnt`](scheduling.qnt) now represents the Actions controller
 queue with `queue: max`, overflow rejection, lost dispatch delivery, cancellation/crash
 before claim, durable dispatch backoff and exhaustion, and lost completion
-wake-ups. Twenty named scenarios exercise those failures and recovery;
+wake-ups. Twenty-one named scenarios exercise those failures and recovery;
 the sampled profile explores 10,000 traces of up to 100 steps. Progress still
 requires a delivered backstop, available APIs and eventual scheduling; neither
 model proves fairness or inevitable completion.
 
-[`scheduling-replay.mjs`](scheduling-replay.mjs) compares the model's twelve
+[`scheduling-replay.mjs`](scheduling-replay.mjs) compares the model's fifteen
 event classes with the generated caller subscriptions, job filters and worker
 run-name, the shared job filter and the in-code completion guard. It feeds
 dispatch, claim, exhaustion and collection through the actual reconciler and

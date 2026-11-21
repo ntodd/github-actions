@@ -120,10 +120,51 @@ test("active callers ignore the verified App's status surfaces without suppressi
   }
   assert.equal(accepts("ntodd", "pull_request_review", "submitted"), false);
   const review = (actor) => Function("github", "contains", "fromJSON", `return (${caller.jobs["wake-up"].if});`)(
-    { actor, event_name: "pull_request_review_comment" }, (values, value) => values.includes(value), JSON.parse);
+    { actor, event_name: "pull_request_review_comment", event: {} }, (values, value) => values.includes(value), JSON.parse);
   assert.equal(review("factory-app[bot]"), false);
   assert.equal(review("reviewer[bot]"), true);
   assert.equal(review("ntodd"), true);
+});
+
+test("stacked PR events are filtered before they take a control slot", () => {
+  for (const options of [{ defaultBranch: "trunk", ciWorkflows: ["CI"] },
+    { defaultBranch: "trunk", ciWorkflows: ["CI"], dryRun: false, appLogin: "factory-app[bot]" }]) {
+    const caller = parseDocument(callerWorkflow(options)).toJS();
+    const evaluate = (expression, github) => Boolean(Function("github", "contains", "fromJSON",
+      `return (${expression.replace(/^\$\{\{\s*|\s*\}\}$/g, "")});`)({ actor: "ntodd", ...github }, (values, value) => values.includes(value), JSON.parse));
+    const entry = (github) => evaluate(caller.jobs.factory.if, github);
+    const wake = (github) => evaluate(caller.jobs["wake-up"].if, github);
+
+    const pr = (base, action = "synchronize") => ({ event_name: "pull_request_target", event: { action, pull_request: { number: 7, base: { ref: base } } } });
+    for (const action of ["opened", "synchronize", "edited", "closed"]) {
+      assert.equal(entry(pr("trunk", action)), true);
+      assert.equal(entry(pr("stack/parent", action)), false);
+    }
+    assert.equal(entry(pr("main")), false, "Only the configured default branch counts");
+    assert.equal(entry({ event_name: "pull_request_target", event: { action: "opened" } }), true, "Without a base, entry verification decides");
+
+    const ci = (run) => ({ event_name: "workflow_run", event: { workflow_run: { name: "CI", path: ".github/workflows/ci.yml", event: "pull_request", ...run } } });
+    assert.equal(entry(ci({ head_branch: "stack/child", pull_requests: [{ number: 8, base: { ref: "stack/parent" } }] })), false);
+    assert.equal(entry(ci({ head_branch: "factory/issue-7", pull_requests: [{ number: 9, base: { ref: "trunk" } }] })), true);
+    assert.equal(entry(ci({ head_branch: "stack/child", pull_requests: [{ base: { ref: "stack/parent" } }, { base: { ref: "trunk" } }] })), true);
+    assert.equal(entry(ci({ head_branch: "trunk", event: "push", pull_requests: [{ base: { ref: "stack/parent" } }] })), true);
+    assert.equal(entry(ci({ head_branch: "trunk", event: "push", pull_requests: [] })), true);
+    assert.equal(entry(ci({ head_branch: "fork-branch", pull_requests: [] })), true);
+    assert.equal(entry(ci({})), true);
+    assert.equal(entry({ event_name: "workflow_run", event: { workflow_run: { name: "factory", path: ".github/workflows/factory.yml",
+      event: "workflow_dispatch", display_title: "factory worker", head_branch: "trunk", pull_requests: [] } } }), true);
+
+    const review = (event_name, base) => ({ event_name, event: { action: "submitted", pull_request: { number: 7, base: { ref: base } } } });
+    for (const event_name of ["pull_request_review", "pull_request_review_comment"]) {
+      assert.equal(wake(review(event_name, "trunk")), true);
+      assert.equal(wake(review(event_name, "stack/parent")), false);
+      assert.equal(wake({ event_name, event: { action: "created" } }), true);
+    }
+
+    for (const event_name of ["issues", "issue_comment", "push", "schedule", "workflow_dispatch", "check_run", "status"]) {
+      assert.equal(entry({ event_name, event: { action: "created" } }), true);
+    }
+  }
 });
 
 test("caller generation rejects YAML/expression injection and missing CI names", () => {
