@@ -12,8 +12,11 @@ module scheduling {
   }
   pure val NONE = { kind: "none", id: 0 }
   pure val CAPACITY = 100
+  // Stacked-PR events concern a PR whose base is another branch; the factory
+  // admits only default-branch work, so they never take a control slot.
   pure val NOISE = Set("app-comment", "app-label", "app-review",
-    "controller-completion", "collector-completion", "inspect-completion")
+    "controller-completion", "collector-completion", "inspect-completion",
+    "stacked-pr", "stacked-ci", "stacked-review")
   pure val WAKEUPS = Set("human", "ci", "backstop", "review-hint", "app-pr-opened", "worker-completion")
   pure def accepts(kind: str): bool = WAKEUPS.contains(kind)
   var s: State
@@ -165,6 +168,10 @@ module scheduling {
 
   run selfSurfacesPreserveWorkerTest = init.then(queuedWorker)
     .then(arrive("app-comment")).then(arrive("app-label")).then(arrive("app-review"))
+    .expect(s.pending == [{ kind: "worker", id: 1 }] and safety)
+
+  run stackedEventsPreserveWorkerTest = init.then(queuedWorker)
+    .then(arrive("stacked-pr")).then(arrive("stacked-ci")).then(arrive("stacked-review"))
     .expect(s.pending == [{ kind: "worker", id: 1 }] and safety)
 
   run nonWorkerCompletionsPreserveWorkerTest = init.then(queuedWorker)

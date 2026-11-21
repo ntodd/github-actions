@@ -43,8 +43,18 @@ export function callerWorkflow({ toolingRepository = "ntodd/github-actions", ref
         default: ''
 `;
   const ownSurfaces = !dryRun && appLogin ? ` && !(github.actor == '${appLogin}' && (contains(fromJSON('["issues","issue_comment"]'), github.event_name) || (github.event_name == 'pull_request_target' && contains(fromJSON('["labeled","unlabeled"]'), github.event.action))))` : "";
+  // A stacked PR (base is another PR's branch) is outside the factory's scope.
+  // Filter its events here, before they take one of the control group's
+  // pending slots; a return in Node would be too late. Each clause drops an
+  // event only when the payload names a non-default base, so a missing field
+  // still reaches entry verification.
+  const offDefault = (pr) => `${pr} && ${pr}.base.ref != '${defaultBranch}'`;
+  const stackedPr = ` && !(github.event_name == 'pull_request_target' && ${offDefault("github.event.pull_request")})`;
+  const run = "github.event.workflow_run";
+  const stackedCi = ` && !(github.event_name == 'workflow_run' && ${run} && ${run}.head_branch != '${defaultBranch}' && ${run}.pull_requests && ${offDefault(`${run}.pull_requests[0]`)} && !${run}.pull_requests[1])`;
+  const stackedReview = ` && !(${offDefault("github.event.pull_request")})`;
   const entryCondition = completion ? "github.event_name == 'workflow_run' && github.event.workflow_run.path == '.github/workflows/factory.yml' && github.event.workflow_run.event == 'workflow_dispatch' && github.event.workflow_run.display_title == 'factory worker'"
-    : `\${{ !contains(fromJSON('["pull_request_review","pull_request_review_comment"]'), github.event_name)${ownSurfaces} }}`;
+    : `\${{ !contains(fromJSON('["pull_request_review","pull_request_review_comment"]'), github.event_name)${ownSurfaces}${stackedPr}${stackedCi} }}`;
   const request = completion ? "''" : "${{ github.event_name == 'workflow_dispatch' && inputs.request || '' }}";
   return `name: ${completion ? "factory completion" : "factory"}
 ${completion ? "" : `run-name: \${{ github.event_name == 'workflow_dispatch' && inputs.request != '' && fromJSON(inputs.request).kind == 'worker' && 'factory worker' || 'factory reconcile' }}\n`}
@@ -56,7 +66,7 @@ permissions: {}
 
 jobs:
 ${completion ? "" : `  wake-up:
-    if: contains(fromJSON('["pull_request_review","pull_request_review_comment"]'), github.event_name)${!dryRun && appLogin ? ` && github.actor != '${appLogin}'` : ""}
+    if: contains(fromJSON('["pull_request_review","pull_request_review_comment"]'), github.event_name)${!dryRun && appLogin ? ` && github.actor != '${appLogin}'` : ""}${stackedReview}
     permissions:
       contents: read
       actions: write
