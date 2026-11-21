@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { verifyEntry } from "../lib/entry.mjs";
+import { verifyEntry, OffDefaultBase } from "../lib/entry.mjs";
 import { A } from "./fixtures.mjs";
 const context = { defaultBranch: "main", repositoryId: "42" };
 const env = { GITHUB_REPOSITORY: "ntodd/project", GITHUB_WORKFLOW_REF: "ntodd/project/.github/workflows/factory.yml@refs/heads/main",
@@ -31,7 +31,6 @@ test("pull_request_target verifies the default-branch base independently of the 
   await assert.rejects(verifyEntry({ api, context, env: { ...targetEnv, GITHUB_REF: `refs/heads/${branch}` } }), /identity/);
   for (const changed of [{ event: "pull_request" }, { pull_requests: [] }, { pull_requests: { 0: pr, length: 1 } }, { head_sha: A }, { head_branch: "other" },
     { pull_requests: [{ ...pr, base: { ...pr.base, sha: head } }] },
-    { pull_requests: [{ ...pr, base: { ...pr.base, ref: "other" } }] },
     { pull_requests: [{ ...pr, base: { ...pr.base, repo: { id: 99 } } }] },
     { pull_requests: [{ ...pr, head: { ...pr.head, repo: { id: 99 } } }] }]) {
     await assert.rejects(verifyEntry({ api: { run: async () => ({ ...targetRun, ...changed }) }, context, env: targetEnv }), /identity/);
@@ -64,7 +63,7 @@ test("closed PR target runs with empty API membership require fresh same-reposit
   assert.equal((await verifyEntry({ api, context: targetContext, env: targetEnv, event })).id, 100);
   for (const changed of [{ number: 18 }, { state: "open" }, { head: { ...pr.head, sha: oldBase } },
     { head: { ...pr.head, ref: "other" } }, { head: { ...pr.head, repo: { id: 99 } } },
-    { base: { ...pr.base, ref: "other" } }, { base: { ...pr.base, repo: { id: 99 } } }]) {
+    { base: { ...pr.base, repo: { id: 99 } } }]) {
     await assert.rejects(verifyEntry({ api: { ...api, pull: async () => ({ ...pr, ...changed }) }, context: targetContext, env: targetEnv, event }), /identity/);
   }
   await assert.rejects(verifyEntry({ api: { ...api, branchSha: async () => oldBase }, context: targetContext, env: targetEnv, event }), /identity/);
@@ -72,4 +71,32 @@ test("closed PR target runs with empty API membership require fresh same-reposit
   for (const changed of [{ action: "opened" }, { pull_request: { number: 18 } }, { number: 0 }]) {
     await assert.rejects(verifyEntry({ api, context: targetContext, env: targetEnv, event: { ...event, ...changed } }), /identity/);
   }
+});
+
+test("pull_request_target from a stacked PR is a quiet skip, not an identity failure, and never a privileged entry", async () => {
+  const head = "b".repeat(40), branch = "stack/236-likes-titles", base = "stack/214-pages-source";
+  const targetEnv = { ...env, GITHUB_EVENT_NAME: "pull_request_target", GITHUB_REF: "refs/heads/main" };
+  const pr = { number: 336, base: { ref: base, sha: "c".repeat(40), repo: { id: 42 } }, head: { ref: branch, sha: head, repo: { id: 42 } } };
+  const targetRun = { ...actual, event: "pull_request_target", head_sha: head, head_branch: branch, pull_requests: [pr] };
+  await assert.rejects(verifyEntry({ api: { run: async () => targetRun }, context, env: targetEnv }),
+    (error) => error instanceof OffDefaultBase && error.code === "off-default-base" && /#336/.test(error.message) && error.message.includes(base));
+  // Only a verified same-repository PR whose head matches the run earns the skip; anything else stays an identity failure.
+  for (const changed of [{ head_sha: A }, { head_branch: "other" }, { event: "pull_request" },
+    { pull_requests: [{ ...pr, head: { ...pr.head, repo: { id: 99 } } }] },
+    { pull_requests: [{ ...pr, base: { ...pr.base, repo: { id: 99 } } }] }]) {
+    await assert.rejects(verifyEntry({ api: { run: async () => ({ ...targetRun, ...changed }) }, context, env: targetEnv }),
+      (error) => !(error instanceof OffDefaultBase) && /identity/.test(error.message));
+  }
+  await assert.rejects(verifyEntry({ api: { run: async () => targetRun }, context, env: { ...targetEnv, GITHUB_REF: `refs/heads/${base}` } }),
+    (error) => !(error instanceof OffDefaultBase) && /identity/.test(error.message));
+});
+
+test("a closed stacked PR with empty run membership is also a quiet skip", async () => {
+  const head = "b".repeat(40), branch = "stack/236-likes-titles";
+  const targetEnv = { ...env, GITHUB_EVENT_NAME: "pull_request_target", GITHUB_REF: "refs/heads/main" };
+  const event = { action: "closed", number: 336, pull_request: { number: 336 } };
+  const pr = { number: 336, state: "closed", base: { ref: "stack/214-pages-source", sha: "c".repeat(40), repo: { id: 42 } }, head: { ref: branch, sha: head, repo: { id: 42 } } };
+  const api = { run: async () => ({ ...actual, event: "pull_request_target", head_sha: head, head_branch: branch, pull_requests: [] }),
+    pull: async () => pr, branchSha: async () => A };
+  await assert.rejects(verifyEntry({ api, context: { ...context, sha: A }, env: targetEnv, event }), OffDefaultBase);
 });

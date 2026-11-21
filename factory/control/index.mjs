@@ -6,7 +6,7 @@ import { actionsClient } from "../lib/actions.mjs";
 import { githubData, stateStore } from "../lib/store.mjs";
 import { loadConfig, withFactoryApp } from "../lib/config.mjs";
 import { recordFactoryApp } from "../lib/protocol.mjs";
-import { verifyEntry, controllerWakeup } from "../lib/entry.mjs";
+import { verifyEntry, controllerWakeup, OffDefaultBase } from "../lib/entry.mjs";
 import { inspectFactoryApp } from "../lib/app-inspection.mjs";
 import { runMigration, verifyMigrationEntry } from "../lib/migration.mjs";
 import { parseRequest, claimOperation, runController } from "../lib/controller.mjs";
@@ -26,7 +26,8 @@ main(async () => {
   let api = readClient({ token: env.GITHUB_TOKEN, repo, apiUrl });
   const context = { ...await loadConfig(api), repo };
   const event = JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, "utf8"));
-  await verifyEntry({ api, env, context, event });
+  try { await verifyEntry({ api, env, context, event }); }
+  catch (error) { if (error instanceof OffDefaultBase) { summary(error.message); return; } throw error; }
   const request = parseRequest(env.FACTORY_REQUEST);
   if (!controllerWakeup(env.GITHUB_EVENT_NAME, event)) { summary("Factory controller completion: no worker wake-up."); return; }
   const run = { id: env.GITHUB_RUN_ID, attempt: Number(env.GITHUB_RUN_ATTEMPT) };
