@@ -5,6 +5,16 @@ export function controllerWakeup(eventName, event) {
     || event.workflow_run.event === "workflow_dispatch" && event.workflow_run.display_title === "factory worker";
 }
 
+// A stacked PR (base is another PR's branch) is outside the factory's scope:
+// the run is verified, but it earns no privileged entry. The controller treats
+// this as a quiet skip; every other caller still fails closed on it.
+export class OffDefaultBase extends Error {
+  constructor(pr, defaultBranch) {
+    super(`Factory entry skipped: PR #${pr.number} targets ${pr.base.ref}, not ${defaultBranch}`);
+    this.name = "OffDefaultBase"; this.code = "off-default-base";
+  }
+}
+
 export async function verifyEntry({ api, env, context, event }) {
   const repo = env.GITHUB_REPOSITORY, completionPath = ".github/workflows/factory-completion.yml";
   const completion = env.GITHUB_WORKFLOW_REF === `${repo}/${completionPath}@refs/heads/${context.defaultBranch}`;
@@ -38,6 +48,11 @@ export async function verifyEntry({ api, env, context, event }) {
       && pr.head?.sha === run.head_sha && pr.head.ref === run.head_branch
       && String(pr.head.repo?.id) === context.repositoryId
     : run.head_branch === context.defaultBranch && run.head_sha === env.GITHUB_SHA;
+  if (!commitMatches && target && run.event === "pull_request_target" && env.GITHUB_REF === `refs/heads/${context.defaultBranch}`
+    && pr && typeof pr.base?.ref === "string" && pr.base.ref !== context.defaultBranch
+    && String(pr.base.repo?.id) === context.repositoryId
+    && pr.head?.sha === run.head_sha && pr.head.ref === run.head_branch
+    && String(pr.head.repo?.id) === context.repositoryId) throw new OffDefaultBase(pr, context.defaultBranch);
   if (!commitMatches) throw new Error("Factory entry identity does not match the Actions API");
   return run;
 }
